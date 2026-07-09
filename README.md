@@ -11,6 +11,7 @@ http://127.0.0.1:15723
 Supported local routes:
 
 ```text
+POST /v1/responses
 POST /v1/responses/
 POST /v1/chat/completions
 GET  /v1/usage

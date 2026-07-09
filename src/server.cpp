@@ -157,14 +157,37 @@ void append_body_fields(std::vector<LogField>& fields, const AppConfig& config, 
     fields.push_back(field_bool("body_truncated", body.size() > config.body_log_limit));
 }
 
+std::string canonical_route_path(std::string path) {
+    while (path.size() > 1 && path.back() == '/') {
+        path.pop_back();
+    }
+    return path;
+}
+
+bool path_matches(const std::string& actual, const std::string& configured) {
+    return canonical_route_path(actual) == canonical_route_path(configured);
+}
+
+bool is_responses_path(const AppConfig& config, const std::string& path) {
+    return path_matches(path, config.responses_path);
+}
+
+bool is_chat_path(const AppConfig& config, const std::string& path) {
+    return path_matches(path, config.chat_path);
+}
+
+bool is_usage_path(const AppConfig& config, const std::string& path) {
+    return path_matches(path, config.usage_path);
+}
+
 std::string api_type_for_path(const AppConfig& config, const std::string& path) {
-    if (path == config.responses_path) {
+    if (is_responses_path(config, path)) {
         return "responses";
     }
-    if (path == config.chat_path) {
+    if (is_chat_path(config, path)) {
         return "chat_completions";
     }
-    if (path == config.usage_path) {
+    if (is_usage_path(config, path)) {
         return "usage";
     }
     return "unknown";
@@ -435,7 +458,7 @@ bool Server::process_raw_request_to_sender(
 
     try {
         auto request = parse_request(raw, client_ip);
-        if (request.path == config_.usage_path) {
+        if (is_usage_path(config_, request.path)) {
             return sender(build_response(handle_usage_request(request)));
         }
 
@@ -452,13 +475,13 @@ bool Server::process_raw_request_to_sender(
         append_body_fields(request_fields, config_, request.body);
         logger_.log("info", "request_received", request_fields);
 
-        const bool can_proxy_stream = (request.path == config_.responses_path || request.path == config_.chat_path)
+        const bool can_proxy_stream = (is_responses_path(config_, request.path) || is_chat_path(config_, request.path))
             && request.method == "POST";
         HttpResponse response;
         bool streamed = false;
 
         if (can_proxy_stream) {
-            const auto upstream_path = request.path == config_.responses_path
+            const auto upstream_path = is_responses_path(config_, request.path)
                 ? config_.upstream_responses_path
                 : config_.upstream_chat_path;
             std::vector<LogField> upstream_request_fields = {
@@ -593,7 +616,7 @@ HttpResponse Server::handle_usage_request(const HttpRequest& request) const {
 }
 
 HttpResponse Server::handle_request(const HttpRequest& request) const {
-    if (request.path != config_.responses_path && request.path != config_.chat_path) {
+    if (!is_responses_path(config_, request.path) && !is_chat_path(config_, request.path)) {
         HttpResponse response;
         response.status_code = 404;
         response.reason = reason_phrase(404);
@@ -611,7 +634,7 @@ HttpResponse Server::handle_request(const HttpRequest& request) const {
     }
 
     try {
-        const auto upstream_path = request.path == config_.responses_path
+        const auto upstream_path = is_responses_path(config_, request.path)
             ? config_.upstream_responses_path
             : config_.upstream_chat_path;
         std::vector<LogField> upstream_request_fields = {

@@ -1,3 +1,0 @@
-E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir
-E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/edit_cache.dir
-E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/rebuild_cache.dir

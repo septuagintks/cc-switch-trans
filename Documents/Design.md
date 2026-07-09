@@ -12,7 +12,7 @@ http://127.0.0.1:15723
 
 需要支持两个可并行处理的 OpenAI API 格式任务：
 
-- Responses API: `POST /v1/responses/`
+- Responses API: `POST /v1/responses` 或 `POST /v1/responses/`
 - Chat Completions API: `POST /v1/chat/completions`
 
 另外支持 Usage 查询请求：
@@ -42,7 +42,7 @@ ccs-trans \
 | `--listen-host` | `127.0.0.1` | 本地监听地址 |
 | `--listen-port` | `15723` | 本地监听端口 |
 | `--upstream-url` | 无，必填 | 上游服务基础地址，例如 `https://api.example.com` |
-| `--responses-path` | `/v1/responses/` | 本地 Responses API 路径 |
+| `--responses-path` | `/v1/responses/` | 本地 Responses API 路径，匹配时兼容尾斜杠 |
 | `--chat-path` | `/v1/chat/completions` | 本地 Chat Completions API 路径 |
 | `--usage-path` | `/v1/usage` | 本地 Usage API 路径 |
 | `--upstream-responses-path` | 同 `--responses-path` | 上游 Responses API 路径 |
@@ -64,7 +64,7 @@ ccs-trans --upstream-url https://example.com
 本地调用：
 
 ```text
-POST http://127.0.0.1:15723/v1/responses/
+POST http://127.0.0.1:15723/v1/responses
 POST http://127.0.0.1:15723/v1/chat/completions
 GET  http://127.0.0.1:15723/v1/usage
 ```
@@ -84,6 +84,7 @@ GET  https://example.com/v1/usage
 本地入口：
 
 ```text
+POST /v1/responses
 POST /v1/responses/
 ```
 
@@ -92,13 +93,14 @@ POST /v1/responses/
 1. 读取完整 HTTP 请求方法、路径、查询参数、请求头和请求体。
 2. 验证方法必须为 `POST`。
 3. 不解析或修改 OpenAI Responses JSON 主体，默认透明转发。
-4. 将请求发送到：
+4. 本地匹配兼容尾斜杠，因此 `/v1/responses` 与 `/v1/responses/` 都会进入该路由。
+5. 将请求发送到：
 
 ```text
 {upstream-url}{upstream-responses-path}{query-string}
 ```
 
-5. 将上游状态码、响应头和响应体返回给请求来源。
+6. 将上游状态码、响应头和响应体返回给请求来源。
 
 ### Chat Completions API
 

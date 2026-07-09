@@ -100,6 +100,18 @@ def main():
         assert_true(payload["path"] == "/v1/responses/?trace=integration", "responses path")
         assert_true(payload["body"] == "abcdef", "responses body")
 
+        status, _, data = request(
+            proxy_port,
+            "POST",
+            "/v1/responses?trace=no-slash",
+            body="noslash",
+            headers={"Content-Type": "text/plain"},
+        )
+        payload = json.loads(data)
+        assert_true(status == 200, "responses no-slash status")
+        assert_true(payload["path"] == "/v1/responses/?trace=no-slash", "responses no-slash upstream path")
+        assert_true(payload["body"] == "noslash", "responses no-slash body")
+
         status, _, data = request(proxy_port, "POST", "/v1/chat/completions", body="chat")
         payload = json.loads(data)
         assert_true(status == 200, "chat status")
