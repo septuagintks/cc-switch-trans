@@ -1,0 +1,44 @@
+[
+{
+  "directory": "E:/AMLY/works/C++/cc-switch-trans/build",
+  "command": "\"E:\\Program Files 2\\W64devkit\\w64devkit\\bin\\c++.exe\" -IE:/AMLY/works/C++/cc-switch-trans/src -g -o CMakeFiles\\ccs-trans.dir\\src\\main.cpp.obj -c E:\\AMLY\\works\\C++\\cc-switch-trans\\src\\main.cpp",
+  "file": "E:/AMLY/works/C++/cc-switch-trans/src/main.cpp",
+  "output": "E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir/src/main.cpp.obj"
+},
+{
+  "directory": "E:/AMLY/works/C++/cc-switch-trans/build",
+  "command": "\"E:\\Program Files 2\\W64devkit\\w64devkit\\bin\\c++.exe\" -IE:/AMLY/works/C++/cc-switch-trans/src -g -o CMakeFiles\\ccs-trans.dir\\src\\config.cpp.obj -c E:\\AMLY\\works\\C++\\cc-switch-trans\\src\\config.cpp",
+  "file": "E:/AMLY/works/C++/cc-switch-trans/src/config.cpp",
+  "output": "E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir/src/config.cpp.obj"
+},
+{
+  "directory": "E:/AMLY/works/C++/cc-switch-trans/build",
+  "command": "\"E:\\Program Files 2\\W64devkit\\w64devkit\\bin\\c++.exe\" -IE:/AMLY/works/C++/cc-switch-trans/src -g -o CMakeFiles\\ccs-trans.dir\\src\\header_filter.cpp.obj -c E:\\AMLY\\works\\C++\\cc-switch-trans\\src\\header_filter.cpp",
+  "file": "E:/AMLY/works/C++/cc-switch-trans/src/header_filter.cpp",
+  "output": "E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir/src/header_filter.cpp.obj"
+},
+{
+  "directory": "E:/AMLY/works/C++/cc-switch-trans/build",
+  "command": "\"E:\\Program Files 2\\W64devkit\\w64devkit\\bin\\c++.exe\" -IE:/AMLY/works/C++/cc-switch-trans/src -g -o CMakeFiles\\ccs-trans.dir\\src\\logger.cpp.obj -c E:\\AMLY\\works\\C++\\cc-switch-trans\\src\\logger.cpp",
+  "file": "E:/AMLY/works/C++/cc-switch-trans/src/logger.cpp",
+  "output": "E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir/src/logger.cpp.obj"
+},
+{
+  "directory": "E:/AMLY/works/C++/cc-switch-trans/build",
+  "command": "\"E:\\Program Files 2\\W64devkit\\w64devkit\\bin\\c++.exe\" -IE:/AMLY/works/C++/cc-switch-trans/src -g -o CMakeFiles\\ccs-trans.dir\\src\\proxy.cpp.obj -c E:\\AMLY\\works\\C++\\cc-switch-trans\\src\\proxy.cpp",
+  "file": "E:/AMLY/works/C++/cc-switch-trans/src/proxy.cpp",
+  "output": "E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir/src/proxy.cpp.obj"
+},
+{
+  "directory": "E:/AMLY/works/C++/cc-switch-trans/build",
+  "command": "\"E:\\Program Files 2\\W64devkit\\w64devkit\\bin\\c++.exe\" -IE:/AMLY/works/C++/cc-switch-trans/src -g -o CMakeFiles\\ccs-trans.dir\\src\\request_id.cpp.obj -c E:\\AMLY\\works\\C++\\cc-switch-trans\\src\\request_id.cpp",
+  "file": "E:/AMLY/works/C++/cc-switch-trans/src/request_id.cpp",
+  "output": "E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir/src/request_id.cpp.obj"
+},
+{
+  "directory": "E:/AMLY/works/C++/cc-switch-trans/build",
+  "command": "\"E:\\Program Files 2\\W64devkit\\w64devkit\\bin\\c++.exe\" -IE:/AMLY/works/C++/cc-switch-trans/src -g -o CMakeFiles\\ccs-trans.dir\\src\\server.cpp.obj -c E:\\AMLY\\works\\C++\\cc-switch-trans\\src\\server.cpp",
+  "file": "E:/AMLY/works/C++/cc-switch-trans/src/server.cpp",
+  "output": "E:/AMLY/works/C++/cc-switch-trans/build/CMakeFiles/ccs-trans.dir/src/server.cpp.obj"
+}
+]

@@ -225,6 +225,62 @@ X-Api-Key
 - 客户端不会等上游完整结束后才收到内容。
 - 流式请求也能通过 `request_id` 查看完整日志。
 
+## 插入新阶段 8.5：usage查询请求支持
+
+目标：支持 Usage 查询请求的转发，直接转发就行，无需记入日志。
+
+参考请求体：
+({
+    request: {
+      url: "{{baseUrl}}/v1/usage",
+      method: "GET",
+      headers: { "Authorization": "Bearer {{apiKey}}" }
+    },
+    extractor: function(response) {
+      const remaining = response?.remaining ?? response?.quota?.remaining ?? response?.balance;
+      const unit = response?.unit ?? response?.quota?.unit ?? "USD";
+      return {
+        isValid: response?.is_active ?? response?.isValid ?? true,
+        remaining,
+        unit
+      };
+    }
+  })
+
+### 参考信息：
+脚本编写说明：
+配置格式：
+({
+  request: {
+    url: "{{baseUrl}}/api/usage",
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer {{apiKey}}",
+      "User-Agent": "cc-switch/1.0"
+    }
+  },
+  extractor: function(response) {
+    return {
+      isValid: !response.error,
+      remaining: response.balance,
+      unit: "USD"
+    };
+  }
+})
+extractor 返回格式（所有字段均为可选）：
+• isValid: 布尔值，套餐是否有效
+• invalidMessage: 字符串，失效原因说明（当 isValid 为 false 时显示）
+• remaining: 数字，剩余额度
+• unit: 字符串，单位（如 "USD"）
+• planName: 字符串，套餐名称
+• total: 数字，总额度
+• used: 数字，已用额度
+• extra: 字符串，扩展字段，可自由补充需要展示的文本
+💡 提示：
+• 变量 {{apiKey}} 和 {{baseUrl}} 会自动替换
+• extractor 函数在沙箱环境中执行，支持 ES2020+ 语法
+• 整个配置必须用 () 包裹，形成对象字面量表达式
+
 ## 阶段 9：错误处理完善
 
 目标：所有常见失败都返回明确的 OpenAI 风格错误。
