@@ -15,6 +15,7 @@
 #include <queue>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -406,7 +407,17 @@ std::string recv_request(SOCKET socket, std::size_t max_body_size) {
         buffer.append(temp, static_cast<std::size_t>(received));
     }
 
-    return buffer.substr(0, body_start + expected_body);
+    std::size_t actual_body_start = body_start;
+    constexpr std::string_view extra_separator = "\r\n\r\n";
+    if (expected_body > 0
+        && has_json_content_type(partial.headers)
+        && buffer.size() >= body_start + extra_separator.size()
+        && buffer.compare(body_start, extra_separator.size(), extra_separator) == 0
+        && buffer.size() >= body_start + extra_separator.size() + expected_body) {
+        actual_body_start += extra_separator.size();
+    }
+
+    return buffer.substr(0, body_start) + buffer.substr(actual_body_start, expected_body);
 }
 
 std::string peer_ip(sockaddr_storage& storage) {

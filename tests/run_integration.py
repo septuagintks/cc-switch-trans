@@ -32,6 +32,31 @@ def request(port, method, path, body=None, headers=None):
     return response.status, headers_out, data
 
 
+def raw_extra_separator_request(port, path, body):
+    encoded = body.encode("utf-8")
+    head = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(encoded)}\r\n"
+        "\r\n\r\n\r\n"
+    ).encode("ascii")
+
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(head + encoded)
+        chunks = []
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+
+    raw = b"".join(chunks)
+    header, _, data = raw.partition(b"\r\n\r\n")
+    status = int(header.split(b" ", 2)[1])
+    return status, data
+
+
 def assert_true(condition, message):
     if not condition:
         raise AssertionError(message)
@@ -122,6 +147,11 @@ def main():
         payload = json.loads(data)
         assert_true(status == 200, "responses json whitespace status")
         assert_true(payload["body"] == "{\"ok\":true}", "responses json whitespace trimmed")
+
+        status, data = raw_extra_separator_request(proxy_port, "/v1/responses", "{\"raw\":true}")
+        payload = json.loads(data)
+        assert_true(status == 200, "responses raw extra separator status")
+        assert_true(payload["body"] == "{\"raw\":true}", "responses raw extra separator body")
 
         status, _, data = request(proxy_port, "POST", "/v1/chat/completions", body="chat")
         payload = json.loads(data)
