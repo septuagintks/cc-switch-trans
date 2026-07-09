@@ -1,10 +1,24 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import sys
+import time
+from urllib.parse import parse_qs, urlparse
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _maybe_delay(self):
+        query = parse_qs(urlparse(self.path).query)
+        delay_values = query.get("delay_ms", [])
+        if not delay_values:
+            return
+        try:
+            delay = max(0, int(delay_values[0]))
+        except ValueError:
+            return
+        time.sleep(delay / 1000)
+
     def do_GET(self):
+        self._maybe_delay()
         payload = {
             "mock": True,
             "path": self.path,
@@ -17,6 +31,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(payload)
 
     def do_POST(self):
+        self._maybe_delay()
+        if parse_qs(urlparse(self.path).query).get("stream", [""])[0] == "sse":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            for index in range(3):
+                self.wfile.write(f"data: chunk-{index}\n\n".encode("utf-8"))
+                self.wfile.flush()
+                time.sleep(0.25)
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
+
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         payload = {

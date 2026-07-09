@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <sstream>
 #include <utility>
 
@@ -67,6 +68,13 @@ std::string trim(std::string value) {
                     return !is_space(static_cast<unsigned char>(ch));
                 }).base(),
         value.end());
+    return value;
+}
+
+std::string lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
     return value;
 }
 
@@ -160,6 +168,15 @@ Headers parse_raw_headers(const std::wstring& raw_headers) {
     return filter_response_headers(headers);
 }
 
+bool is_event_stream(const Headers& headers) {
+    for (const auto& [name, value] : headers) {
+        if (lower_copy(name) == "content-type" && lower_copy(value).find("text/event-stream") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string winhttp_error_message(const std::string& prefix) {
 #ifdef _WIN32
     const auto err = GetLastError();
@@ -248,11 +265,14 @@ int query_status_code(HINTERNET request) {
     return static_cast<int>(status);
 }
 
-std::string read_body(HINTERNET request) {
+std::string read_body(HINTERNET request, const std::function<bool(const std::string&)>& on_chunk = {}) {
     std::string body;
     while (true) {
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request, &available)) {
+            if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
+                throw ProxyError(504, "upstream_timeout", "upstream request timed out");
+            }
             throw ProxyError(502, "upstream_error", winhttp_error_message("failed to query upstream response data"));
         }
         if (available == 0) {
@@ -262,9 +282,15 @@ std::string read_body(HINTERNET request) {
         std::string chunk(available, '\0');
         DWORD read = 0;
         if (!WinHttpReadData(request, chunk.data(), available, &read)) {
+            if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
+                throw ProxyError(504, "upstream_timeout", "upstream request timed out");
+            }
             throw ProxyError(502, "upstream_error", winhttp_error_message("failed to read upstream response data"));
         }
         chunk.resize(read);
+        if (on_chunk && !on_chunk(chunk)) {
+            break;
+        }
         body += chunk;
     }
     return body;
@@ -291,9 +317,19 @@ Proxy::Proxy(AppConfig config)
     : config_(std::move(config)) {}
 
 HttpResponse Proxy::forward(const HttpRequest& request, const std::string& upstream_path) const {
+    return forward_streaming(request, upstream_path, {}, {});
+}
+
+HttpResponse Proxy::forward_streaming(
+    const HttpRequest& request,
+    const std::string& upstream_path,
+    const HeaderCallback& on_headers,
+    const ChunkCallback& on_chunk) const {
 #ifndef _WIN32
     (void)request;
     (void)upstream_path;
+    (void)on_headers;
+    (void)on_chunk;
     throw ProxyError(502, "upstream_error", "upstream forwarding is implemented with WinHTTP on Windows");
 #else
     const auto upstream = parse_url(config_.upstream_url);
@@ -353,7 +389,11 @@ HttpResponse Proxy::forward(const HttpRequest& request, const std::string& upstr
     HttpResponse response;
     response.status_code = query_status_code(upstream_request.get());
     response.headers = parse_raw_headers(query_raw_headers(upstream_request.get()));
-    response.body = read_body(upstream_request.get());
+    const bool streaming = is_event_stream(response.headers);
+    if (streaming && on_headers && !on_headers(response)) {
+        return response;
+    }
+    response.body = read_body(upstream_request.get(), streaming ? on_chunk : ChunkCallback{});
     return response;
 #endif
 }

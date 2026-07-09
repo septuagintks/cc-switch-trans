@@ -64,6 +64,25 @@ std::string timestamp() {
     return out.str();
 }
 
+int level_value(const std::string& level) {
+    if (level == "trace") {
+        return 0;
+    }
+    if (level == "debug") {
+        return 1;
+    }
+    if (level == "info") {
+        return 2;
+    }
+    if (level == "warn") {
+        return 3;
+    }
+    if (level == "error") {
+        return 4;
+    }
+    return 2;
+}
+
 } // namespace
 
 LogField field_string(std::string name, std::string value) {
@@ -111,6 +130,10 @@ void Logger::log(std::string level, std::string event, std::initializer_list<Log
 }
 
 void Logger::log(std::string level, std::string event, const std::vector<LogField>& fields) const {
+    if (level_value(level) < level_value(config_.log_level)) {
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     if (!file_) {
         return;

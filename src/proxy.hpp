@@ -4,6 +4,7 @@
 #include "http_types.hpp"
 
 #include <stdexcept>
+#include <functional>
 #include <string>
 
 namespace ccs {
@@ -22,9 +23,17 @@ private:
 
 class Proxy {
 public:
+    using HeaderCallback = std::function<bool(const HttpResponse&)>;
+    using ChunkCallback = std::function<bool(const std::string&)>;
+
     explicit Proxy(AppConfig config);
 
     HttpResponse forward(const HttpRequest& request, const std::string& upstream_path) const;
+    HttpResponse forward_streaming(
+        const HttpRequest& request,
+        const std::string& upstream_path,
+        const HeaderCallback& on_headers,
+        const ChunkCallback& on_chunk) const;
 
 private:
     AppConfig config_;

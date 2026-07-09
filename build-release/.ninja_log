@@ -1,0 +1,9 @@
+# ninja log v7
+7	836	8053355623504804	CMakeFiles/ccs-trans.dir/src/header_filter.cpp.obj	25ebbb00bb438a62
+4	918	8053355623469692	CMakeFiles/ccs-trans.dir/src/main.cpp.obj	f7d0860e90e56bc0
+12	1022	8053355623548568	CMakeFiles/ccs-trans.dir/src/request_id.cpp.obj	cf75443fc32fbb97
+6	1334	8053355623484809	CMakeFiles/ccs-trans.dir/src/config.cpp.obj	3827286943076c31
+9	1377	8053355623524804	CMakeFiles/ccs-trans.dir/src/logger.cpp.obj	87c8a95e85bdcc5b
+10	2048	8053355623538524	CMakeFiles/ccs-trans.dir/src/proxy.cpp.obj	633ee571851cabe3
+14	3340	8053355623568570	CMakeFiles/ccs-trans.dir/src/server.cpp.obj	3440d92bb6b547f3
+3341	3597	8053355656833650	ccs-trans.exe	b8c031ad773c4bd7
