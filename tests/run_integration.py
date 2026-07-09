@@ -112,6 +112,17 @@ def main():
         assert_true(payload["path"] == "/v1/responses/?trace=no-slash", "responses no-slash upstream path")
         assert_true(payload["body"] == "noslash", "responses no-slash body")
 
+        status, _, data = request(
+            proxy_port,
+            "POST",
+            "/v1/responses",
+            body="\r\n\r\n{\"ok\":true}",
+            headers={"Content-Type": "application/json"},
+        )
+        payload = json.loads(data)
+        assert_true(status == 200, "responses json whitespace status")
+        assert_true(payload["body"] == "{\"ok\":true}", "responses json whitespace trimmed")
+
         status, _, data = request(proxy_port, "POST", "/v1/chat/completions", body="chat")
         payload = json.loads(data)
         assert_true(status == 200, "chat status")

@@ -206,6 +206,27 @@ std::size_t content_length(const Headers& headers) {
     return 0;
 }
 
+bool has_json_content_type(const Headers& headers) {
+    for (const auto& [name, value] : headers) {
+        if (lower_copy(name) == "content-type" && lower_copy(value).find("application/json") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::size_t leading_json_whitespace(const std::string& body) {
+    std::size_t count = 0;
+    while (count < body.size()) {
+        const char ch = body[count];
+        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+            break;
+        }
+        ++count;
+    }
+    return count;
+}
+
 void split_target(HttpRequest& request) {
     const auto pos = request.target.find('?');
     if (pos == std::string::npos) {
@@ -474,6 +495,21 @@ bool Server::process_raw_request_to_sender(
         };
         append_body_fields(request_fields, config_, request.body);
         logger_.log("info", "request_received", request_fields);
+
+        const bool json_proxy_request = (is_responses_path(config_, request.path) || is_chat_path(config_, request.path))
+            && request.method == "POST"
+            && has_json_content_type(request.headers);
+        if (json_proxy_request) {
+            const auto trim_bytes = leading_json_whitespace(request.body);
+            if (trim_bytes > 0 && trim_bytes < request.body.size()) {
+                request.body.erase(0, trim_bytes);
+                logger_.log("debug", "request_body_normalized", {
+                    field_string("request_id", request.request_id),
+                    field_number("trimmed_leading_bytes", static_cast<long long>(trim_bytes)),
+                    field_number("body_size", static_cast<long long>(request.body.size())),
+                });
+            }
+        }
 
         const bool can_proxy_stream = (is_responses_path(config_, request.path) || is_chat_path(config_, request.path))
             && request.method == "POST";
