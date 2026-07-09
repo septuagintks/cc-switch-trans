@@ -16,6 +16,8 @@ public:
     std::string process_raw_request(const std::string& raw, const std::string& client_ip) const;
 
 private:
+    HttpResponse handle_usage_request(const HttpRequest& request) const;
+
     AppConfig config_;
     Proxy proxy_;
     mutable Logger logger_;

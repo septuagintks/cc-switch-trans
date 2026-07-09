@@ -4,6 +4,18 @@ import sys
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        payload = {
+            "mock": True,
+            "path": self.path,
+            "method": "GET",
+            "headers": dict(self.headers.items()),
+            "remaining": 12.5,
+            "unit": "USD",
+            "is_active": True,
+        }
+        self._send_json(payload)
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length).decode("utf-8", errors="replace")
@@ -14,6 +26,9 @@ class Handler(BaseHTTPRequestHandler):
             "headers": dict(self.headers.items()),
             "body": body,
         }
+        self._send_json(payload)
+
+    def _send_json(self, payload):
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

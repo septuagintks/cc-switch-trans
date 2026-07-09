@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace ccs {
 
@@ -77,6 +78,10 @@ LogField field_bool(std::string name, bool value) {
     return LogField{std::move(name), value ? "true" : "false", false};
 }
 
+LogField field_raw(std::string name, std::string raw_json) {
+    return LogField{std::move(name), std::move(raw_json), false};
+}
+
 Logger::Logger(AppConfig config)
     : config_(std::move(config)) {}
 
@@ -102,6 +107,10 @@ bool Logger::open(std::string& error) {
 }
 
 void Logger::log(std::string level, std::string event, std::initializer_list<LogField> fields) const {
+    log(std::move(level), std::move(event), std::vector<LogField>(fields));
+}
+
+void Logger::log(std::string level, std::string event, const std::vector<LogField>& fields) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!file_) {
         return;

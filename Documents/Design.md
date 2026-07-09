@@ -15,6 +15,12 @@ http://127.0.0.1:15723
 - Responses API: `POST /v1/responses/`
 - Chat Completions API: `POST /v1/chat/completions`
 
+另外支持 Usage 查询请求：
+
+- Usage API: `GET /v1/usage`
+
+Usage 请求只做透明转发，不写入请求链路日志。
+
 工具必须完整记录请求、转发、响应和错误日志，并允许通过命令行参数修改日志路径。
 
 ## 命令行接口
@@ -38,8 +44,10 @@ ccs-trans \
 | `--upstream-url` | 无，必填 | 上游服务基础地址，例如 `https://api.example.com` |
 | `--responses-path` | `/v1/responses/` | 本地 Responses API 路径 |
 | `--chat-path` | `/v1/chat/completions` | 本地 Chat Completions API 路径 |
+| `--usage-path` | `/v1/usage` | 本地 Usage API 路径 |
 | `--upstream-responses-path` | 同 `--responses-path` | 上游 Responses API 路径 |
 | `--upstream-chat-path` | 同 `--chat-path` | 上游 Chat Completions API 路径 |
+| `--upstream-usage-path` | 同 `--usage-path` | 上游 Usage API 路径 |
 | `--log-path` | `./logs/ccs-trans.log` | 日志文件路径 |
 | `--log-level` | `info` | 日志级别：`trace`、`debug`、`info`、`warn`、`error` |
 | `--log-body` | `true` | 是否记录完整请求体和响应体 |
@@ -58,6 +66,7 @@ ccs-trans --upstream-url https://example.com
 ```text
 POST http://127.0.0.1:15723/v1/responses/
 POST http://127.0.0.1:15723/v1/chat/completions
+GET  http://127.0.0.1:15723/v1/usage
 ```
 
 会分别转发到：
@@ -65,6 +74,7 @@ POST http://127.0.0.1:15723/v1/chat/completions
 ```text
 POST https://example.com/v1/responses/
 POST https://example.com/v1/chat/completions
+GET  https://example.com/v1/usage
 ```
 
 ## 路由设计
@@ -103,6 +113,27 @@ POST /v1/chat/completions
 ```text
 {upstream-url}{upstream-chat-path}{query-string}
 ```
+
+### Usage API
+
+本地入口：
+
+```text
+GET /v1/usage
+```
+
+处理规则：
+
+1. 读取完整 HTTP 请求方法、路径、查询参数和请求头。
+2. 验证方法必须为 `GET`。
+3. 将请求发送到：
+
+```text
+{upstream-url}{upstream-usage-path}{query-string}
+```
+
+4. 将上游状态码、响应头和响应体返回给请求来源。
+5. 不记录 `request_received`、`upstream_request`、`upstream_response`、`response_sent` 和 `request_error` 等请求链路日志。
 
 ### 不支持的路径
 
@@ -328,8 +359,10 @@ struct AppConfig {
     std::string upstream_url;
     std::string responses_path = "/v1/responses/";
     std::string chat_path = "/v1/chat/completions";
+    std::string usage_path = "/v1/usage";
     std::string upstream_responses_path = "/v1/responses/";
     std::string upstream_chat_path = "/v1/chat/completions";
+    std::string upstream_usage_path = "/v1/usage";
 
     std::filesystem::path log_path = "./logs/ccs-trans.log";
     std::string log_level = "info";
@@ -361,7 +394,7 @@ src/
 职责：
 
 1. 监听指定 host 和 port。
-2. 注册 `/v1/responses/` 与 `/v1/chat/completions`。
+2. 注册 `/v1/responses/`、`/v1/chat/completions` 与 `/v1/usage`。
 3. 为每个请求生成 `request_id`。
 4. 调用 `Proxy` 完成上游转发。
 5. 处理 404、405、413 等本地错误。
@@ -408,9 +441,10 @@ client
 2. 可以通过参数修改监听端口。
 3. `POST /v1/responses/` 可以转发 OpenAI Responses 格式请求。
 4. `POST /v1/chat/completions` 可以转发 OpenAI Chat Completions 格式请求。
-5. 两个接口可以在同一端口并行处理多个请求。
-6. 可以通过参数指定上游 URL。
-7. 可以通过参数修改日志路径。
-8. 日志包含请求、上游请求、上游响应、返回响应和错误信息。
-9. 普通 JSON 响应与 SSE 流式响应都能正确转发。
-10. 上游异常时返回明确的 OpenAI 风格错误 JSON。
+5. `GET /v1/usage` 可以转发 Usage 查询请求，且不记录请求链路日志。
+6. 两个主要接口可以在同一端口并行处理多个请求。
+7. 可以通过参数指定上游 URL。
+8. 可以通过参数修改日志路径。
+9. 日志包含请求、上游请求、上游响应、返回响应和错误信息。
+10. 普通 JSON 响应与 SSE 流式响应都能正确转发。
+11. 上游异常时返回明确的 OpenAI 风格错误 JSON。

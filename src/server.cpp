@@ -1,14 +1,24 @@
 #include "server.hpp"
 
+#include "request_id.hpp"
+
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cctype>
 #include <climits>
+#include <condition_variable>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
+#include <mutex>
+#include <queue>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -65,6 +75,99 @@ std::string reason_phrase(int status_code) {
 
 std::string error_json(const std::string& message, const std::string& type) {
     return "{\"error\":{\"message\":\"" + message + "\",\"type\":\"" + type + "\"}}";
+}
+
+std::string json_escape(const std::string& value) {
+    std::ostringstream out;
+    for (const unsigned char ch : value) {
+        switch (ch) {
+        case '\\':
+            out << "\\\\";
+            break;
+        case '"':
+            out << "\\\"";
+            break;
+        case '\b':
+            out << "\\b";
+            break;
+        case '\f':
+            out << "\\f";
+            break;
+        case '\n':
+            out << "\\n";
+            break;
+        case '\r':
+            out << "\\r";
+            break;
+        case '\t':
+            out << "\\t";
+            break;
+        default:
+            if (ch < 0x20) {
+                out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch);
+            } else {
+                out << static_cast<char>(ch);
+            }
+            break;
+        }
+    }
+    return out.str();
+}
+
+bool is_sensitive_header(const std::string& name) {
+    static const std::unordered_set<std::string> sensitive = {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+    };
+    return sensitive.count(lower_copy(name)) != 0;
+}
+
+std::string headers_to_json(const Headers& headers, bool redact_sensitive) {
+    std::ostringstream out;
+    out << "{";
+    bool first = true;
+    for (const auto& [name, value] : headers) {
+        if (!first) {
+            out << ",";
+        }
+        first = false;
+        out << "\"" << json_escape(name) << "\":";
+        out << "\"" << json_escape(redact_sensitive && is_sensitive_header(name) ? "***" : value) << "\"";
+    }
+    out << "}";
+    return out.str();
+}
+
+std::string limited_body(const std::string& body, std::size_t limit) {
+    if (body.size() <= limit) {
+        return body;
+    }
+    return body.substr(0, limit);
+}
+
+void append_body_fields(std::vector<LogField>& fields, const AppConfig& config, const std::string& body) {
+    fields.push_back(field_number("body_size", static_cast<long long>(body.size())));
+    if (!config.log_body) {
+        return;
+    }
+    fields.push_back(field_string("body", limited_body(body, config.body_log_limit)));
+    fields.push_back(field_bool("body_truncated", body.size() > config.body_log_limit));
+}
+
+std::string api_type_for_path(const AppConfig& config, const std::string& path) {
+    if (path == config.responses_path) {
+        return "responses";
+    }
+    if (path == config.chat_path) {
+        return "chat_completions";
+    }
+    if (path == config.usage_path) {
+        return "usage";
+    }
+    return "unknown";
 }
 
 std::size_t content_length(const Headers& headers) {
@@ -162,6 +265,24 @@ std::string build_response(HttpResponse response) {
 
 #ifdef _WIN32
 
+struct ClientJob {
+    SOCKET client = INVALID_SOCKET;
+    std::string client_ip;
+};
+
+std::atomic_bool& shutdown_requested() {
+    static std::atomic_bool value{false};
+    return value;
+}
+
+BOOL WINAPI console_handler(DWORD event) {
+    if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT || event == CTRL_CLOSE_EVENT) {
+        shutdown_requested().store(true, std::memory_order_relaxed);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 class WinsockRuntime {
 public:
     WinsockRuntime() {
@@ -248,9 +369,7 @@ std::string peer_ip(sockaddr_storage& storage) {
 void handle_client(SOCKET client, const Server* server, std::size_t max_body_size, std::string client_ip) {
     try {
         const auto raw = recv_request(client, max_body_size);
-        const auto request = parse_request(raw, client_ip);
-        const auto response = build_response(server->handle_request(request));
-        send_all(client, response);
+        send_all(client, server->process_raw_request(raw, client_ip));
     } catch (const std::exception& ex) {
         const std::string message = std::strcmp(ex.what(), "request body too large") == 0
             ? "request body too large"
@@ -272,7 +391,83 @@ void handle_client(SOCKET client, const Server* server, std::size_t max_body_siz
 
 Server::Server(AppConfig config)
     : config_(config)
-    , proxy_(config_) {}
+    , proxy_(config_)
+    , logger_(config_) {}
+
+std::string Server::process_raw_request(const std::string& raw, const std::string& client_ip) const {
+    const auto request_id = make_request_id();
+    const auto started = std::chrono::steady_clock::now();
+
+    try {
+        auto request = parse_request(raw, client_ip);
+        if (request.path == config_.usage_path) {
+            return build_response(handle_usage_request(request));
+        }
+
+        request.request_id = request_id;
+        std::vector<LogField> request_fields = {
+            field_string("request_id", request.request_id),
+            field_string("api_type", api_type_for_path(config_, request.path)),
+            field_string("method", request.method),
+            field_string("local_path", request.path),
+            field_string("query", request.query),
+            field_string("client_ip", request.client_ip),
+            field_raw("headers", headers_to_json(request.headers, config_.redact_sensitive)),
+        };
+        append_body_fields(request_fields, config_, request.body);
+        logger_.log("info", "request_received", request_fields);
+
+        auto response = handle_request(request);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started);
+        std::vector<LogField> sent_fields = {
+            field_string("request_id", request.request_id),
+            field_number("status_code", response.status_code),
+            field_number("duration_ms", elapsed.count()),
+            field_raw("headers", headers_to_json(response.headers, config_.redact_sensitive)),
+        };
+        append_body_fields(sent_fields, config_, response.body);
+        logger_.log("info", "response_sent", sent_fields);
+
+        return build_response(std::move(response));
+    } catch (const std::exception& ex) {
+        logger_.log("error", "request_error", {
+            field_string("request_id", request_id),
+            field_string("message", ex.what()),
+        });
+
+        HttpResponse response;
+        response.status_code = 500;
+        response.reason = reason_phrase(500);
+        response.body = error_json("internal server error", "server_error");
+        return build_response(response);
+    }
+}
+
+HttpResponse Server::handle_usage_request(const HttpRequest& request) const {
+    if (request.method != "GET") {
+        HttpResponse response;
+        response.status_code = 405;
+        response.reason = reason_phrase(405);
+        response.headers.emplace_back("Allow", "GET");
+        response.body = error_json("method not allowed", "invalid_request_error");
+        return response;
+    }
+
+    try {
+        auto response = proxy_.forward(request, config_.upstream_usage_path);
+        if (response.reason.empty()) {
+            response.reason = reason_phrase(response.status_code);
+        }
+        return response;
+    } catch (const ProxyError& ex) {
+        HttpResponse response;
+        response.status_code = ex.status_code();
+        response.reason = reason_phrase(response.status_code);
+        response.body = error_json(ex.what(), ex.type());
+        return response;
+    }
+}
 
 HttpResponse Server::handle_request(const HttpRequest& request) const {
     if (request.path != config_.responses_path && request.path != config_.chat_path) {
@@ -296,12 +491,37 @@ HttpResponse Server::handle_request(const HttpRequest& request) const {
         const auto upstream_path = request.path == config_.responses_path
             ? config_.upstream_responses_path
             : config_.upstream_chat_path;
+        std::vector<LogField> upstream_request_fields = {
+            field_string("request_id", request.request_id),
+            field_string("method", request.method),
+            field_string("upstream_url", config_.upstream_url),
+            field_string("upstream_path", upstream_path),
+            field_string("query", request.query),
+            field_raw("headers", headers_to_json(request.headers, config_.redact_sensitive)),
+        };
+        append_body_fields(upstream_request_fields, config_, request.body);
+        logger_.log("info", "upstream_request", upstream_request_fields);
+
         auto response = proxy_.forward(request, upstream_path);
         if (response.reason.empty()) {
             response.reason = reason_phrase(response.status_code);
         }
+        std::vector<LogField> upstream_response_fields = {
+            field_string("request_id", request.request_id),
+            field_number("status_code", response.status_code),
+            field_bool("streaming", false),
+            field_raw("headers", headers_to_json(response.headers, config_.redact_sensitive)),
+        };
+        append_body_fields(upstream_response_fields, config_, response.body);
+        logger_.log("info", "upstream_response", upstream_response_fields);
         return response;
     } catch (const ProxyError& ex) {
+        logger_.log("error", "request_error", {
+            field_string("request_id", request.request_id),
+            field_string("message", ex.what()),
+            field_string("type", ex.type()),
+            field_number("status_code", ex.status_code()),
+        });
         HttpResponse response;
         response.status_code = ex.status_code();
         response.reason = reason_phrase(response.status_code);
@@ -317,6 +537,13 @@ int Server::run() {
 #else
     try {
         WinsockRuntime winsock;
+        std::string log_error;
+        if (!logger_.open(log_error)) {
+            std::cerr << log_error << "\n";
+            return 1;
+        }
+        shutdown_requested().store(false, std::memory_order_relaxed);
+        SetConsoleCtrlHandler(console_handler, TRUE);
 
         addrinfo hints{};
         hints.ai_family = AF_INET;
@@ -359,22 +586,87 @@ int Server::run() {
         if (listen(listen_socket, kBacklog) == SOCKET_ERROR) {
             std::cerr << "failed to listen on " << config_.listen_host << ":" << config_.listen_port << "\n";
             close_socket(listen_socket);
+            SetConsoleCtrlHandler(console_handler, FALSE);
             return 1;
         }
 
-        std::cout << "ccs-trans listening on http://" << config_.listen_host << ":" << config_.listen_port << "\n";
+        const int accept_timeout_ms = 500;
+        setsockopt(listen_socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&accept_timeout_ms), sizeof(accept_timeout_ms));
 
-        while (true) {
+        std::cout << "ccs-trans listening on http://" << config_.listen_host << ":" << config_.listen_port << "\n";
+        logger_.log("info", "server_start", {
+            field_string("listen_host", config_.listen_host),
+            field_number("listen_port", config_.listen_port),
+            field_string("upstream_url", config_.upstream_url),
+            field_string("log_path", config_.log_path.string()),
+            field_number("concurrency", static_cast<long long>(config_.concurrency)),
+        });
+
+        std::mutex queue_mutex;
+        std::condition_variable queue_cv;
+        std::queue<ClientJob> client_queue;
+        bool accepting_done = false;
+
+        std::vector<std::thread> workers;
+        workers.reserve(config_.concurrency);
+        for (std::size_t i = 0; i < config_.concurrency; ++i) {
+            workers.emplace_back([&]() {
+                while (true) {
+                    ClientJob job;
+                    {
+                        std::unique_lock<std::mutex> lock(queue_mutex);
+                        queue_cv.wait(lock, [&]() {
+                            return accepting_done || !client_queue.empty();
+                        });
+                        if (client_queue.empty()) {
+                            return;
+                        }
+                        job = std::move(client_queue.front());
+                        client_queue.pop();
+                    }
+                    handle_client(job.client, this, config_.max_body_size, std::move(job.client_ip));
+                }
+            });
+        }
+
+        while (!shutdown_requested().load(std::memory_order_relaxed)) {
             sockaddr_storage client_addr{};
             int client_addr_len = sizeof(client_addr);
             SOCKET client = accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_addr_len);
             if (client == INVALID_SOCKET) {
+                const int error = WSAGetLastError();
+                if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) {
+                    continue;
+                }
                 continue;
             }
-            std::thread(handle_client, client, this, config_.max_body_size, peer_ip(client_addr)).detach();
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                client_queue.push(ClientJob{client, peer_ip(client_addr)});
+            }
+            queue_cv.notify_one();
         }
+
+        close_socket(listen_socket);
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            accepting_done = true;
+        }
+        queue_cv.notify_all();
+        for (auto& worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        logger_.log("info", "server_stop", {
+            field_string("listen_host", config_.listen_host),
+            field_number("listen_port", config_.listen_port),
+        });
+        SetConsoleCtrlHandler(console_handler, FALSE);
+        return 0;
     } catch (const std::exception& ex) {
         std::cerr << "server failed: " << ex.what() << "\n";
+        SetConsoleCtrlHandler(console_handler, FALSE);
         return 1;
     }
 #endif

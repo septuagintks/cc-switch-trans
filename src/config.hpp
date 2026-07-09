@@ -14,8 +14,10 @@ struct AppConfig {
     std::string upstream_url;
     std::string responses_path = "/v1/responses/";
     std::string chat_path = "/v1/chat/completions";
+    std::string usage_path = "/v1/usage";
     std::string upstream_responses_path = "/v1/responses/";
     std::string upstream_chat_path = "/v1/chat/completions";
+    std::string upstream_usage_path = "/v1/usage";
     std::filesystem::path log_path = "./logs/ccs-trans.log";
     std::string log_level = "info";
     bool log_body = true;

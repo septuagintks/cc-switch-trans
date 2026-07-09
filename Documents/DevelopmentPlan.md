@@ -59,8 +59,10 @@ spdlog       日志
 --upstream-url
 --responses-path
 --chat-path
+--usage-path
 --upstream-responses-path
 --upstream-chat-path
+--upstream-usage-path
 --log-path
 --log-level
 --log-body
@@ -118,18 +120,22 @@ POST /v1/chat/completions
 ```text
 {upstream-url}{upstream-responses-path}
 {upstream-url}{upstream-chat-path}
+{upstream-url}{upstream-usage-path}
 ```
 
 3. 透传查询参数。
 4. 复制请求头，过滤 `Host`、`Content-Length`、`Connection`、`Transfer-Encoding`。
 5. 透传请求体。
 6. 将上游状态码、响应头和响应体返回给客户端。
-7. 实现上游不可达和超时错误。
+7. 支持 `GET /v1/usage` 透明转发。
+8. 实现上游不可达和超时错误。
 
 阶段完成标准：
 
 - 本地 Responses 请求可以转发到指定上游。
 - 本地 Chat Completions 请求可以转发到指定上游。
+- 本地 Usage 查询请求可以转发到指定上游。
+- Usage 查询请求不写请求链路日志。
 - 上游返回的 JSON、状态码和主要响应头能传回调用方。
 
 ## 阶段 5：请求 ID 和基础日志
@@ -225,45 +231,23 @@ X-Api-Key
 - 客户端不会等上游完整结束后才收到内容。
 - 流式请求也能通过 `request_id` 查看完整日志。
 
-## 插入新阶段 8.5：usage查询请求支持
+## Usage 查询参考信息
 
-目标：支持 Usage 查询请求的转发，直接转发就行，无需记入日志。
-
-参考请求体：
-({
-    request: {
-      url: "{{baseUrl}}/v1/usage",
-      method: "GET",
-      headers: { "Authorization": "Bearer {{apiKey}}" }
-    },
-    extractor: function(response) {
-      const remaining = response?.remaining ?? response?.quota?.remaining ?? response?.balance;
-      const unit = response?.unit ?? response?.quota?.unit ?? "USD";
-      return {
-        isValid: response?.is_active ?? response?.isValid ?? true,
-        remaining,
-        unit
-      };
-    }
-  })
-
-### 参考信息：
 脚本编写说明：
 配置格式：
 ({
   request: {
-    url: "{{baseUrl}}/api/usage",
-    method: "POST",
-    headers: {
-      "Authorization": "Bearer {{apiKey}}",
-      "User-Agent": "cc-switch/1.0"
-    }
+    url: "{{baseUrl}}/v1/usage",
+    method: "GET",
+    headers: { "Authorization": "Bearer {{apiKey}}" }
   },
   extractor: function(response) {
+    const remaining = response?.remaining ?? response?.quota?.remaining ?? response?.balance;
+    const unit = response?.unit ?? response?.quota?.unit ?? "USD";
     return {
-      isValid: !response.error,
-      remaining: response.balance,
-      unit: "USD"
+      isValid: response?.is_active ?? response?.isValid ?? true,
+      remaining,
+      unit
     };
   }
 })

@@ -48,8 +48,10 @@ bool needs_value(const std::string& arg) {
         "--upstream-url",
         "--responses-path",
         "--chat-path",
+        "--usage-path",
         "--upstream-responses-path",
         "--upstream-chat-path",
+        "--upstream-usage-path",
         "--log-path",
         "--log-level",
         "--log-body",
@@ -122,6 +124,14 @@ bool validate_config(const AppConfig& config, std::string& error) {
         error = "--upstream-chat-path must start with /";
         return false;
     }
+    if (config.usage_path.empty() || config.usage_path.front() != '/') {
+        error = "--usage-path must start with /";
+        return false;
+    }
+    if (config.upstream_usage_path.empty() || config.upstream_usage_path.front() != '/') {
+        error = "--upstream-usage-path must start with /";
+        return false;
+    }
 
     return true;
 }
@@ -171,10 +181,14 @@ ParseResult parse_args(int argc, char** argv) {
                 result.config.responses_path = value;
             } else if (arg == "--chat-path") {
                 result.config.chat_path = value;
+            } else if (arg == "--usage-path") {
+                result.config.usage_path = value;
             } else if (arg == "--upstream-responses-path") {
                 result.config.upstream_responses_path = value;
             } else if (arg == "--upstream-chat-path") {
                 result.config.upstream_chat_path = value;
+            } else if (arg == "--upstream-usage-path") {
+                result.config.upstream_usage_path = value;
             } else if (arg == "--log-path") {
                 result.config.log_path = value;
             } else if (arg == "--log-level") {
@@ -249,8 +263,10 @@ void print_help(std::ostream& os) {
         << "  --upstream-url <url>              Upstream base URL (required)\n"
         << "  --responses-path <path>           Local Responses path (default: /v1/responses/)\n"
         << "  --chat-path <path>                Local Chat Completions path (default: /v1/chat/completions)\n"
+        << "  --usage-path <path>               Local Usage path (default: /v1/usage)\n"
         << "  --upstream-responses-path <path>  Upstream Responses path (default: /v1/responses/)\n"
         << "  --upstream-chat-path <path>       Upstream Chat Completions path (default: /v1/chat/completions)\n"
+        << "  --upstream-usage-path <path>      Upstream Usage path (default: /v1/usage)\n"
         << "  --log-path <path>                 Log file path (default: ./logs/ccs-trans.log)\n"
         << "  --log-level <level>               trace, debug, info, warn, error (default: info)\n"
         << "  --log-body <true|false>           Write request/response bodies (default: true)\n"
@@ -274,8 +290,10 @@ void print_config_summary(std::ostream& os, const AppConfig& config) {
         << "  upstream_url: " << config.upstream_url << "\n"
         << "  responses_path: " << config.responses_path << "\n"
         << "  chat_path: " << config.chat_path << "\n"
+        << "  usage_path: " << config.usage_path << "\n"
         << "  upstream_responses_path: " << config.upstream_responses_path << "\n"
         << "  upstream_chat_path: " << config.upstream_chat_path << "\n"
+        << "  upstream_usage_path: " << config.upstream_usage_path << "\n"
         << "  log_path: " << config.log_path.string() << "\n"
         << "  log_level: " << config.log_level << "\n"
         << "  log_body: " << (config.log_body ? "true" : "false") << "\n"
