@@ -20,6 +20,8 @@ class Metrics:
             self.max_active_requests = 0
             self.chunks_sent = 0
             self.bytes_sent = 0
+            self.usage_requests_started = 0
+            self.usage_requests_completed = 0
 
     def start_request(self):
         with self._lock:
@@ -40,6 +42,14 @@ class Metrics:
             self.chunks_sent += 1
             self.bytes_sent += size
 
+    def usage_started(self):
+        with self._lock:
+            self.usage_requests_started += 1
+
+    def usage_completed(self):
+        with self._lock:
+            self.usage_requests_completed += 1
+
     def snapshot(self):
         with self._lock:
             return {
@@ -50,6 +60,8 @@ class Metrics:
                 "max_active_requests": self.max_active_requests,
                 "chunks_sent": self.chunks_sent,
                 "bytes_sent": self.bytes_sent,
+                "usage_requests_started": self.usage_requests_started,
+                "usage_requests_completed": self.usage_requests_completed,
             }
 
 
@@ -85,6 +97,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/benchmark/metrics":
             self._send_json(self.server.metrics.snapshot())
+            return
+        if parsed.path == "/v1/usage":
+            self.server.metrics.usage_started()
+            self._send_json({"remaining": 100.0})
+            self.server.metrics.usage_completed()
             return
         self.send_error(404)
 

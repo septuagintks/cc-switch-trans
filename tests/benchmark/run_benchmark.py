@@ -51,6 +51,21 @@ PROFILES = {
         "chunk_interval_ms": 50,
         "first_byte_delay_ms": 20,
     },
+    "mixed-16": {
+        "mode": "sse",
+        "mixed": True,
+        "concurrency": 16,
+        "request_count": 16,
+        "request_body_size": 256,
+        "chunk_count": 120,
+        "chunk_size": 1024,
+        "chunk_interval_ms": 50,
+        "first_byte_delay_ms": 20,
+        "usage_requests_per_endpoint": 12,
+        "usage_interval_ms": 100,
+        "max_usage_latency_ms": 1000,
+        "max_endpoint_queue_wait_ms": 1000,
+    },
     "stress-50": {
         "mode": "sse",
         "concurrency": 50,
@@ -223,7 +238,33 @@ def request_once(port, path, body, barrier, timeout):
             connection.close()
 
 
-def run_requests(port, profile):
+def usage_once(port, endpoint):
+    connection = None
+    try:
+        started = time.perf_counter_ns()
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request(
+            "GET",
+            f"/v1/usage?endpoint={endpoint}",
+            headers={"Authorization": "Bearer benchmark-synthetic", "Connection": "close"},
+        )
+        response = connection.getresponse()
+        response.read()
+        ended = time.perf_counter_ns()
+        return {
+            "status": response.status,
+            "bytes": 0,
+            "ttfb_ms": (ended - started) / 1_000_000,
+            "total_ms": (ended - started) / 1_000_000,
+        }
+    except Exception as ex:
+        return {"status": None, "bytes": 0, "error": f"{type(ex).__name__}: {ex}"}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def request_path(profile, local_path):
     query = {"mode": profile["mode"], "first_byte_delay_ms": profile["first_byte_delay_ms"]}
     if profile["mode"] == "sse":
         query.update(
@@ -235,7 +276,11 @@ def run_requests(port, profile):
         )
     else:
         query["response_bytes"] = profile["response_bytes"]
-    path = "/v1/responses?" + urlencode(query)
+    return local_path + "?" + urlencode(query)
+
+
+def run_requests(port, profile, local_path="/v1/responses"):
+    path = request_path(profile, local_path)
     body = synthetic_body(profile["request_body_size"])
     request_count = profile["request_count"]
     concurrency = min(profile["concurrency"], request_count)
@@ -255,6 +300,84 @@ def run_requests(port, profile):
                     barrier = threading.Barrier(min(concurrency, request_count - index - 1))
     wall_seconds = time.monotonic() - started
     return summarize(samples, wall_seconds)
+
+
+def run_mixed_requests(responses_port, chat_port, profile):
+    body = synthetic_body(profile["request_body_size"])
+    stream_count = profile["request_count"]
+    responses_count = stream_count // 2
+    chat_count = stream_count - responses_count
+    barrier = threading.Barrier(stream_count)
+    timeout = max(30, profile["chunk_count"] * profile["chunk_interval_ms"] / 1000 + 20)
+    response_path = request_path(profile, "/v1/responses")
+    chat_path = request_path(profile, "/v1/chat/completions")
+    usage_results = {"responses": [], "chat": []}
+    completed_while_streaming = {"responses": 0, "chat": 0}
+
+    started = time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=stream_count) as stream_executor:
+        stream_futures = [
+            stream_executor.submit(request_once, responses_port, response_path, body, barrier, timeout)
+            for _ in range(responses_count)
+        ] + [
+            stream_executor.submit(request_once, chat_port, chat_path, body, barrier, timeout)
+            for _ in range(chat_count)
+        ]
+        time.sleep(0.2)
+
+        def run_usage(endpoint, port):
+            for _ in range(profile["usage_requests_per_endpoint"]):
+                sample = usage_once(port, endpoint)
+                usage_results[endpoint].append(sample)
+                if any(not future.done() for future in stream_futures):
+                    completed_while_streaming[endpoint] += 1
+                time.sleep(profile["usage_interval_ms"] / 1000)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as usage_executor:
+            usage_futures = [
+                usage_executor.submit(run_usage, "responses", responses_port),
+                usage_executor.submit(run_usage, "chat", chat_port),
+            ]
+            for future in usage_futures:
+                future.result()
+
+        stream_samples = [future.result() for future in stream_futures]
+
+    wall_seconds = time.monotonic() - started
+    return {
+        "streams": summarize(stream_samples, wall_seconds),
+        "usage": {
+            endpoint: {
+                **summarize(samples, wall_seconds),
+                "completed_while_streaming": completed_while_streaming[endpoint],
+            }
+            for endpoint, samples in usage_results.items()
+        },
+    }
+
+
+def validate_mixed_result(result, runtime_metrics, profile):
+    for endpoint in ("responses", "chat"):
+        usage = result["usage"][endpoint]
+        if usage["failed"] != 0 or usage["successful"] != profile["usage_requests_per_endpoint"]:
+            raise RuntimeError(f"mixed-16 {endpoint} Usage failed: {usage}")
+        if usage["completed_while_streaming"] == 0:
+            raise RuntimeError(f"mixed-16 {endpoint} Usage waited for all SSE streams")
+        if usage["total_ms"]["p95"] > profile["max_usage_latency_ms"]:
+            raise RuntimeError(f"mixed-16 {endpoint} Usage p95 exceeded bound: {usage}")
+    if result["streams"]["failed"] != 0:
+        raise RuntimeError(f"mixed-16 stream failure: {result['streams']}")
+    if runtime_metrics is None:
+        raise RuntimeError("mixed-16 requires runtime metrics")
+    max_wait_us = profile["max_endpoint_queue_wait_ms"] * 1000
+    for endpoint in ("responses", "chat"):
+        wait = runtime_metrics.get(f"{endpoint}_max_connection_queue_wait_us", 0)
+        if wait > max_wait_us:
+            raise RuntimeError(f"mixed-16 {endpoint} queue wait exceeded bound: {wait} us")
+    if runtime_metrics.get("log_writer_failures", 0) != 0:
+        raise RuntimeError("mixed-16 observed a logger writer failure")
+    if runtime_metrics.get("log_backpressure_count", 0) != 0:
+        raise RuntimeError("mixed-16 observed logger backpressure under normal load")
 
 
 def post_json(port, path):
@@ -536,7 +659,10 @@ def main():
         for name in args.profiles:
             profile = dict(PROFILES[name])
             post_json(upstream_port, "/benchmark/reset")
-            direct = run_requests(upstream_port, profile)
+            if profile.get("mixed"):
+                direct = run_mixed_requests(upstream_port, upstream_port, profile)
+            else:
+                direct = run_requests(upstream_port, profile)
             direct_mock = get_json(upstream_port, "/benchmark/metrics")
 
             proxy_port = free_port()
@@ -563,7 +689,7 @@ def main():
                 "--chat-listen-host",
                 "127.0.0.1",
                 "--chat-upstream-url",
-                "",
+                f"http://127.0.0.1:{upstream_port}",
                 "--chat-listen-port",
                 str(chat_proxy_port),
                 "--chat-local-path",
@@ -617,7 +743,10 @@ def main():
                 post_json(upstream_port, "/benchmark/reset")
                 sampler = ProcessSampler(proxy.pid)
                 sampler.start()
-                proxied = run_requests(proxy_port, profile)
+                if profile.get("mixed"):
+                    proxied = run_mixed_requests(proxy_port, chat_proxy_port, profile)
+                else:
+                    proxied = run_requests(proxy_port, profile)
                 resources = sampler.stop()
                 proxy_mock = get_json(upstream_port, "/benchmark/metrics")
                 if supports_runtime_metrics:
@@ -625,13 +754,20 @@ def main():
                     runtime_metrics = latest_performance_snapshot(proxy_log)
                 else:
                     runtime_metrics = None
+                if profile.get("mixed"):
+                    validate_mixed_result(proxied, runtime_metrics, profile)
             finally:
                 stop_process(proxy)
                 proxy = None
 
-            direct_p50 = direct["ttfb_ms"]["p50"]
-            proxy_p50 = proxied["ttfb_ms"]["p50"]
+            direct_summary = direct["streams"] if profile.get("mixed") else direct
+            proxy_summary = proxied["streams"] if profile.get("mixed") else proxied
+            direct_p50 = direct_summary["ttfb_ms"]["p50"]
+            proxy_p50 = proxy_summary["ttfb_ms"]["p50"]
+            direct_p95 = direct_summary["ttfb_ms"]["p95"]
+            proxy_p95 = proxy_summary["ttfb_ms"]["p95"]
             added_p50 = None if direct_p50 is None or proxy_p50 is None else round(proxy_p50 - direct_p50, 3)
+            added_p95 = None if direct_p95 is None or proxy_p95 is None else round(proxy_p95 - direct_p95, 3)
             profile_results.append(
                 {
                     "name": name,
@@ -639,6 +775,7 @@ def main():
                     "direct": direct,
                     "proxied": proxied,
                     "proxy_added_ttfb_p50_ms": added_p50,
+                    "proxy_added_ttfb_p95_ms": added_p95,
                     "process_resources": resources,
                     "runtime_metrics": runtime_metrics,
                     "mock_direct": direct_mock,
@@ -647,7 +784,7 @@ def main():
             )
             print(
                 f"{name}: direct p50={direct_p50} ms, proxy p50={proxy_p50} ms, "
-                f"added={added_p50} ms, failures={proxied['failed']}"
+                f"added={added_p50} ms, failures={proxy_summary['failed']}"
             )
 
         result = {

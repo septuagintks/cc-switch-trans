@@ -4,13 +4,13 @@
 
 ## Status
 
-The current unreleased source reports version `0.3.0` and runs on Windows. It has entered the breaking phase 10 CLI: start it with `ccs-trans run`, use endpoint-prefixed options, and do not use the removed shared or legacy options. Responses and Chat Completions have independent endpoint-group configuration, and each group owns its Usage route and upstream path.
+The current source reports version `0.4.0` and runs on Windows. This is the breaking phase 10 release: start it with `ccs-trans run`, use endpoint-prefixed options, and do not use removed shared or legacy options. Responses and Chat Completions have independent endpoint-group configuration, and each group owns its Usage route and upstream path.
 
-The logger reliability, canonical CLI/config, dual-listener, and persistent-profile work packages are complete. `127.0.0.1:15723` owns Responses plus its Usage route; `127.0.0.1:15724` owns Chat Completions plus its Usage route. Both listeners share one bounded connection limit, worker pool, logger, metrics set, and process-level transport session. Configuration, logs, and runtime state now share the per-user `.ccs-trans` root. Reload and full performance regression remain before the phase 10 release. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order.
+Phase 10 is complete. `127.0.0.1:15723` owns Responses plus its Usage route; `127.0.0.1:15724` owns Chat Completions plus its Usage route. Both listeners share one bounded connection limit, worker pool, logger, metrics set, and process-level transport session. Configuration, logs, and runtime state share the per-user `.ccs-trans` root. Validated immutable snapshots support in-process hot reload and graceful restart rollback for topology changes.
 
 Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
 
-The packaged `0.2.0` executable passed a real Codex -> ccs-trans -> findcg Responses regression on 2026-07-11: the targeted tool was removed, findcg returned HTTP 200, and both SSE streams completed with contiguous chunk sequences. `0.3.0` adds request cancellation, split upstream timeouts, bounded runtime metrics, and a synthetic benchmark harness without changing the forwarding rules.
+The packaged `0.2.0` executable passed a real Codex -> ccs-trans -> findcg Responses regression on 2026-07-11: the targeted tool was removed, findcg returned HTTP 200, and both SSE streams completed with contiguous chunk sequences. `0.3.0` added cancellation, split timeouts, metrics, and benchmark coverage; `0.4.0` adds the canonical dual-endpoint CLI, persistent profiles, reliable asynchronous logging, immutable reload generations, and dual-endpoint performance coverage without changing the findcg rewrite rule.
 
 By default it listens on:
 
@@ -124,11 +124,33 @@ Common options:
 
 The parser rejects removed names with a migration hint. There are no short aliases, shared fallback options, or duplicate occurrences of the same option.
 
+## Migrate From 0.3.0
+
+`0.4.0` intentionally has no runtime compatibility aliases. Add the `run` command and replace each old field explicitly:
+
+| 0.3.0 option | 0.4.0 replacement |
+| --- | --- |
+| `--upstream-url` | `--responses-upstream-url` and/or `--chat-upstream-url` |
+| `--listen-host` | `--responses-listen-host` and `--chat-listen-host` |
+| `--listen-port` | `--responses-listen-port` and `--chat-listen-port` |
+| `--responses-path` | `--responses-local-path` |
+| `--chat-path` | `--chat-local-path` |
+| `--usage-path` | `--responses-usage-local-path` and `--chat-usage-local-path` |
+| `--upstream-responses-path` | `--responses-upstream-path` |
+| `--upstream-chat-path` | `--chat-upstream-path` |
+| `--upstream-usage-path` | both endpoint-specific `*-usage-upstream-path` options |
+| `--timeout-ms` | the six stage-specific timeout options |
+| `--max-body-size` | `--max-request-body-size` |
+| `--concurrency` | `--worker-threads` and `--max-connections` |
+| `-h` | `--help` |
+
+For a durable setup, create a profile and set one canonical key per command. Credentials remain request headers and are never persisted in `config.json`.
+
 With `--redact-sensitive false` and `--log-body true`, logs can contain live Authorization values, cookies, full Codex context, and response chunks. Treat them as credential-bearing files. Use synthetic data for tests and benchmarks, enable sensitive-header redaction before sharing logs, and review body content separately because header redaction does not sanitize JSON bodies.
 
 Each timeout has one explicit option; there is no shared timeout fallback. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
 
-The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. Phase 10 logger reliability keeps in-flight batches inside the bounded pending capacity and reports separate batch-window, backpressure, file write/flush, oldest-record-age, and writer-health metrics. Endpoint-level accepted/rejected/active/queued/queue-wait metrics expose fairness across the shared worker pool. The next work package adds controlled snapshot reload and runs the final mixed/desktop/stress regressions.
+The measured `0.4.0` profiles keep the synchronous worker model for the normal aggregate 8-16 SSE desktop load. `--worker-threads 32` is a maximum: the service prewarms 8 workers and grows on queue demand, preserving Usage headroom without paying the full thread cost while idle. Three Release runs completed with no request failures, logger failures, or backpressure. `mixed-16` kept both Usage groups near 25 ms p95 with endpoint queue wait below 0.5 ms. The 50-connection profile remains a stress test and queues near 2 seconds at the worker limit; it does not justify an asynchronous network-stack rewrite by itself.
 
 ## Verify
 

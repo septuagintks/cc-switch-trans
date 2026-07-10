@@ -13,7 +13,7 @@ namespace ccs {
 
 namespace {
 
-constexpr const char* kVersion = "0.3.0";
+constexpr const char* kVersion = "0.4.0";
 
 const std::unordered_set<std::string>& value_options() {
     static const std::unordered_set<std::string> options = {
@@ -594,7 +594,7 @@ void print_help(std::ostream& os) {
         << "  --total-timeout-ms <ms>                 Whole-request timeout (0 disables)\n"
         << "  --max-request-body-size <bytes>         Max local request body size\n"
         << "  --max-response-body-size <bytes>        Max buffered upstream response size\n"
-        << "  --worker-threads <count>                Blocking server worker count\n"
+        << "  --worker-threads <count>                Maximum blocking server worker count\n"
         << "  --max-connections <count>               Active and queued connection limit\n"
         << "  --help                                  Show this help message\n"
         << "  --version                               Show version information\n";

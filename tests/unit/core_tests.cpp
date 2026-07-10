@@ -7,6 +7,7 @@
 #include "core/runtime_metrics.hpp"
 #include "core/url.hpp"
 #include "logging/logger.hpp"
+#include "server/server.hpp"
 #include "transforms/findcg_responses_transform.hpp"
 
 #include <nlohmann/json.hpp>
@@ -723,6 +724,90 @@ void test_app_service_startup_failure() {
     std::filesystem::remove(log_path, ec);
 }
 
+void test_server_reload_classification() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    ccs::AppConfig config;
+    config.responses_endpoint.upstream_url = "https://responses-a.example.com";
+    config.chat_endpoint.upstream_url = "https://chat-a.example.com";
+    config.log_path = std::filesystem::temp_directory_path()
+        / ("ccs-trans-server-reload-" + std::to_string(nonce) + ".log");
+    ccs::Server server(ccs::make_config_snapshot(config));
+
+    std::string error;
+    auto hot_config = config;
+    hot_config.responses_endpoint.upstream_url = "https://responses-b.example.com";
+    require(
+        server.reload(ccs::make_config_snapshot(hot_config), error) == ccs::ReloadResult::Applied,
+        "upstream-only reload is applied in place: " + error);
+
+    auto restart_config = hot_config;
+    ++restart_config.worker_threads;
+    error.clear();
+    require(
+        server.reload(ccs::make_config_snapshot(restart_config), error)
+            == ccs::ReloadResult::RestartRequired,
+        "worker topology reload requires restart");
+
+    error.clear();
+    require(
+        server.reload({}, error) == ccs::ReloadResult::Failed && !error.empty(),
+        "null reload snapshot is rejected");
+
+    std::error_code ec;
+    std::filesystem::remove(config.log_path, ec);
+}
+
+void test_app_service_reload_and_rollback() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    ccs::AppConfig config;
+    config.responses_endpoint.upstream_url = "https://responses-a.example.com";
+    config.chat_endpoint.upstream_url = "https://chat-a.example.com";
+    const auto responses_port = static_cast<std::uint16_t>(30000 + nonce % 10000);
+    config.responses_endpoint.listen_port = responses_port;
+    config.chat_endpoint.listen_port = static_cast<std::uint16_t>(responses_port + 1);
+    config.log_path = std::filesystem::temp_directory_path()
+        / ("ccs-trans-service-reload-" + std::to_string(nonce) + ".log");
+
+    ccs::AppService service(config);
+    std::string error;
+    require(service.start(error), "reload test service starts: " + error);
+
+    auto hot_config = config;
+    hot_config.responses_endpoint.upstream_url = "https://responses-b.example.com";
+    require(
+        service.reload(ccs::make_config_snapshot(hot_config), error),
+        "service applies hot reload: " + error);
+    require(service.status() == ccs::ServiceState::Running, "service remains running after hot reload");
+
+    auto restart_config = hot_config;
+    ++restart_config.worker_threads;
+    error.clear();
+    require(
+        service.reload(ccs::make_config_snapshot(restart_config), error),
+        "service performs graceful restart reload: " + error);
+    require(service.status() == ccs::ServiceState::Running, "service runs after restart reload");
+
+    auto invalid_topology = restart_config;
+    invalid_topology.responses_endpoint.listen_host = "bad host";
+    error.clear();
+    require(
+        !service.reload(ccs::make_config_snapshot(invalid_topology), error),
+        "failed restart reload reports failure");
+    require(
+        error.find("previous configuration was restored") != std::string::npos,
+        "failed restart reload reports rollback");
+    require(service.status() == ccs::ServiceState::Running, "rollback restores running service");
+
+    int wait_result = -1;
+    std::thread waiter([&]() { wait_result = service.wait(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    service.stop();
+    waiter.join();
+    require(wait_result == 0, "reloaded service stops cleanly while another thread waits");
+    std::error_code ec;
+    std::filesystem::remove(config.log_path, ec);
+}
+
 void test_cancellation() {
     ccs::CancellationSource source;
     const auto token = source.token();
@@ -769,6 +854,8 @@ int main() {
         {"profile store", test_profile_store},
         {"runtime metrics", test_runtime_metrics},
         {"app service startup failure", test_app_service_startup_failure},
+        {"server reload classification", test_server_reload_classification},
+        {"app service reload and rollback", test_app_service_reload_and_rollback},
         {"cancellation", test_cancellation},
     };
 

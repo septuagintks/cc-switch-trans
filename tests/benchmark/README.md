@@ -14,10 +14,10 @@ Run the short profiles without body logging:
 ```text
 python tests/benchmark/run_benchmark.py \
   --exe build-release/ccs-trans.exe \
-  --profiles smoke desktop-8 desktop-16 stress-50 \
+  --profiles smoke desktop-8 desktop-16 mixed-16 stress-50 \
   --log-body false \
   --source-ref HEAD \
-  --output benchmark-results/windows-x64-0.3.0.json
+  --output benchmark-results/windows-x64-0.4.0.json
 ```
 
 Run the log-body comparison separately so it cannot be confused with the no-body baseline:
@@ -28,7 +28,9 @@ python tests/benchmark/run_benchmark.py \
   --profiles desktop-16 \
   --log-body true \
   --source-ref HEAD \
-  --output benchmark-results/windows-x64-0.3.0-log-body.json
+  --output benchmark-results/windows-x64-0.4.0-log-body.json
 ```
 
 Each result records the Git commit, executable hash and version, exact split timeout/proxy/mock parameters, direct-upstream and proxied latency distributions, sampled process resources, and the latest runtime metrics snapshot. The mock uses a backlog of 128 so 16/50-way connection bursts measure the proxy rather than Python's default five-connection accept queue. Profiles are short comparison runs, not long-term soak tests or release SLOs.
+
+`mixed-16` runs 8 Responses SSE streams and 8 Chat Completions SSE streams while both endpoint groups receive recurring Usage requests. The runner fails when either Usage group fails or waits until all streams finish, endpoint queue wait exceeds the configured bound, or the logger reports a writer failure/backpressure event.

@@ -2,17 +2,17 @@
 
 ## 当前进度
 
-`0.3.0` 已完成阶段 0–9：在 `0.2.0` 的双任务转发和 findcg Responses 改写基础上，新增合成 benchmark、运行时资源指标、客户端断开取消、分阶段 timeout 及其自动测试。
+`0.4.0` 已完成阶段 0–10：在 `0.3.0` 的取消、分阶段 timeout 和 benchmark 基线上，交付可靠日志、唯一 CLI 合约、双监听端点组、持久 profile、不可变配置 snapshot、受控 reload 和最终性能回归。
 
-阶段 9 的修正后基准表明，8/16 路常规 SSE 负载没有 worker 排队，保留同步 worker + WinHTTP 模型；阶段 10 默认 worker 调整为 32，为 16 路长 SSE 之外保留短请求和 Usage 余量。历史 50 路压力负载受 16 个 worker 上限约束，会产生约 2 秒首字节排队，因此继续作为明确的容量边界，而不是立即重写全异步网络栈的理由。
+阶段 10 最终保留同步 worker + WinHTTP 模型。`worker-threads=32` 是扩容上限，启动预热 8 个 worker 并按队列需求增长；`mixed-16` 中两组 Usage 均未被长 SSE 饿死。50 路压力负载仍在 worker 上限处产生约 2 秒排队，因此继续作为明确的容量边界，而不是立即重写全异步网络栈的理由。
 
 2026-07-11 的 Codex -> ccs-trans -> findcg 实测包含两次 Responses 请求。两次请求都从根级 `tools` 删除了 1 个 `image_gen` namespace 工具，上游均返回 `200`；SSE 分别连续转发 57 和 72 个 chunk，序号无缺口，日志中没有 warning、error 或 4xx/5xx。`0.2.0` 功能验收至此完成。
 
 ## 当前开发目标
 
-进入阶段 10：先修复正常负载下日志批写可能停滞的问题，再完成双监听端口与 Usage 归属拆分，最后实现 Windows `%USERPROFILE%/.ccs-trans/` 与 macOS `~/.ccs-trans/` 下的持久 profile、schema/version 校验、CLI 覆盖层和不可变运行快照。阶段 10 是破坏性 CLI 升级，不保留旧参数或别名。
+阶段 10 已完成。下一阶段是 Windows 后台常驻、托盘菜单、双击隐式启动和当前用户开机自启；不得在图形宿主中复制已稳定的配置、服务生命周期、路由或日志逻辑。
 
-后续阶段保持以下 `0.3.0` 请求改写和传输语义不变，但会调整监听拓扑：
+后续阶段保持以下 `0.4.0` 请求改写、传输与双监听拓扑不变：
 
 - Responses 任务只处理 `/v1/responses` 和 `/v1/responses/`，只在目标上游是 findcg 时执行 `image_gen` 清理。
 - Chat Completions 任务只处理 `/v1/chat/completions`，使用独立上游 URL 和路径，不参与 Responses 的 findcg 特殊改写。
@@ -31,11 +31,11 @@
 - 配置长期保存、启动时自动加载，以及未来由托盘菜单修改和重载配置。
 - macOS 编译和打包，同时提供命令行产物与菜单栏常驻应用。
 
-阶段 9 已完成；持久配置、托盘宿主和 macOS 继续按阶段 10–12 实施。已经建立的任务、transform、transport、日志和服务边界必须保持，后续功能不能重新堆回 `Server`、`Proxy` 或 `main`。
+阶段 0–10 已完成；托盘宿主和 macOS 继续按阶段 11–12 实施。已经建立的任务、transform、transport、日志和服务边界必须保持，后续功能不能重新堆回 `Server`、`Proxy` 或 `main`。
 
 ### 当前结构边界状态
 
-| 边界                         | `0.3.0` 状态                                      | 后续工作                                               |
+| 边界                         | `0.4.0` 状态                                      | 后续工作                                               |
 | ---------------------------- | ------------------------------------------------- | ------------------------------------------------------ |
 | WinHTTP 生命周期             | 进程级 session、请求级 handle、取消和分阶段 timeout | macOS transport 保持同一语义                          |
 | SSE 内存                     | 不聚合完整 response body，只保留 chunk 计数       | 后续增加长时间 soak 回归                               |
@@ -43,8 +43,8 @@
 | 接入容量                     | `max-connections` 总量限制、稳定 `503`、断连取消   | 后台宿主展示运行状态                                   |
 | 同步 worker                  | 8/16 路常规负载继续使用，50 路按 worker 上限排队   | 常规负载退化时才设计全异步迁移                         |
 | Windows 网络 API            | `Proxy`/`Server` 仍依赖 WinHTTP/Winsock            | macOS 阶段抽象平台 transport/listener                  |
-| 配置生命周期                 | CLI 生成运行配置，尚无持久配置快照                 | 阶段 10 分离配置文件、CLI 覆盖和不可变快照             |
-| 服务生命周期                 | 已有 `AppService start/stop/status/wait`           | 持久配置阶段增加 reload，tray 阶段复用同一服务状态机    |
+| 配置生命周期                 | typed profile、原子保存、不可变快照和 generation reload | tray 复用同一配置服务                              |
+| 服务生命周期                 | `AppService start/stop/status/wait/reload`          | tray 复用同一状态机                                   |
 
 ### 预留原则
 
@@ -496,7 +496,7 @@ chat endpoint: 127.0.0.1:15724
 4. 两个 listener 由同一个 `AppService` 管理，任一端口绑定失败都使启动整体失败并回收已启动 listener，避免半运行状态。
 5. 连接容量、worker 使用量和指标先保持进程级边界；日志事件增加 listener/endpoint 字段，能够区分 `responses_usage` 与 `chat_usage`。
 
-完成状态：已完成。两个 listener 在任何 accept/worker 启动前依次完成 exclusive bind/listen，第二个失败会释放第一个并使进程失败；运行期任一 listener 的不可恢复 accept 错误会停止整个服务。两个 acceptor 只负责向同一个 FIFO 队列提交带 endpoint 的 `ClientJob`，继续共享总连接上限、32 worker、logger、metrics、Proxy 和 WinHTTP session。
+完成状态：已完成。两个 listener 在任何 accept/worker 启动前依次完成 exclusive bind/listen，第二个失败会释放第一个并使进程失败；运行期任一 listener 的不可恢复 accept 错误会停止整个服务。两个 acceptor 只负责向同一个 FIFO 队列提交带 endpoint 的 `ClientJob`，继续共享总连接上限、最多 32 个 worker、logger、metrics、Proxy 和 WinHTTP session。
 
 本工作包 review 将 Windows 端口绑定从 `SO_REUSEADDR` 改为 `SO_EXCLUSIVEADDRUSE`，修正运行期 listener 错误导致半运行的风险，并把本地 405 Usage 与实际上游转发区分为带 `forwarded` 字段的 `usage_completed` summary。`AppService::start()` 增加 readiness 握手，只有 logger、两个 listener、worker 和 acceptor 全部就绪后才同步返回成功；启动失败在返回前恢复 `Stopped` 并提供具体错误。集成测试覆盖双 upstream、两组 Usage 归属、跨端口主路由 404、Usage 敏感头不入日志和第二 listener 绑定失败时的原子回滚；端点级 accepted/rejected/completed/active/queued/queue-wait 指标已进入 `performance_snapshot`。
 
@@ -535,6 +535,8 @@ chat endpoint: 127.0.0.1:15724
 3. benchmark 同时覆盖双 listener，确认 8/16 路常规 SSE 和批量日志没有相对 `0.3.0` 的明显退化。
 4. README 提供从 `0.3.0` 到新 CLI/profile 的迁移表，但程序本身不承担旧参数兼容。
 
+完成状态：已完成。Debug/Release 单元测试、双端口协议集成测试和三个完整 Release benchmark 回合通过；README 已列出全部删除参数的唯一替代项。版本提升到 `0.4.0`，发布包按白名单生成，不包含运行日志、用户配置或真实凭据。
+
 ### 10.6 性能约束与取舍
 
 阶段 10 不重写全异步网络栈，但双 listener、日志修复和配置重载不能破坏阶段 9 已建立的资源边界。
@@ -543,7 +545,7 @@ chat endpoint: 127.0.0.1:15724
 
 1. 两个 listener 共用进程级有界 worker pool、连接容量、日志 writer 和运行指标，避免简单复制 `Server` 后把线程、队列和 WinHTTP session 成倍增加。
 2. `8–16` 路仍表示两个端点组合后的常规 SSE 总负载；`50` 路仍是压力测试。若以后要求两个端点各自同时承载 16 路 SSE，应作为新的 32 路 profile 单独定容量。
-3. 当前 16 个 worker 在 16 路长 SSE 下没有短请求余量。阶段 10 默认值改为 32：16 路常规 SSE 加 16 路 Usage/短请求余量；这仍是一个共享进程级 worker pool，不为两个端点各复制一套完整执行层。
+3. `worker-threads=32` 表示最大 worker 数，不是启动时固定创建数。最终实现预热 8 个 worker，并按 active + queued 需求扩容到 32；16 路常规 SSE 后仍可为 Usage/短请求继续扩容，且不为两个端点复制执行层。
 4. 增加 `mixed-16` profile：Responses/Chat 合计 16 路 SSE，同时持续请求两组 Usage。验收时 Usage 不得等待某条 SSE 完成，worker queue wait 必须保持有界并可观察。
 5. 两个 listener 共享总容量可能产生端点偏置；先记录 endpoint 维度的 accepted/active/queued/rejected 指标。只有 `mixed-16` 证明存在饥饿时，才增加端点配额或独立执行队列。
 
@@ -590,6 +592,19 @@ chat endpoint: 127.0.0.1:15724
 5. **reload 与性能回归**：资源 generation 切换、`mixed-16`、8/16/50 profile、迁移文档和发布打包。
 
 每个工作包都运行 Release/Debug 构建、单元测试和相关集成测试。第 5 个工作包完成前不进入 tray 或 macOS host，避免把尚未稳定的配置和生命周期接口复制到图形宿主。
+
+完成状态：5 个工作包均已独立 review、验证并形成签名提交。reload 使用 generation 交换：热字段原地切换，listener/worker/metrics interval 及同路径 logger writer 参数变化执行优雅重启；新拓扑启动失败时自动恢复旧 snapshot。Windows accept loop 改为可中断等待，`wait()` 与其他线程的 `stop()` 可安全协作。
+
+最终三次 Release 回归中位数如下，所有运行均为 0 请求失败、0 logger backpressure、0 writer failure：
+
+| profile | 附加 TTFB p50 | 附加 TTFB p95 | 峰值 Working Set | 关键结论 |
+| --- | ---: | ---: | ---: | --- |
+| `desktop-8` | `6.14 ms` | `4.88 ms` | `13.52 MB` | SSE 连续，无持续排队 |
+| `desktop-16` | `6.27 ms` | `7.15 ms` | `15.15 MB` | 按需扩容，无请求失败 |
+| `mixed-16` | `6.90 ms` | `11.89 ms` | `15.50 MB` | 两组 Usage p95 约 `25 ms`，端点最大排队 `<0.5 ms` |
+| `stress-50` | `6.86 ms` | `1992.30 ms` | `17.97 MB` | 在 32 worker 上限处有界排队，符合压力测试预期 |
+
+阶段 9 原始高并发样本受系统调度噪声影响，尤其 p95 可出现负附加值或数百毫秒离群；最终判断以三次同构建中位数、正确性断言和资源有界性共同作出。双 listener、profile/reload 与增量日志增加少量固定 Working Set，按需 worker 消除了启动即创建 32 线程的额外成本；没有通过删日志换取性能结果。
 
 目录选择取舍：
 

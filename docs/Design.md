@@ -4,11 +4,11 @@
 
 | 项目           | 内容                                   |
 | -------------- | -------------------------------------- |
-| 文档性质       | `0.3.0` 实现基线                       |
-| 当前程序版本   | `0.3.0`                                |
+| 文档性质       | `0.4.0` 实现基线                       |
+| 当前程序版本   | `0.4.0`                                |
 | 当前平台       | Windows x64                            |
-| 当前默认监听   | `http://127.0.0.1:15723`               |
-| 当前阶段主目标 | 日志可靠性、双端口与持久 profile         |
+| 当前默认监听   | Responses `:15723`，Chat `:15724`      |
+| 当前阶段主目标 | 阶段 10 已完成，准备 Windows 托盘宿主   |
 
 本文描述“要构建什么”以及必须遵守的行为和架构边界。具体构建顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，目录归属见 [ProjectStructure.md](ProjectStructure.md)。
 
@@ -30,13 +30,13 @@ POST /v1/chat/completions
 GET  /v1/usage
 ```
 
-`0.3.0` 中 Responses 与 Chat Completions 是两个可并行、可指向不同上游、可拥有不同改写规则的主任务，Usage 是共享上游派生出的辅助入口。阶段 10 会把它替换成两个独立监听端点组：Responses + 对应 Usage 使用 `15723`，Chat Completions + 对应 Usage 使用 `15724`。
+`0.4.0` 使用两个独立监听端点组：Responses + 对应 Usage 使用 `15723`，Chat Completions + 对应 Usage 使用 `15724`。两个端点可指向不同上游，Usage 的归属完全由接收端口决定。
 
 ## 当前基线
 
-`0.3.0` 当前实现：
+`0.4.0` 当前实现：
 
-- Windows 本地 HTTP 监听和固定工作线程池。
+- Windows 双 HTTP listener 和按需扩容的有界同步 worker pool。
 - Responses、Chat Completions 与 Usage 路由。
 - Responses 本地路径尾斜杠兼容。
 - 普通 JSON 响应和 SSE 流式响应转发。
@@ -46,7 +46,7 @@ GET  /v1/usage
 - 上游不可达、超时、请求过大、未知路由和方法错误处理。
 - 针对 JSON body 前导空白和额外 HTTP body 分隔符的兼容处理。
 - Debug、Release 构建和 Python 集成测试。
-- Responses、Chat Completions 独立上游 URL/路径与旧共享上游回退。
+- Responses、Chat Completions 独立上游 URL/路径，不存在共享上游回退。
 - TaskRouter、RequestTransform、UpstreamTarget 和 AppService 生命周期边界。
 - findcg Responses 根级 `image_gen` 工具清理和结构化改写日志。
 - 进程级 WinHTTP session、独立 request handle 和非流式响应缓冲上限。
@@ -57,9 +57,11 @@ GET  /v1/usage
 - 连接、worker、日志队列、WinHTTP、取消和分阶段 timeout 运行时指标。
 - 客户端断开通过共享 socket monitor 传播到对应 WinHTTP request handle。
 - resolve、connect、send、response header、SSE idle 和可选 total timeout。
+- 唯一 endpoint-prefixed CLI、持久 profile、typed schema 和原子配置保存。
+- 不可变 `ConfigSnapshot`、请求级 generation 捕获、热切换和失败回滚。
 - 2026-07-11 真实 Codex -> ccs-trans -> findcg Responses 回归通过。
 
-当前保留同步 worker 模型：修正后的基准显示 8/16 路常规 SSE 负载没有 worker 排队；阶段 10 默认 worker 调整为 32，为 16 路长 SSE 之外保留短请求和 Usage 余量。50 路仍作为压力负载按 worker 上限有界排队。阶段 10 开始持久配置；tray 和 macOS 继续后置。
+当前保留同步 worker 模型：8/16 路常规 SSE 负载没有持续排队；默认最大 worker 为 32，启动预热 8 个并按需求扩容，为长 SSE 之外保留短请求和 Usage 余量。50 路仍作为压力负载按 worker 上限有界排队。持久配置和 reload 已完成；tray 和 macOS 继续后置。
 
 ## 0.3.0 范围
 
@@ -80,7 +82,6 @@ GET  /v1/usage
 ### 后续阶段
 
 - 全异步 HTTP 服务端或完整网络栈替换。
-- 配置文件持久化与热重载。
 - Windows 托盘图标、菜单、开机自启、后台宿主和双击隐式启动。
 - macOS transport、菜单栏图标、登录时启动和发布包。
 
@@ -562,7 +563,7 @@ JSON 首版使用仓库固定版本的 `nlohmann/json` DOM，只在命中 findcg
 
 ### 阶段 10 双 listener 性能模型
 
-阶段 10 不把两个端点实现为两套完整 `Server` 资源。目标结构是两个轻量 listener 向同一个有界执行层提交带 endpoint 标识的连接，请求继续共享 logger、metrics 和进程级 WinHTTP session。WinHTTP 自身按 scheme/host/port 管理连接复用，不需要为 Responses 与 Chat 人为复制 session。
+阶段 10 没有把两个端点实现为两套完整 `Server` 资源。两个轻量 listener 向同一个有界执行层提交带 endpoint 标识的连接，请求共享 logger、metrics 和进程级 WinHTTP session。WinHTTP 自身按 scheme/host/port 管理连接复用，不为 Responses 与 Chat 人为复制 session。
 
 ```text
 responses listener :15723 --\
@@ -570,20 +571,21 @@ responses listener :15723 --\
 chat listener      :15724 --/                         -> shared logger/metrics
 ```
 
-常规容量仍按两个端点合计 `8–16` 路 SSE 计算。由于长 SSE 占用同步 worker，阶段 10 默认 `worker-threads = 32`：16 路常规 SSE 之外保留 16 个短请求/Usage 余量，并以 `mixed-16` benchmark 验证两组 Usage 不被长流饿死。若将来要保证每个端点各 16 路，则建立独立的 32 路 SSE 容量 profile 后再决定增加线程、端点配额或迁移异步 I/O。
+常规容量仍按两个端点合计 `8–16` 路 SSE 计算。`worker-threads = 32` 是扩容上限，启动预热 8 个 worker，队列需求增长时再创建线程。`mixed-16` 已验证两组 Usage 不被长流饿死。若将来要保证每个端点各 16 路，则建立独立的 32 路 SSE 容量 profile 后再决定增加线程、端点配额或迁移异步 I/O。
 
 双 listener 的公平性先通过 endpoint 维度的 accepted、active、queued、rejected 和 queue-wait 指标观察，不预先引入多级调度器。只有常规 profile 出现可复现饥饿时，才增加端点配额或独立队列。
 
 配置文件不属于请求热路径。启动/reload 完成 JSON 解析、schema 校验和 profile 合并后生成不可变 snapshot；每个请求只捕获一次 snapshot。原子保存不持有请求执行、logger 或 transport 锁，旧 snapshot/transport generation 随进行中请求自然释放。
 
-阶段 10 的性能回归以修正后的 `0.3.0` Release benchmark 为基线：同机至少三次取中位数，desktop p50/p95 附加 TTFB 暂定最多退化 15%/20%，峰值 Working Set 最多增长 15%。正确性、日志完整性、Usage 可用性和有界资源优先于这些数值；指标噪声超界时先扩大样本，不通过减少日志规避回归。
+阶段 10 已在同机完成三次 Release 回归：desktop/mixed 均为 0 失败，附加 TTFB p50 中位数约 `6.1–6.9 ms`；`mixed-16` 两组 Usage p95 约 `25 ms`，端点 queue wait 小于 `0.5 ms`，logger backpressure/writer failure 为 0。峰值 Working Set 中位数为 `13.52/15.15/15.50 MB`（desktop-8/desktop-16/mixed-16），不会随 SSE 累计内容线性增长。
 
 ## 生命周期与后续宿主
 
-`0.2.0` 的 `AppService` 已提供 `start/stop/status/wait`，供 CLI 统一管理服务。长期接口在持久配置阶段增加 reload 和配置快照，并把两个 listener 作为同一服务实例的原子启动/停止资源：
+`AppService` 已提供 `start/stop/status/wait/reload`，供 CLI 与后续图形宿主统一管理服务。两个 listener 是同一服务实例的原子启动/停止资源：
 
 ```text
-Stopped -> Starting -> Running -> Stopping -> Stopped
+Stopped -> Starting -> Running -> Reloading -> Running
+                         \-> Stopping -> Stopped
 start(config_snapshot)
 stop(graceful_timeout)
 status()
@@ -591,7 +593,7 @@ wait()
 reload(new_snapshot)
 ```
 
-阶段 9 继续复用该生命周期，不实现 tray；取消传播和优雅停止必须通过同一服务对象收束进行中请求。未来 Windows tray host 和 macOS host 不能复制路由、配置或日志初始化代码。
+热字段通过一次 generation 交换应用；listener、worker、metrics interval 或同路径 logger writer 参数变化执行优雅重启，失败时恢复旧 snapshot。生命周期操作由服务串行化，阻塞 `wait()` 时其他线程仍可调用 `stop()`。未来 Windows tray host 和 macOS host 不能复制路由、配置或日志初始化代码。
 
 持久配置已采用：
 
@@ -622,21 +624,22 @@ CMake 继续保持 core、平台实现和 host 分层。macOS 先交付 `arm64` 
 
 ## 测试策略
 
-### `0.3.0` 单元测试
+### `0.4.0` 单元测试
 
 当前已覆盖以下可独立运行的纯逻辑测试：
 
 - URL hostname 规范化和 findcg 精确匹配。
 - TaskRouter 的方法、路径、尾斜杠和 disabled task 行为。
-- CLI 专用参数、旧参数回退和校验。
+- 唯一 CLI 参数、旧参数拒绝、profile CRUD、schema 和路径校验。
 - 根级 `tools` 中不同形式的 `image_gen` 删除。
 - 无 `tools`、非数组、混合元素、非法 JSON 和无删除场景。
 - 非命中 transform 不创建 rewritten body。
-- timeout CLI 拆分、旧参数回退和 total=0 行为。
+- timeout CLI 拆分、旧参数拒绝和 total=0 行为。
 - 取消 token 的幂等触发、立即回调和注销行为。
 - 运行时指标和批量日志 writer 的计数、高水位与错误 flush。
+- reload 分类、热切换、优雅重启、失败回滚和跨线程 stop/wait。
 
-### `0.3.0` 集成测试
+### `0.4.0` 集成测试
 
 `tests/integration` 的 mock upstream 可同时启动两个实例并回显目标与 body，当前覆盖：
 
@@ -693,8 +696,8 @@ CMake 继续保持 core、平台实现和 host 分层。macOS 先交付 `arm64` 
 | 无删除 body           | 复用输入，不重新序列化                            |
 | 非法 JSON             | 失败关闭，不发送上游                              |
 | Chat 当前行为         | 独立任务，透明转发                                |
-| 旧 CLI                | 保留上游与请求体参数回退；不兼容 `--concurrency`  |
-| 网络模型              | `0.3.0` 保留同步实现和流 callback                 |
+| 旧 CLI                | 全部删除；只返回唯一替代参数提示                  |
+| 网络模型              | `0.4.0` 保留同步实现、按需 worker 和流 callback   |
 | 常规/压力负载         | 8–16 路 SSE 为常规，50 路为压力测试               |
 | 日志落盘              | 普通事件约 100 ms 批写，错误事件立即 flush        |
 | SSE 日志              | 带序号 chunk 增量记录，不保留完整 response body   |
@@ -707,17 +710,16 @@ CMake 继续保持 core、平台实现和 host 分层。macOS 先交付 `arm64` 
 | 持久配置根目录        | Windows `%USERPROFILE%/.ccs-trans/`；macOS `~/.ccs-trans/` |
 | 双平台后台菜单        | Windows 托盘和 macOS 菜单栏均为必需交付项，包含自启勾选项  |
 
-## 阶段 9 结果与阶段 10 入口
+## 阶段 10 结果与阶段 11 入口
 
-阶段 9 已按以下顺序完成：
+阶段 10 已按以下顺序完成：
 
 ```text
-1. tests/benchmark runner、可配置 mock 和 JSON 结果 schema
-2. 低开销连接、日志队列、背压和 transport 指标
-3. 保存 0.2.0 的 8/16/50 路基线
-4. 请求级取消信号和客户端断开传播
-5. 连接、发送、响应头、流空闲和总 timeout 拆分
-6. 同 profile 前后对比与同步/异步 I/O 决策记录
+1. 日志批写可靠性、writer health 和故障注入测试
+2. endpoint group 配置模型与唯一 CLI 合约
+3. `15723`/`15724` 双 listener 和 Usage 归属
+4. `.ccs-trans` 持久 profile、typed schema 和不可变 snapshot
+5. reload generation、失败回滚、`mixed-16` 和完整性能回归
 ```
 
-阶段 9 没有混入 tray、持久配置或 macOS transport。修正后的 8/16 路结果不支持立即重写完整异步 I/O；下一步按 DevelopmentPlan 阶段 10 依次修复日志停滞、拆分 `15723`/`15724` 端点组、删除 legacy CLI，再实现 profile schema、平台用户目录和不可变运行快照。
+阶段 10 没有混入 tray 或 macOS transport。8/16 路与 `mixed-16` 结果不支持立即重写完整异步 I/O；下一步按 DevelopmentPlan 阶段 11 实现 Windows 后台宿主、托盘菜单、双击隐式启动和开机自启勾选项。

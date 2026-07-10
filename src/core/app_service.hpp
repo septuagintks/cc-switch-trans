@@ -16,6 +16,7 @@ enum class ServiceState {
     Stopped,
     Starting,
     Running,
+    Reloading,
     Stopping,
 };
 
@@ -29,12 +30,18 @@ public:
     AppService& operator=(const AppService&) = delete;
 
     bool start(std::string& error);
+    bool reload(ConfigSnapshot config, std::string& error);
     void stop();
     int wait();
     ServiceState status() const;
 
 private:
+    bool start_impl(std::string& error);
+
     ConfigSnapshot config_;
+    mutable std::mutex lifecycle_mutex_;
+    std::condition_variable lifecycle_cv_;
+    bool wait_in_progress_ = false;
     mutable std::mutex mutex_;
     std::condition_variable state_cv_;
     ServiceState state_ = ServiceState::Stopped;
@@ -42,7 +49,7 @@ private:
     bool startup_succeeded_ = false;
     std::string startup_error_;
     int exit_code_ = 1;
-    std::unique_ptr<Server> server_;
+    std::shared_ptr<Server> server_;
     std::thread thread_;
 };
 

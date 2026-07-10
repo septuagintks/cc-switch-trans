@@ -19,6 +19,15 @@ AppService::~AppService() {
 }
 
 bool AppService::start(std::string& error) {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (wait_in_progress_) {
+        error = "service wait is already in progress";
+        return false;
+    }
+    return start_impl(error);
+}
+
+bool AppService::start_impl(std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
     if (state_ != ServiceState::Stopped || thread_.joinable()) {
         error = "service is already running";
@@ -31,9 +40,10 @@ bool AppService::start(std::string& error) {
     startup_error_.clear();
     exit_code_ = 1;
     try {
-        server_ = std::make_unique<Server>(config_);
-        thread_ = std::thread([this]() {
-            const int code = server_->run([this](bool succeeded, const std::string& startup_error) {
+        server_ = std::make_shared<Server>(config_);
+        const auto running_server = server_;
+        thread_ = std::thread([this, running_server]() {
+            const int code = running_server->run([this](bool succeeded, const std::string& startup_error) {
                 {
                     std::lock_guard<std::mutex> state_lock(mutex_);
                     startup_complete_ = true;
@@ -80,7 +90,82 @@ bool AppService::start(std::string& error) {
     return false;
 }
 
+bool AppService::reload(ConfigSnapshot config, std::string& error) {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (wait_in_progress_) {
+        error = "service cannot reload while wait is in progress";
+        return false;
+    }
+    if (!config) {
+        error = "config snapshot must not be null";
+        return false;
+    }
+
+    std::shared_ptr<Server> running_server;
+    ConfigSnapshot previous_config;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != ServiceState::Running || !server_) {
+            error = "service must be running to reload";
+            return false;
+        }
+        running_server = server_;
+        previous_config = config_;
+    }
+
+    const auto result = running_server->reload(config, error);
+    if (result == ReloadResult::Applied) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (server_ != running_server || state_ != ServiceState::Running) {
+            error = "service state changed while applying reload";
+            return false;
+        }
+        config_ = std::move(config);
+        return true;
+    }
+    if (result == ReloadResult::Failed) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (server_ != running_server || state_ != ServiceState::Running) {
+            error = "service state changed before restart reload";
+            return false;
+        }
+        state_ = ServiceState::Reloading;
+        running_server->request_stop();
+    }
+    if (thread_.joinable()) {
+        thread_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        server_.reset();
+        state_ = ServiceState::Stopped;
+        config_ = config;
+    }
+
+    std::string restart_error;
+    if (start_impl(restart_error)) {
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        config_ = previous_config;
+    }
+    std::string rollback_error;
+    if (start_impl(rollback_error)) {
+        error = "reload failed and the previous configuration was restored: " + restart_error;
+        return false;
+    }
+    error = "reload failed: " + restart_error + "; rollback failed: " + rollback_error;
+    return false;
+}
+
 void AppService::stop() {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_ == ServiceState::Stopped) {
         return;
@@ -92,12 +177,28 @@ void AppService::stop() {
 }
 
 int AppService::wait() {
+    std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (wait_in_progress_) {
+        lifecycle_cv_.wait(lifecycle_lock, [this]() { return !wait_in_progress_; });
+        std::lock_guard<std::mutex> lock(mutex_);
+        return exit_code_;
+    }
+    wait_in_progress_ = true;
+    lifecycle_lock.unlock();
     if (thread_.joinable()) {
         thread_.join();
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    server_.reset();
-    return exit_code_;
+    int result = 1;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        server_.reset();
+        result = exit_code_;
+    }
+    lifecycle_lock.lock();
+    wait_in_progress_ = false;
+    lifecycle_lock.unlock();
+    lifecycle_cv_.notify_all();
+    return result;
 }
 
 ServiceState AppService::status() const {

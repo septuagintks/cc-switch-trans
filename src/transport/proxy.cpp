@@ -467,7 +467,7 @@ struct Proxy::Impl {
 #ifdef _WIN32
     Impl(const TimeoutConfig& timeouts, const std::shared_ptr<RuntimeMetrics>& metrics)
         : session(WinHttpOpen(
-              L"ccs-trans/0.3.0",
+              L"ccs-trans/0.4.0",
               WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
               WINHTTP_NO_PROXY_NAME,
               WINHTTP_NO_PROXY_BYPASS,

@@ -9,11 +9,20 @@
 #include "transport/proxy.hpp"
 #include "transforms/findcg_responses_transform.hpp"
 
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 
 namespace ccs {
+
+enum class ReloadResult {
+    Applied,
+    RestartRequired,
+    Failed,
+};
 
 class Server {
 public:
@@ -23,6 +32,7 @@ public:
 
     int run(const StartupCallback& startup_callback = {});
     void request_stop();
+    ReloadResult reload(ConfigSnapshot config, std::string& error);
     std::string process_raw_request(
         const std::string& raw,
         const std::string& client_ip,
@@ -40,21 +50,30 @@ public:
         const std::string& message) const;
 
 private:
+    class RequestGeneration;
+
+    std::shared_ptr<RequestGeneration> current_generation() const;
+    bool process_with_generation(
+        const std::shared_ptr<RequestGeneration>& generation,
+        const std::string& raw,
+        const std::string& client_ip,
+        EndpointGroupKind endpoint,
+        const std::function<bool(const std::string&)>& sender,
+        const CancellationToken& cancellation) const;
     HttpResponse handle_local_route_error(const HttpRequest& request, const RouteDecision& route) const;
     HttpResponse handle_usage_request(
+        const std::shared_ptr<RequestGeneration>& generation,
         const HttpRequest& request,
         const EndpointGroupConfig& endpoint,
         const TaskConfig& task,
         const CancellationToken& cancellation) const;
     void log_performance_snapshot(const std::string& reason) const;
 
-    ConfigSnapshot config_snapshot_;
-    const AppConfig& config_;
     std::shared_ptr<RuntimeMetrics> metrics_;
-    TaskRouter responses_router_;
-    TaskRouter chat_router_;
-    Proxy proxy_;
-    mutable Logger logger_;
+    mutable std::shared_ptr<RequestGeneration> generation_;
+    mutable std::shared_mutex generation_mutex_;
+    mutable std::mutex reload_mutex_;
+    std::atomic_bool stop_requested_{false};
     FindcgResponsesTransform findcg_transform_;
 };
 
