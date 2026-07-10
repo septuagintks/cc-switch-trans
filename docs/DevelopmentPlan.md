@@ -593,7 +593,7 @@ chat endpoint: 127.0.0.1:15724
 
 每个工作包都运行 Release/Debug 构建、单元测试和相关集成测试。第 5 个工作包完成前不进入 tray 或 macOS host，避免把尚未稳定的配置和生命周期接口复制到图形宿主。
 
-完成状态：5 个工作包均已独立 review、验证并形成签名提交。reload 使用 generation 交换：热字段原地切换，listener/worker/metrics interval 及同路径 logger writer 参数变化执行优雅重启；新拓扑启动失败时自动恢复旧 snapshot。Windows accept loop 改为可中断等待，`wait()` 与其他线程的 `stop()` 可安全协作。
+完成状态：5 个工作包均已独立 review、验证并形成签名提交。reload 使用 generation 交换：热字段原地切换，listener/worker/metrics interval 及同路径 logger writer 参数变化执行优雅重启；新拓扑启动失败时自动恢复旧 snapshot。Windows accept loop 改为可中断等待，`wait()` 与其他线程的 `stop()` 可安全协作。专用 reload 集成测试将旧请求阻塞在 upstream A，运行期间原子保存并重读 profile，切换后验证新请求到 B、旧请求仍从 A 完成。
 
 最终三次 Release 回归中位数如下，所有运行均为 0 请求失败、0 logger backpressure、0 writer failure：
 

@@ -45,6 +45,15 @@ if(BUILD_TESTING)
     target_include_directories(ccs-trans-core-tests PRIVATE third_party)
     add_test(NAME ccs-trans-core-tests COMMAND ccs-trans-core-tests)
 
+    if(WIN32)
+        add_executable(ccs-trans-reload-integration
+            tests/integration/reload_integration.cpp
+        )
+        target_link_libraries(ccs-trans-reload-integration PRIVATE ccs-trans-core)
+        add_test(NAME ccs-trans-reload-integration COMMAND ccs-trans-reload-integration)
+        set_tests_properties(ccs-trans-reload-integration PROPERTIES TIMEOUT 30)
+    endif()
+
     add_executable(ccs-trans-transform-benchmark
         tests/benchmark/transform_benchmark.cpp
     )

@@ -638,6 +638,7 @@ CMake 继续保持 core、平台实现和 host 分层。macOS 先交付 `arm64` 
 - 取消 token 的幂等触发、立即回调和注销行为。
 - 运行时指标和批量日志 writer 的计数、高水位与错误 flush。
 - reload 分类、热切换、优雅重启、失败回滚和跨线程 stop/wait。
+- 真实 socket/WinHTTP reload 链路中，旧请求保持 upstream A，新请求切换到 B，期间 profile 可保存并重读。
 
 ### `0.4.0` 集成测试
 
