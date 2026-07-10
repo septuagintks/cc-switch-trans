@@ -6,8 +6,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
+#include <vector>
 
 namespace ccs {
 
@@ -73,16 +76,56 @@ struct AppConfig {
     std::size_t max_connections = 64;
 };
 
+using ConfigSnapshot = std::shared_ptr<const AppConfig>;
+
+enum class CliCommandKind {
+    Run,
+    ProfileList,
+    ProfileShow,
+    ProfileCreate,
+    ProfileRemove,
+    ProfileUse,
+    ProfileSet,
+    ProfileUnset,
+    Help,
+    Version,
+};
+
+enum class ConfigValueType {
+    String,
+    Boolean,
+    Integer,
+};
+
+struct ConfigOverride {
+    std::string key;
+    std::string value;
+};
+
 struct ParseResult {
     bool ok = false;
     bool help_requested = false;
     bool version_requested = false;
     std::string error;
+    CliCommandKind command = CliCommandKind::Run;
+    std::string profile_name;
+    std::string profile_key;
+    std::string profile_value;
+    std::vector<ConfigOverride> overrides;
     AppConfig config;
 };
 
 ParseResult parse_args(int argc, char** argv);
 bool validate_config(const AppConfig& config, std::string& error);
+bool validate_profile_config(const AppConfig& config, std::string& error);
+bool apply_config_override(
+    AppConfig& config,
+    const std::string& key,
+    const std::string& value,
+    std::string& error);
+std::optional<ConfigValueType> config_value_type(const std::string& key);
+bool is_valid_profile_name(const std::string& name);
+ConfigSnapshot make_config_snapshot(AppConfig config);
 void print_help(std::ostream& os);
 void print_version(std::ostream& os);
 void print_config_summary(std::ostream& os, const AppConfig& config);

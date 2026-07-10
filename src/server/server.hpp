@@ -19,7 +19,7 @@ class Server {
 public:
     using StartupCallback = std::function<void(bool, const std::string&)>;
 
-    explicit Server(AppConfig config);
+    explicit Server(ConfigSnapshot config);
 
     int run(const StartupCallback& startup_callback = {});
     void request_stop();
@@ -48,7 +48,8 @@ private:
         const CancellationToken& cancellation) const;
     void log_performance_snapshot(const std::string& reason) const;
 
-    AppConfig config_;
+    ConfigSnapshot config_snapshot_;
+    const AppConfig& config_;
     std::shared_ptr<RuntimeMetrics> metrics_;
     TaskRouter responses_router_;
     TaskRouter chat_router_;

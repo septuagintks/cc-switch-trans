@@ -22,6 +22,7 @@ enum class ServiceState {
 class AppService {
 public:
     explicit AppService(AppConfig config);
+    explicit AppService(ConfigSnapshot config);
     ~AppService();
 
     AppService(const AppService&) = delete;
@@ -33,7 +34,7 @@ public:
     ServiceState status() const;
 
 private:
-    AppConfig config_;
+    ConfigSnapshot config_;
     mutable std::mutex mutex_;
     std::condition_variable state_cv_;
     ServiceState state_ = ServiceState::Stopped;

@@ -1,4 +1,6 @@
+#include "config/app_paths.hpp"
 #include "config/config.hpp"
+#include "config/profile_store.hpp"
 #include "core/app_service.hpp"
 #include "core/cancellation.hpp"
 #include "core/task_router.hpp"
@@ -56,6 +58,8 @@ void test_config_resolution() {
     require(defaults.config.chat_endpoint.listen_port == 15724, "default Chat port");
     require(defaults.config.responses_endpoint.enabled(), "Responses endpoint enabled");
     require(!defaults.config.chat_endpoint.enabled(), "Chat endpoint disabled without its URL");
+    std::string validation_error;
+    require(ccs::validate_config(defaults.config, validation_error), validation_error);
 
     const auto canonical = parse({
         "run",
@@ -123,6 +127,7 @@ void test_config_resolution() {
     require(canonical.config.timeouts.response_header_ms == 104, "response header timeout option");
     require(canonical.config.timeouts.stream_idle_ms == 105, "stream idle timeout option");
     require(canonical.config.timeouts.total_ms == 106, "total timeout option");
+    require(ccs::validate_config(canonical.config, validation_error), validation_error);
 
     const std::vector<std::string> removed_options = {
         "--upstream-url",
@@ -169,14 +174,18 @@ void test_config_resolution() {
         "--chat-upstream-url", "https://chat.example.com",
         "--chat-listen-port", "15723",
     });
-    require(!same_listener.ok && same_listener.error.find("same listen address") != std::string::npos,
+    require(same_listener.ok, same_listener.error);
+    require(!ccs::validate_config(same_listener.config, validation_error)
+            && validation_error.find("same listen address") != std::string::npos,
         "enabled endpoints cannot share a listen address");
     const auto disabled_same_listener = parse({
         "run",
         "--responses-upstream-url", "https://example.com",
         "--chat-listen-port", "15723",
     });
-    require(!disabled_same_listener.ok && disabled_same_listener.error.find("same listen address") != std::string::npos,
+    require(disabled_same_listener.ok, disabled_same_listener.error);
+    require(!ccs::validate_config(disabled_same_listener.config, validation_error)
+            && validation_error.find("same listen address") != std::string::npos,
         "all bound endpoints require distinct listen addresses");
     const auto overlapping_routes = parse({
         "run",
@@ -184,20 +193,40 @@ void test_config_resolution() {
         "--responses-local-path", "/same/",
         "--responses-usage-local-path", "/same",
     });
-    require(!overlapping_routes.ok && overlapping_routes.error.find("must be different") != std::string::npos,
+    require(overlapping_routes.ok, overlapping_routes.error);
+    require(!ccs::validate_config(overlapping_routes.config, validation_error)
+            && validation_error.find("must be different") != std::string::npos,
         "same-endpoint routes cannot overlap after canonicalization");
     const auto query_in_path = parse({
         "run",
         "--responses-upstream-url", "https://example.com",
         "--responses-upstream-path", "/v1/responses?fixed=true",
     });
-    require(!query_in_path.ok && query_in_path.error.find("query or fragment") != std::string::npos,
+    require(query_in_path.ok, query_in_path.error);
+    require(!ccs::validate_config(query_in_path.config, validation_error)
+            && validation_error.find("query or fragment") != std::string::npos,
         "configured paths cannot embed queries");
+
+    const auto selected_profile = parse({"run", "--profile", "desktop", "--worker-threads", "8"});
+    require(selected_profile.ok && selected_profile.profile_name == "desktop", "run profile parsed");
+    require(selected_profile.overrides.size() == 1
+            && selected_profile.overrides[0].key == "worker-threads",
+        "run override remains separate from profile selection");
+    const auto profile_set = parse({"profile", "set", "desktop", "worker-threads", "8"});
+    require(profile_set.ok && profile_set.command == ccs::CliCommandKind::ProfileSet,
+        "profile set command parsed");
+    const auto prefixed_profile_key = parse({"profile", "set", "desktop", "--worker-threads", "8"});
+    require(!prefixed_profile_key.ok && prefixed_profile_key.error.find("without --") != std::string::npos,
+        "profile keys reject CLI prefixes");
+    const auto invalid_profile_name = parse({"profile", "create", "../escape"});
+    require(!invalid_profile_name.ok, "invalid profile name rejected");
 
     std::ostringstream help;
     ccs::print_help(help);
     const auto help_text = help.str();
-    require(help_text.find("ccs-trans run [options]") != std::string::npos, "help documents run command");
+    require(help_text.find("ccs-trans run [--profile <name>] [options]") != std::string::npos, "help documents run command");
+    require(help_text.find("ccs-trans profile set <name> <key> <value>") != std::string::npos,
+        "help documents profile commands");
     require(help_text.find("--responses-usage-upstream-path") != std::string::npos, "help documents canonical Usage option");
     require(help_text.find("--upstream-url") == std::string::npos, "help omits removed shared upstream option");
     require(help_text.find(", -h") == std::string::npos, "help omits removed short alias");
@@ -493,6 +522,144 @@ void test_logger_open_failure_contract() {
     std::filesystem::remove(parent_file, ec);
 }
 
+void test_profile_store() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path()
+        / ("ccs-trans-profile-store-" + std::to_string(nonce));
+    const auto paths = ccs::make_app_paths(root);
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    ccs::ProfileStore store(paths);
+    std::string error;
+    require(store.load(error), error);
+    require(store.profile_names().empty(), "missing config starts with no profiles");
+    require(!store.create("../invalid", error), "store API rejects invalid profile names");
+    require(store.create("desktop", error), error);
+    require(!store.create("desktop", error), "duplicate profile rejected");
+    require(store.set("desktop", "responses-upstream-url", "https://profile.example.com", error), error);
+    require(store.set("desktop", "log-body", "false", error), error);
+    require(store.set("desktop", "worker-threads", "16", error), error);
+    require(store.set("desktop", "max-connections", "32", error), error);
+    require(!store.set("desktop", "chat-listen-port", "15723", error),
+        "profile set rejects cross-field listener conflicts");
+    require(!store.set("desktop", "log-path", "../outside.log", error),
+        "relative profile log path cannot escape the app root");
+    require(!store.set("desktop", "log-path", ".", error),
+        "application root cannot be used as a log file");
+    require(store.create("other", error), error);
+    require(store.set("other", "responses-upstream-url", "https://other.example.com", error), error);
+    require(store.use("desktop", error), error);
+    require(store.save(error), error);
+    require(std::filesystem::exists(paths.config_file), "config file saved");
+    require(std::filesystem::is_directory(paths.logs_directory), "logs directory created");
+    require(std::filesystem::is_directory(paths.state_directory), "state directory created");
+
+    const auto saved = nlohmann::json::parse(read_file(paths.config_file));
+    require(saved["schema_version"] == "ccs-trans.config/v1", "config schema version");
+    require(saved["active_profile"] == "desktop", "active profile saved");
+    require(saved["profiles"]["desktop"]["log-body"].is_boolean(), "boolean profile value is typed");
+    require(saved["profiles"]["desktop"]["worker-threads"].is_number_unsigned(),
+        "integer profile value is typed");
+
+    ccs::ProfileStore reloaded(paths);
+    require(reloaded.load(error), error);
+    require(reloaded.active_profile() && *reloaded.active_profile() == "desktop", "active profile loaded");
+    const auto run_active = parse({"run"});
+    require(run_active.ok, run_active.error);
+    ccs::ConfigSnapshot active_snapshot;
+    std::string selected;
+    require(reloaded.resolve_run(run_active, active_snapshot, selected, error), error);
+    require(selected == "desktop", "active profile selected by default");
+    require(active_snapshot->responses_endpoint.upstream_url == "https://profile.example.com",
+        "profile upstream applied");
+    require(!active_snapshot->log_body, "profile boolean applied");
+    require(active_snapshot->worker_threads == 16 && active_snapshot->max_connections == 32,
+        "profile integer values applied");
+    require(active_snapshot->log_path == paths.default_log_file, "default log path uses app root");
+
+    const auto run_explicit = parse({"run", "--profile", "other"});
+    require(run_explicit.ok, run_explicit.error);
+    ccs::ConfigSnapshot explicit_snapshot;
+    require(reloaded.resolve_run(run_explicit, explicit_snapshot, selected, error), error);
+    require(selected == "other" && explicit_snapshot->responses_endpoint.upstream_url == "https://other.example.com",
+        "explicit run profile overrides active profile selection");
+
+    const auto run_override = parse({
+        "run",
+        "--profile", "desktop",
+        "--responses-upstream-url", "https://override.example.com",
+        "--worker-threads", "8",
+        "--max-connections", "16",
+        "--log-path", "logs/override.log",
+    });
+    require(run_override.ok, run_override.error);
+    ccs::ConfigSnapshot override_snapshot;
+    require(reloaded.resolve_run(run_override, override_snapshot, selected, error), error);
+    require(override_snapshot->responses_endpoint.upstream_url == "https://override.example.com",
+        "CLI upstream overrides profile");
+    require(override_snapshot->worker_threads == 8 && override_snapshot->max_connections == 16,
+        "CLI capacity overrides profile");
+    require(override_snapshot->log_path == paths.root / "logs/override.log",
+        "relative log path resolves under app root");
+
+    const auto missing_profile = parse({"run", "--profile", "missing", "--responses-upstream-url", "https://example.com"});
+    ccs::ConfigSnapshot missing_snapshot;
+    require(!reloaded.resolve_run(missing_profile, missing_snapshot, selected, error)
+            && error.find("does not exist") != std::string::npos,
+        "explicit missing profile rejected");
+    const auto escaping_log = parse({
+        "run", "--profile", "desktop", "--log-path", "../outside.log",
+    });
+    require(!reloaded.resolve_run(escaping_log, missing_snapshot, selected, error)
+            && error.find("application root") != std::string::npos,
+        "relative CLI log path cannot escape the app root");
+
+    std::string shown;
+    require(reloaded.show_json("desktop", shown, error), error);
+    const auto shown_json = nlohmann::json::parse(shown);
+    require(shown_json["active"] == true && shown_json["values"]["worker-threads"] == 16,
+        "profile show output is typed");
+    require(reloaded.unset("desktop", "worker-threads", error), error);
+    require(!reloaded.unset("desktop", "worker-threads", error), "unset missing profile key rejected");
+    require(reloaded.remove("desktop", error), error);
+    require(!reloaded.active_profile(), "removing active profile clears selection");
+    require(reloaded.save(error), error);
+
+    for (const auto& entry : std::filesystem::directory_iterator(paths.root)) {
+        require(entry.path().filename().string().find("config.json.tmp-") == std::string::npos,
+            "atomic save leaves no temporary file");
+    }
+
+    {
+        std::ofstream corrupt(paths.config_file, std::ios::binary | std::ios::trunc);
+        corrupt << R"({"schema_version":"unknown","active_profile":null,"profiles":{}})";
+    }
+    ccs::ProfileStore corrupt_store(paths);
+    require(!corrupt_store.load(error) && error.find("schema_version") != std::string::npos,
+        "unsupported schema is rejected without fallback");
+    require(!corrupt_store.save(error) && error.find("loaded") != std::string::npos,
+        "failed load cannot be saved over the damaged config");
+
+    {
+        std::ofstream wrong_type(paths.config_file, std::ios::binary | std::ios::trunc);
+        wrong_type << R"({"schema_version":"ccs-trans.config/v1","active_profile":null,"profiles":{"bad":{"worker-threads":"32"}}})";
+    }
+    ccs::ProfileStore wrong_type_store(paths);
+    require(!wrong_type_store.load(error) && error.find("JSON integer") != std::string::npos,
+        "profile JSON types are enforced");
+
+    {
+        std::ofstream unknown_key(paths.config_file, std::ios::binary | std::ios::trunc);
+        unknown_key << R"({"schema_version":"ccs-trans.config/v1","active_profile":null,"profiles":{"bad":{"authorization":"secret"}}})";
+    }
+    ccs::ProfileStore unknown_key_store(paths);
+    require(!unknown_key_store.load(error) && error.find("unknown config key") != std::string::npos,
+        "unknown and credential-like profile fields are rejected");
+
+    std::filesystem::remove_all(root, ec);
+}
+
 void test_runtime_metrics() {
     ccs::RuntimeMetrics metrics;
     metrics.connection_accepted(ccs::EndpointGroupKind::Responses, 1, 1);
@@ -599,6 +766,7 @@ int main() {
         {"logger backpressure contract", test_logger_backpressure_contract},
         {"logger failure contract", test_logger_failure_contract},
         {"logger open failure contract", test_logger_open_failure_contract},
+        {"profile store", test_profile_store},
         {"runtime metrics", test_runtime_metrics},
         {"app service startup failure", test_app_service_startup_failure},
         {"cancellation", test_cancellation},

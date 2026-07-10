@@ -593,16 +593,16 @@ reload(new_snapshot)
 
 阶段 9 继续复用该生命周期，不实现 tray；取消传播和优雅停止必须通过同一服务对象收束进行中请求。未来 Windows tray host 和 macOS host 不能复制路由、配置或日志初始化代码。
 
-持久配置未来采用：
+持久配置已采用：
 
 ```text
 内置默认值
-  <- 配置文件
+  <- active 或 run 显式选择的稀疏 profile
   <- CLI 显式覆盖
   -> 校验后的不可变 ConfigSnapshot
 ```
 
-命令行覆盖默认不自动写回。配置文件使用 `schema_version`、完整校验和原子替换，不保存转发请求中的 Authorization/API key/Cookie。
+命令行覆盖默认不自动写回。配置文件使用 `ccs-trans.config/v1`、typed canonical key、完整校验和原子替换，不保存转发请求中的 Authorization/API key/Cookie；未知字段直接拒绝。相对日志路径以应用根目录为基准且不能通过 `..` 越界，绝对路径仍可用于显式外置日志。
 
 持久根目录固定为 Windows `%USERPROFILE%/.ccs-trans/`、macOS `~/.ccs-trans/`。代码通过系统 API 获取当前用户 home，环境变量和 `~` 只用于文档显示。默认布局为 `config.json`、`logs/ccs-trans.log` 和 `state/`；配置文件、日志和运行状态因此位于同一个应用数据根目录，但职责仍以子路径隔离。该选择便于 CLI 与图形宿主共享，也意味着 Windows 配置不参与 Roaming Profile、macOS 首版按非沙盒发行；未来若采用 App Sandbox，需要提供容器目录迁移或兼容层。
 

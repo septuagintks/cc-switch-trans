@@ -3,9 +3,11 @@
 #include "core/url.hpp"
 
 #include <charconv>
+#include <cctype>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace ccs {
 
@@ -285,10 +287,8 @@ bool apply_option(AppConfig& config, const std::string& option, const std::strin
     return true;
 }
 
-} // namespace
-
-bool validate_config(const AppConfig& config, std::string& error) {
-    if (!config.responses_endpoint.enabled() && !config.chat_endpoint.enabled()) {
+bool validate_config_impl(const AppConfig& config, bool require_upstream, std::string& error) {
+    if (require_upstream && !config.responses_endpoint.enabled() && !config.chat_endpoint.enabled()) {
         error = "set --responses-upstream-url and/or --chat-upstream-url";
         return false;
     }
@@ -307,6 +307,14 @@ bool validate_config(const AppConfig& config, std::string& error) {
     }
     if (!is_valid_log_level(config.log_level)) {
         error = "--log-level must be one of trace, debug, info, warn, error";
+        return false;
+    }
+    const auto log_filename = config.log_path.filename();
+    if (config.log_path.empty()
+        || log_filename.empty()
+        || log_filename == "."
+        || log_filename == "..") {
+        error = "--log-path must name a log file";
         return false;
     }
     if (config.body_log_limit == 0
@@ -331,6 +339,76 @@ bool validate_config(const AppConfig& config, std::string& error) {
     return true;
 }
 
+} // namespace
+
+bool validate_config(const AppConfig& config, std::string& error) {
+    return validate_config_impl(config, true, error);
+}
+
+bool validate_profile_config(const AppConfig& config, std::string& error) {
+    return validate_config_impl(config, false, error);
+}
+
+bool apply_config_override(
+    AppConfig& config,
+    const std::string& key,
+    const std::string& value,
+    std::string& error) {
+    if (key.empty() || key.rfind("--", 0) == 0) {
+        error = "profile key must use the canonical name without --";
+        return false;
+    }
+    const std::string option = "--" + key;
+    if (value_options().count(option) == 0) {
+        error = "unknown config key: " + key;
+        return false;
+    }
+    return apply_option(config, option, value, error);
+}
+
+std::optional<ConfigValueType> config_value_type(const std::string& key) {
+    const std::string option = "--" + key;
+    if (value_options().count(option) == 0) {
+        return std::nullopt;
+    }
+    if (option == "--log-body" || option == "--redact-sensitive") {
+        return ConfigValueType::Boolean;
+    }
+    static const std::unordered_set<std::string> string_options = {
+        "--responses-listen-host",
+        "--responses-upstream-url",
+        "--responses-local-path",
+        "--responses-upstream-path",
+        "--responses-usage-local-path",
+        "--responses-usage-upstream-path",
+        "--chat-listen-host",
+        "--chat-upstream-url",
+        "--chat-local-path",
+        "--chat-upstream-path",
+        "--chat-usage-local-path",
+        "--chat-usage-upstream-path",
+        "--log-path",
+        "--log-level",
+    };
+    return string_options.count(option) != 0 ? ConfigValueType::String : ConfigValueType::Integer;
+}
+
+bool is_valid_profile_name(const std::string& name) {
+    if (name.empty() || name.size() > 64 || !std::isalnum(static_cast<unsigned char>(name.front()))) {
+        return false;
+    }
+    for (const unsigned char ch : name) {
+        if (!std::isalnum(ch) && ch != '-' && ch != '_' && ch != '.') {
+            return false;
+        }
+    }
+    return true;
+}
+
+ConfigSnapshot make_config_snapshot(AppConfig config) {
+    return std::make_shared<const AppConfig>(std::move(config));
+}
+
 ParseResult parse_args(int argc, char** argv) {
     ParseResult result;
     if (argc < 2) {
@@ -342,14 +420,71 @@ ParseResult parse_args(int argc, char** argv) {
     if (command == "--help") {
         result.ok = true;
         result.help_requested = true;
+        result.command = CliCommandKind::Help;
         return result;
     }
     if (command == "--version") {
         result.ok = true;
         result.version_requested = true;
+        result.command = CliCommandKind::Version;
         return result;
     }
     if (removed_option_error(command, result.error)) {
+        return result;
+    }
+    if (command == "profile") {
+        if (argc < 3) {
+            result.error = "profile requires a subcommand";
+            return result;
+        }
+        const std::string subcommand = argv[2];
+        const auto parse_profile_name = [&]() {
+            if (argc < 4) {
+                result.error = "profile " + subcommand + " requires a profile name";
+                return false;
+            }
+            result.profile_name = argv[3];
+            if (!is_valid_profile_name(result.profile_name)) {
+                result.error = "profile name must be 1-64 characters using letters, digits, ., _, or -";
+                return false;
+            }
+            return true;
+        };
+
+        if (subcommand == "list" && argc == 3) {
+            result.command = CliCommandKind::ProfileList;
+        } else if (subcommand == "show" && argc == 4 && parse_profile_name()) {
+            result.command = CliCommandKind::ProfileShow;
+        } else if (subcommand == "create" && argc == 4 && parse_profile_name()) {
+            result.command = CliCommandKind::ProfileCreate;
+        } else if (subcommand == "remove" && argc == 4 && parse_profile_name()) {
+            result.command = CliCommandKind::ProfileRemove;
+        } else if (subcommand == "use" && argc == 4 && parse_profile_name()) {
+            result.command = CliCommandKind::ProfileUse;
+        } else if (subcommand == "set" && argc == 6 && parse_profile_name()) {
+            result.command = CliCommandKind::ProfileSet;
+            result.profile_key = argv[4];
+            result.profile_value = argv[5];
+            std::string field_error;
+            AppConfig probe;
+            if (!apply_config_override(probe, result.profile_key, result.profile_value, field_error)) {
+                result.error = field_error;
+                return result;
+            }
+        } else if (subcommand == "unset" && argc == 5 && parse_profile_name()) {
+            result.command = CliCommandKind::ProfileUnset;
+            result.profile_key = argv[4];
+            if (!config_value_type(result.profile_key)) {
+                result.error = "unknown config key: " + result.profile_key;
+                return result;
+            }
+        } else {
+            if (result.error.empty()) {
+                result.error = "invalid profile command or argument count";
+            }
+            return result;
+        }
+        result.ok = true;
         return result;
     }
     if (command != "run") {
@@ -357,6 +492,7 @@ ParseResult parse_args(int argc, char** argv) {
         return result;
     }
 
+    result.command = CliCommandKind::Run;
     std::unordered_set<std::string> seen;
     try {
         for (int i = 2; i < argc; ++i) {
@@ -364,15 +500,29 @@ ParseResult parse_args(int argc, char** argv) {
             if (option == "--help") {
                 result.ok = true;
                 result.help_requested = true;
+                result.command = CliCommandKind::Help;
                 return result;
             }
             if (option == "--version") {
                 result.ok = true;
                 result.version_requested = true;
+                result.command = CliCommandKind::Version;
                 return result;
             }
             if (removed_option_error(option, result.error)) {
                 return result;
+            }
+            if (option == "--profile") {
+                if (!seen.insert(option).second) {
+                    result.error = "duplicate option: " + option;
+                    return result;
+                }
+                result.profile_name = take_value(i, argc, argv, option);
+                if (!is_valid_profile_name(result.profile_name)) {
+                    result.error = "profile name must be 1-64 characters using letters, digits, ., _, or -";
+                    return result;
+                }
+                continue;
             }
             if (value_options().count(option) == 0) {
                 result.error = "unknown option: " + option;
@@ -386,15 +536,13 @@ ParseResult parse_args(int argc, char** argv) {
             if (!apply_option(result.config, option, value, result.error)) {
                 return result;
             }
+            result.overrides.push_back(ConfigOverride{option.substr(2), value});
         }
     } catch (const std::exception& ex) {
         result.error = ex.what();
         return result;
     }
 
-    if (!validate_config(result.config, result.error)) {
-        return result;
-    }
     result.ok = true;
     return result;
 }
@@ -403,7 +551,14 @@ void print_help(std::ostream& os) {
     os
         << "ccs-trans " << kVersion << "\n\n"
         << "Usage:\n"
-        << "  ccs-trans run [options]\n"
+        << "  ccs-trans run [--profile <name>] [options]\n"
+        << "  ccs-trans profile list\n"
+        << "  ccs-trans profile show <name>\n"
+        << "  ccs-trans profile create <name>\n"
+        << "  ccs-trans profile remove <name>\n"
+        << "  ccs-trans profile use <name>\n"
+        << "  ccs-trans profile set <name> <key> <value>\n"
+        << "  ccs-trans profile unset <name> <key>\n"
         << "  ccs-trans --help\n"
         << "  ccs-trans --version\n\n"
         << "Endpoint options:\n"
@@ -422,6 +577,7 @@ void print_help(std::ostream& os) {
         << "  --chat-usage-local-path <path>          Chat Usage local route\n"
         << "  --chat-usage-upstream-path <path>       Chat Usage upstream route\n\n"
         << "Runtime options:\n"
+        << "  --profile <name>                      Select a persistent profile for this run\n"
         << "  --log-path <path>                       Log file path\n"
         << "  --log-level <level>                     trace, debug, info, warn, error\n"
         << "  --log-body <true|false>                 Write request/response bodies\n"

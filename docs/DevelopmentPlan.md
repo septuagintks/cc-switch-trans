@@ -524,6 +524,10 @@ chat endpoint: 127.0.0.1:15724
 7. 使用不可变 `ConfigSnapshot` 提供给请求；重载时新请求使用新快照，进行中请求继续使用旧快照。
 8. 第一版不在配置中存储请求头里的 API key、Authorization 或其他转发凭据。
 
+完成状态：已完成。Windows 通过 `SHGetKnownFolderPath(FOLDERID_Profile)`、POSIX/macOS 路径通过当前 account API 解析 home，不读取 `USERPROFILE`/`HOME` 作为覆盖。`ccs-trans.config/v1` 使用稀疏 typed profile、active profile 和 canonical key；CLI 实现 `list/show/create/remove/use/set/unset`，运行时按内置默认值 → active/显式 profile → CLI overrides 合并并生成 `shared_ptr<const AppConfig>`。
+
+本工作包 review 修正了损坏配置 load 后仍可 save、非法 profile 名绕过 CLI、相对日志路径逃出应用根目录、目录被当成日志文件和空 snapshot 解引用等边界。保存流程创建用户目录，写同目录唯一临时文件，限制 POSIX 权限，读回并重新验证 schema 后原子替换；未知字段和凭据类字段因不在 canonical key 集中而被拒绝。单元测试覆盖 CRUD、typed JSON、active/显式选择、CLI 覆盖优先级、相对路径、损坏 schema/type/unknown key 和原子临时文件清理，双端口集成与 smoke benchmark 通过。
+
 ### 10.5 回归、迁移说明与发布
 
 1. 单元测试覆盖唯一 CLI 名称、旧参数拒绝、profile CRUD、schema 校验、路径解析和双端口路由归属。

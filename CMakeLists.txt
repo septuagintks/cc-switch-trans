@@ -5,7 +5,9 @@ project(ccs_trans VERSION 0.3.0 LANGUAGES CXX)
 include(CTest)
 
 add_library(ccs-trans-core STATIC
+    src/config/app_paths.cpp
     src/config/config.cpp
+    src/config/profile_store.cpp
     src/core/app_service.cpp
     src/core/cancellation.cpp
     src/core/request_id.cpp
@@ -26,7 +28,7 @@ target_include_directories(ccs-trans-core PUBLIC src)
 target_include_directories(ccs-trans-core PRIVATE third_party)
 
 if(WIN32)
-    target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp)
+    target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp shell32 ole32)
 endif()
 
 add_executable(ccs-trans

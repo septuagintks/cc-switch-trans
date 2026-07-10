@@ -19,8 +19,12 @@ cc-switch-trans/
 
   src/
     config/
+      app_paths.hpp
+      app_paths.cpp
       config.hpp
       config.cpp
+      profile_store.hpp
+      profile_store.cpp
     core/
       app_service.hpp
       app_service.cpp
@@ -81,7 +85,7 @@ cc-switch-trans/
 | ------------------- | ------------------------------------- | ---------------------------------------- |
 | `docs`              | 协议设计、开发顺序、结构约束          | benchmark 说明、发布流程、平台说明       |
 | `src/core`          | HTTP 类型、任务、URL、transform、取消、timeout、指标与 AppService | 配置快照和更细生命周期事件 |
-| `src/config`        | CLI 参数和运行配置                    | 配置文件、schema 迁移、不可变快照        |
+| `src/config`        | 平台用户目录、CLI、profile schema/原子存储和不可变配置快照 | schema 迁移与 reload generation |
 | `src/hosts`         | 进程入口                              | Windows tray host、macOS menu bar host   |
 | `src/logging`       | 结构化日志 API、批量 writer、背压与指标 | 日志轮转                                 |
 | `src/server`        | 本地 HTTP 接入、容量控制、取消监控和请求编排 | listener 接口                        |

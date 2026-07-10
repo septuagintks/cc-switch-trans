@@ -8,6 +8,9 @@
 namespace ccs {
 
 AppService::AppService(AppConfig config)
+    : AppService(make_config_snapshot(std::move(config))) {}
+
+AppService::AppService(ConfigSnapshot config)
     : config_(std::move(config)) {}
 
 AppService::~AppService() {

@@ -6,7 +6,7 @@
 
 The current unreleased source reports version `0.3.0` and runs on Windows. It has entered the breaking phase 10 CLI: start it with `ccs-trans run`, use endpoint-prefixed options, and do not use the removed shared or legacy options. Responses and Chat Completions have independent endpoint-group configuration, and each group owns its Usage route and upstream path.
 
-The logger reliability, canonical CLI/config, and dual-listener work packages are complete. `127.0.0.1:15723` owns Responses plus its Usage route; `127.0.0.1:15724` owns Chat Completions plus its Usage route. Both listeners share one bounded connection limit, worker pool, logger, metrics set, and process-level transport session. Persistent profiles and logs will next move under the same per-user `.ccs-trans` root, with the default log at `.ccs-trans/logs/ccs-trans.log`. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order.
+The logger reliability, canonical CLI/config, dual-listener, and persistent-profile work packages are complete. `127.0.0.1:15723` owns Responses plus its Usage route; `127.0.0.1:15724` owns Chat Completions plus its Usage route. Both listeners share one bounded connection limit, worker pool, logger, metrics set, and process-level transport session. Configuration, logs, and runtime state now share the per-user `.ccs-trans` root. Reload and full performance regression remain before the phase 10 release. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order.
 
 Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
 
@@ -60,6 +60,32 @@ ccs-trans run \
   --chat-upstream-url https://chat.example.com
 ```
 
+Persistent profiles:
+
+```text
+ccs-trans profile create findcg
+ccs-trans profile set findcg responses-upstream-url https://www.findcg.com
+ccs-trans profile set findcg chat-upstream-url https://chat.example.com
+ccs-trans profile use findcg
+ccs-trans profile show findcg
+ccs-trans run
+```
+
+`profile set` and `profile unset` change exactly one canonical key per command. Profile keys use the long option name without `--`. `run --profile <name>` selects a profile for one run without changing the active profile, and explicit run options override profile values without writing them back.
+
+The persistent layout is:
+
+```text
+Windows: %USERPROFILE%/.ccs-trans/
+macOS:   ~/.ccs-trans/
+
+config.json
+logs/ccs-trans.log
+state/
+```
+
+The program resolves the account home through the operating-system API, not `USERPROFILE`/`HOME` overrides. Relative `log-path` values resolve under `.ccs-trans` and cannot escape it with `..`; use an absolute path to place logs elsewhere. `config.json` uses schema `ccs-trans.config/v1`, typed JSON values, atomic replacement, and never accepts Authorization, API keys, cookies, or unknown fields.
+
 Common options:
 
 ```text
@@ -77,7 +103,7 @@ Common options:
 --chat-upstream-path /v1/chat/completions
 --chat-usage-local-path /v1/usage
 --chat-usage-upstream-path /v1/usage
---log-path ./logs/ccs-trans.log
+--log-path %USERPROFILE%/.ccs-trans/logs/ccs-trans.log
 --log-body true
 --redact-sensitive false
 --body-log-limit 1048576
@@ -102,7 +128,7 @@ With `--redact-sensitive false` and `--log-body true`, logs can contain live Aut
 
 Each timeout has one explicit option; there is no shared timeout fallback. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
 
-The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. Phase 10 logger reliability keeps in-flight batches inside the bounded pending capacity and reports separate batch-window, backpressure, file write/flush, oldest-record-age, and writer-health metrics. Endpoint-level accepted/rejected/active/queued/queue-wait metrics expose fairness across the shared worker pool. Persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS are next.
+The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. Phase 10 logger reliability keeps in-flight batches inside the bounded pending capacity and reports separate batch-window, backpressure, file write/flush, oldest-record-age, and writer-health metrics. Endpoint-level accepted/rejected/active/queued/queue-wait metrics expose fairness across the shared worker pool. The next work package adds controlled snapshot reload and runs the final mixed/desktop/stress regressions.
 
 ## Verify
 

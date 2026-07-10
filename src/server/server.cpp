@@ -35,6 +35,13 @@ namespace {
 constexpr int kBacklog = 64;
 constexpr std::size_t kHeaderLimit = 64 * 1024;
 
+const AppConfig& require_config_snapshot(const ConfigSnapshot& snapshot) {
+    if (!snapshot) {
+        throw std::invalid_argument("config snapshot must not be null");
+    }
+    return *snapshot;
+}
+
 class RequestMetricsScope {
 public:
     RequestMetricsScope(std::shared_ptr<RuntimeMetrics> metrics, CancellationToken cancellation)
@@ -769,8 +776,9 @@ void reject_overloaded_client(SOCKET client, const Server* server, EndpointGroup
 
 } // namespace
 
-Server::Server(AppConfig config)
-    : config_(config)
+Server::Server(ConfigSnapshot config)
+    : config_snapshot_(std::move(config))
+    , config_(require_config_snapshot(config_snapshot_))
     , metrics_(std::make_shared<RuntimeMetrics>())
     , responses_router_({&config_.responses_endpoint})
     , chat_router_({&config_.chat_endpoint})
