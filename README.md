@@ -8,6 +8,8 @@ The current source version is `0.2.0` and runs on Windows. Responses and Chat Co
 
 Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
 
+The packaged `0.2.0` executable passed a real Codex -> ccs-trans -> findcg Responses regression on 2026-07-11: the targeted tool was removed, findcg returned HTTP 200, and both SSE streams completed with contiguous chunk sequences.
+
 By default it listens on:
 
 ```text
@@ -76,6 +78,10 @@ Common options:
 ```
 
 `--concurrency` was removed in `0.2.0`; use `--worker-threads` and `--max-connections`.
+
+With `--redact-sensitive false` and `--log-body true`, logs can contain live Authorization values, cookies, full Codex context, and response chunks. Treat them as credential-bearing files. Use synthetic data for tests and benchmarks, enable sensitive-header redaction before sharing logs, and review body content separately because header redaction does not sanitize JSON bodies.
+
+The next development stage establishes repeatable 8/16/50-connection SSE benchmarks, adds client-disconnect cancellation and split timeout controls, and uses those results to decide whether the synchronous worker model needs an asynchronous I/O rewrite.
 
 ## Verify
 

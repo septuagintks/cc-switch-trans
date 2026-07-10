@@ -72,7 +72,7 @@ cc-switch-trans/
 | `docs`              | 协议设计、开发顺序、结构约束          | benchmark 说明、发布流程、平台说明       |
 | `src/core`          | HTTP 类型、任务、URL、transform 接口与 AppService | 配置快照和更细生命周期事件       |
 | `src/config`        | CLI 参数和运行配置                    | 配置文件、schema 迁移、不可变快照        |
-| `src/hosts`         | 进程入口                              | Windows tray host、macOS app host        |
+| `src/hosts`         | 进程入口                              | Windows tray host、macOS menu bar host   |
 | `src/logging`       | 结构化日志 API、批量 writer 与背压    | 日志轮转和队列指标                        |
 | `src/server`        | 本地 HTTP 接入、容量控制和请求编排    | listener 接口和取消传播                   |
 | `src/transport`     | 头过滤和进程级 WinHTTP session        | 分阶段 timeout、连接指标、macOS 实现      |
@@ -102,11 +102,13 @@ ccs-trans
 | `build`         | 默认/调试构建和 `compile_commands.json` | 是                               |
 | `build-release` | Release 构建                            | 是                               |
 | `dist`          | 本地发布包和人工验证日志                | 是，但删除前确认是否仍需诊断日志 |
-| `logs`          | 默认运行日志                            | 是，但可能包含排障证据           |
+| `logs`          | 默认运行日志                            | 是，可能包含凭据和完整请求上下文 |
 | `tmp`           | 集成测试日志和打包暂存                  | 是                               |
 | `.vscode`       | 当前开发者的编辑器设置                  | 是，不作为项目配置来源           |
 
 `.git` 是版本数据库，任何清理脚本都不得操作。工具生成的隐藏目录也不能被构建或打包脚本当作项目输入。
+
+发布包必须从明确的文件白名单生成，不能递归压缩已经运行过的 `dist/<package>/`。该目录可能新增 `logs/`，其中的 Authorization、Cookie、请求正文和响应 chunk 不得进入 ZIP、Git 或测试 fixture。
 
 ## 依赖规则
 
