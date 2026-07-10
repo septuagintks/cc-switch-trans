@@ -1,5 +1,7 @@
 #include "core/runtime_metrics.hpp"
 
+#include <chrono>
+
 namespace ccs {
 
 namespace {
@@ -136,17 +138,16 @@ void RuntimeMetrics::winhttp_connection_closed() {
     winhttp_connection_closed_events_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void RuntimeMetrics::log_record_enqueued(std::size_t records, std::size_t bytes) {
+void RuntimeMetrics::log_record_enqueued(
+    std::size_t records,
+    std::size_t bytes,
+    std::uint64_t oldest_pending_ns) {
     log_records_enqueued_.fetch_add(1, std::memory_order_relaxed);
     current_log_queue_records_.store(records, std::memory_order_relaxed);
     current_log_queue_bytes_.store(bytes, std::memory_order_relaxed);
+    oldest_log_record_enqueued_ns_.store(oldest_pending_ns, std::memory_order_relaxed);
     update_peak(peak_log_queue_records_, records);
     update_peak(peak_log_queue_bytes_, bytes);
-}
-
-void RuntimeMetrics::log_queue_drained() {
-    current_log_queue_records_.store(0, std::memory_order_relaxed);
-    current_log_queue_bytes_.store(0, std::memory_order_relaxed);
 }
 
 void RuntimeMetrics::log_backpressure(std::uint64_t wait_us) {
@@ -154,14 +155,46 @@ void RuntimeMetrics::log_backpressure(std::uint64_t wait_us) {
     log_backpressure_wait_us_.fetch_add(wait_us, std::memory_order_relaxed);
 }
 
-void RuntimeMetrics::log_batch_written(std::size_t records, std::size_t bytes, std::uint64_t write_us) {
+void RuntimeMetrics::log_batch_written(
+    std::size_t records,
+    std::size_t bytes,
+    std::uint64_t batch_wait_us,
+    std::uint64_t write_us,
+    std::uint64_t flush_us,
+    std::uint64_t oldest_record_age_us,
+    std::size_t pending_records,
+    std::size_t pending_bytes,
+    std::uint64_t oldest_pending_ns) {
     log_records_written_.fetch_add(records, std::memory_order_relaxed);
     log_bytes_written_.fetch_add(bytes, std::memory_order_relaxed);
     log_batches_written_.fetch_add(1, std::memory_order_relaxed);
     log_flush_count_.fetch_add(1, std::memory_order_relaxed);
-    log_write_time_us_.fetch_add(write_us, std::memory_order_relaxed);
+    log_write_time_us_.fetch_add(write_us + flush_us, std::memory_order_relaxed);
+    log_batch_wait_time_us_.fetch_add(batch_wait_us, std::memory_order_relaxed);
+    log_file_write_time_us_.fetch_add(write_us, std::memory_order_relaxed);
+    log_file_flush_time_us_.fetch_add(flush_us, std::memory_order_relaxed);
+    current_log_queue_records_.store(pending_records, std::memory_order_relaxed);
+    current_log_queue_bytes_.store(pending_bytes, std::memory_order_relaxed);
+    oldest_log_record_enqueued_ns_.store(oldest_pending_ns, std::memory_order_relaxed);
+    update_peak(max_log_batch_wait_us_, batch_wait_us);
+    update_peak(max_log_file_write_time_us_, write_us);
+    update_peak(max_log_file_flush_time_us_, flush_us);
+    update_peak(max_log_record_age_us_, oldest_record_age_us);
     update_peak(max_log_batch_records_, records);
     update_peak(max_log_batch_bytes_, bytes);
+}
+
+void RuntimeMetrics::log_writer_started() {
+    log_writer_healthy_.store(1, std::memory_order_relaxed);
+}
+
+void RuntimeMetrics::log_writer_failed() {
+    log_writer_healthy_.store(0, std::memory_order_relaxed);
+    log_writer_failures_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RuntimeMetrics::log_writer_stopped() {
+    log_writer_healthy_.store(0, std::memory_order_relaxed);
 }
 
 RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
@@ -213,6 +246,23 @@ RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
     CCS_LOAD_METRIC(log_batches_written);
     CCS_LOAD_METRIC(log_flush_count);
     CCS_LOAD_METRIC(log_write_time_us);
+    CCS_LOAD_METRIC(log_batch_wait_time_us);
+    CCS_LOAD_METRIC(max_log_batch_wait_us);
+    CCS_LOAD_METRIC(log_file_write_time_us);
+    CCS_LOAD_METRIC(max_log_file_write_time_us);
+    CCS_LOAD_METRIC(log_file_flush_time_us);
+    CCS_LOAD_METRIC(max_log_file_flush_time_us);
+    const auto oldest_enqueued_ns = load(oldest_log_record_enqueued_ns_);
+    if (oldest_enqueued_ns != 0) {
+        const auto now_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        result.oldest_log_record_age_us = now_ns > oldest_enqueued_ns
+            ? (now_ns - oldest_enqueued_ns) / 1000
+            : 0;
+    }
+    CCS_LOAD_METRIC(max_log_record_age_us);
+    CCS_LOAD_METRIC(log_writer_failures);
+    CCS_LOAD_METRIC(log_writer_healthy);
     CCS_LOAD_METRIC(max_log_batch_records);
     CCS_LOAD_METRIC(max_log_batch_bytes);
 #undef CCS_LOAD_METRIC

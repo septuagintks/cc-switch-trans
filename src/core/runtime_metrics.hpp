@@ -63,6 +63,16 @@ struct RuntimeMetricsSnapshot {
     std::uint64_t log_batches_written = 0;
     std::uint64_t log_flush_count = 0;
     std::uint64_t log_write_time_us = 0;
+    std::uint64_t log_batch_wait_time_us = 0;
+    std::uint64_t max_log_batch_wait_us = 0;
+    std::uint64_t log_file_write_time_us = 0;
+    std::uint64_t max_log_file_write_time_us = 0;
+    std::uint64_t log_file_flush_time_us = 0;
+    std::uint64_t max_log_file_flush_time_us = 0;
+    std::uint64_t oldest_log_record_age_us = 0;
+    std::uint64_t max_log_record_age_us = 0;
+    std::uint64_t log_writer_failures = 0;
+    std::uint64_t log_writer_healthy = 0;
     std::uint64_t max_log_batch_records = 0;
     std::uint64_t max_log_batch_bytes = 0;
 };
@@ -94,10 +104,21 @@ public:
     void winhttp_connected();
     void winhttp_connection_closed();
 
-    void log_record_enqueued(std::size_t records, std::size_t bytes);
-    void log_queue_drained();
+    void log_record_enqueued(std::size_t records, std::size_t bytes, std::uint64_t oldest_pending_ns);
     void log_backpressure(std::uint64_t wait_us);
-    void log_batch_written(std::size_t records, std::size_t bytes, std::uint64_t write_us);
+    void log_batch_written(
+        std::size_t records,
+        std::size_t bytes,
+        std::uint64_t batch_wait_us,
+        std::uint64_t write_us,
+        std::uint64_t flush_us,
+        std::uint64_t oldest_record_age_us,
+        std::size_t pending_records,
+        std::size_t pending_bytes,
+        std::uint64_t oldest_pending_ns);
+    void log_writer_started();
+    void log_writer_failed();
+    void log_writer_stopped();
 
     RuntimeMetricsSnapshot snapshot() const;
 
@@ -150,6 +171,16 @@ private:
     std::atomic<std::uint64_t> log_batches_written_{0};
     std::atomic<std::uint64_t> log_flush_count_{0};
     std::atomic<std::uint64_t> log_write_time_us_{0};
+    std::atomic<std::uint64_t> log_batch_wait_time_us_{0};
+    std::atomic<std::uint64_t> max_log_batch_wait_us_{0};
+    std::atomic<std::uint64_t> log_file_write_time_us_{0};
+    std::atomic<std::uint64_t> max_log_file_write_time_us_{0};
+    std::atomic<std::uint64_t> log_file_flush_time_us_{0};
+    std::atomic<std::uint64_t> max_log_file_flush_time_us_{0};
+    std::atomic<std::uint64_t> oldest_log_record_enqueued_ns_{0};
+    std::atomic<std::uint64_t> max_log_record_age_us_{0};
+    std::atomic<std::uint64_t> log_writer_failures_{0};
+    std::atomic<std::uint64_t> log_writer_healthy_{0};
     std::atomic<std::uint64_t> max_log_batch_records_{0};
     std::atomic<std::uint64_t> max_log_batch_bytes_{0};
 };

@@ -8,15 +8,19 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -159,6 +163,65 @@ std::string read_file(const std::filesystem::path& path) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+template <typename Predicate>
+bool wait_until(std::chrono::milliseconds timeout, Predicate predicate) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
+}
+
+struct ControlledSinkState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::string data;
+    std::size_t flush_count = 0;
+    bool block_first_flush = false;
+    bool first_flush_entered = false;
+    bool release_first_flush = false;
+    bool fail_flush = false;
+};
+
+class ControlledLogSink final : public ccs::LogSink {
+public:
+    explicit ControlledLogSink(std::shared_ptr<ControlledSinkState> state)
+        : state_(std::move(state)) {}
+
+    bool open(const std::filesystem::path&, std::string&) override {
+        return true;
+    }
+
+    bool write(std::string_view data, std::string&) override {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->data.append(data);
+        return true;
+    }
+
+    bool flush(std::string& error) override {
+        std::unique_lock<std::mutex> lock(state_->mutex);
+        ++state_->flush_count;
+        if (state_->block_first_flush && state_->flush_count == 1) {
+            state_->first_flush_entered = true;
+            state_->cv.notify_all();
+            state_->cv.wait(lock, [&]() { return state_->release_first_flush; });
+        }
+        if (state_->fail_flush) {
+            error = "injected flush failure";
+            return false;
+        }
+        return true;
+    }
+
+    void close() noexcept override {}
+
+private:
+    std::shared_ptr<ControlledSinkState> state_;
+};
+
 void test_logger_flush_contract() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto path = std::filesystem::temp_directory_path()
@@ -169,25 +232,149 @@ void test_logger_flush_contract() {
     {
         ccs::AppConfig config;
         config.log_path = path;
-        config.log_flush_interval_ms = 100;
+        config.log_flush_interval_ms = 50;
         auto metrics = std::make_shared<ccs::RuntimeMetrics>();
         ccs::Logger logger(config, metrics);
         std::string error;
         require(logger.open(error), error);
-        logger.log("info", "queued_before_error", {});
-        logger.log("error", "flush_now", {});
+        require(logger.log("info", "idle_flush", {}), "normal log is accepted");
+        require(wait_until(std::chrono::milliseconds(500), [&]() {
+            return read_file(path).find("idle_flush") != std::string::npos;
+        }), "normal record is visible after the batch window without a later event");
+        const auto idle_snapshot = metrics->snapshot();
+        require(idle_snapshot.log_records_written == 1, "idle batch is recorded as written");
+        require(idle_snapshot.log_backpressure_count == 0, "batch wait is not queue backpressure");
+        require(idle_snapshot.max_log_batch_wait_us > 0, "batch window wait is measured");
+        require(idle_snapshot.max_log_record_age_us > 0, "record age is measured");
+        require(idle_snapshot.log_writer_healthy == 1, "writer health is visible");
+
+        require(logger.log("info", "queued_before_error", {}), "record before error is accepted");
+        require(logger.log("error", "flush_now", {}), "error record is durable on return");
         const auto immediate = read_file(path);
         require(immediate.find("queued_before_error") != std::string::npos, "error flushes queued records");
         require(immediate.find("flush_now") != std::string::npos, "error record is durable on return");
-        logger.log("info", "drain_on_destroy", {});
+        require(logger.log("info", "drain_on_destroy", {}), "shutdown record is accepted");
         const auto snapshot = metrics->snapshot();
-        require(snapshot.log_records_enqueued == 3, "logger enqueue metrics");
+        require(snapshot.log_records_enqueued == 4, "logger enqueue metrics");
         require(snapshot.peak_log_queue_records >= 1, "logger queue high water metric");
+        require(snapshot.log_file_write_time_us <= snapshot.log_write_time_us, "write duration is classified");
+        require(snapshot.log_file_flush_time_us <= snapshot.log_write_time_us, "flush duration is classified");
+        require(logger.status().state == ccs::LogWriterState::Running, "writer status is running");
     }
 
     const auto final = read_file(path);
     require(final.find("drain_on_destroy") != std::string::npos, "destructor drains normal records");
     std::filesystem::remove(path, ec);
+}
+
+void test_logger_backpressure_contract() {
+    ccs::AppConfig config;
+    config.log_flush_interval_ms = 1;
+    config.log_queue_capacity = 256;
+    auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    auto sink_state = std::make_shared<ControlledSinkState>();
+    sink_state->block_first_flush = true;
+
+    ccs::Logger logger(
+        config,
+        metrics,
+        std::make_unique<ControlledLogSink>(sink_state));
+    std::string error;
+    require(logger.open(error), error);
+    require(logger.log("info", "fills_capacity", {
+        ccs::field_string("body", std::string(512, 'x')),
+    }), "oversized first record is accepted as the sole pending record");
+
+    {
+        std::unique_lock<std::mutex> lock(sink_state->mutex);
+        require(sink_state->cv.wait_for(lock, std::chrono::milliseconds(500), [&]() {
+            return sink_state->first_flush_entered;
+        }), "writer entered the injected slow flush");
+    }
+
+    std::atomic<bool> second_finished{false};
+    std::atomic<bool> second_accepted{false};
+    std::thread producer([&]() {
+        second_accepted.store(
+            logger.log("info", "waits_for_capacity", {}),
+            std::memory_order_release);
+        second_finished.store(true, std::memory_order_release);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    require(!second_finished.load(std::memory_order_acquire), "in-flight records retain queue capacity");
+    require(metrics->snapshot().oldest_log_record_age_us > 0, "oldest pending age grows during slow flush");
+
+    {
+        std::lock_guard<std::mutex> lock(sink_state->mutex);
+        sink_state->release_first_flush = true;
+    }
+    sink_state->cv.notify_all();
+    producer.join();
+    require(second_accepted.load(std::memory_order_acquire), "producer resumes after capacity is released");
+    const auto snapshot = metrics->snapshot();
+    require(snapshot.log_backpressure_count == 1, "capacity wait is classified as backpressure");
+    require(snapshot.log_backpressure_wait_us > 0, "backpressure duration is measured");
+}
+
+void test_logger_failure_contract() {
+    ccs::AppConfig config;
+    config.log_flush_interval_ms = 1;
+    auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    auto sink_state = std::make_shared<ControlledSinkState>();
+    sink_state->fail_flush = true;
+    std::mutex reported_failure_mutex;
+    std::string reported_failure;
+
+    ccs::Logger logger(
+        config,
+        metrics,
+        std::make_unique<ControlledLogSink>(sink_state),
+        [&](const std::string& callback_error) {
+            std::lock_guard<std::mutex> lock(reported_failure_mutex);
+            reported_failure = callback_error;
+        });
+    std::string error;
+    require(logger.open(error), error);
+    require(!logger.log("error", "must_report_failure", {}), "error log reports failed durability");
+    const auto status = logger.status();
+    require(status.state == ccs::LogWriterState::Failed, "writer enters failed state");
+    require(status.error == "injected flush failure", "writer status keeps the sink error");
+    require(status.pending_records == 1, "failed record remains visible as pending");
+    {
+        std::lock_guard<std::mutex> lock(reported_failure_mutex);
+        require(reported_failure == status.error, "host failure callback receives the sink error");
+    }
+    require(!logger.log("info", "rejected_after_failure", {}), "logging after writer failure is rejected");
+    const auto snapshot = metrics->snapshot();
+    require(snapshot.log_writer_failures == 1, "writer failure metric increments");
+    require(snapshot.log_writer_healthy == 0, "writer health metric clears on failure");
+    require(snapshot.log_records_written == 0, "failed flush is not counted as durable output");
+}
+
+void test_logger_open_failure_contract() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto parent_file = std::filesystem::temp_directory_path()
+        / ("ccs-trans-core-logger-parent-" + std::to_string(nonce));
+    {
+        std::ofstream output(parent_file, std::ios::binary);
+        output << "not a directory";
+    }
+
+    auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    {
+        ccs::AppConfig config;
+        config.log_path = parent_file / "ccs-trans.log";
+        ccs::Logger logger(config, metrics);
+        std::string error;
+        require(!logger.open(error), "invalid log directory is rejected");
+        require(error.find("failed to create log directory") != std::string::npos, "directory error is actionable");
+        const auto status = logger.status();
+        require(status.state == ccs::LogWriterState::Failed, "open failure enters failed state");
+        require(status.error == error, "open failure remains queryable");
+    }
+    require(metrics->snapshot().log_writer_failures == 1, "open failure metric increments");
+    std::error_code ec;
+    std::filesystem::remove(parent_file, ec);
 }
 
 void test_runtime_metrics() {
@@ -261,6 +448,9 @@ int main() {
         {"URL and router", test_url_and_router},
         {"findcg transform", test_findcg_transform},
         {"logger flush contract", test_logger_flush_contract},
+        {"logger backpressure contract", test_logger_backpressure_contract},
+        {"logger failure contract", test_logger_failure_contract},
+        {"logger open failure contract", test_logger_open_failure_contract},
         {"runtime metrics", test_runtime_metrics},
         {"cancellation", test_cancellation},
     };

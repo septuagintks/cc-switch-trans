@@ -473,6 +473,10 @@ ccs-trans --responses-upstream-url https://www.findcg.com/ --chat-upstream-url <
 4. 保持有界队列和完整性语义：正常请求线程只应在队列确实满时背压；磁盘永久阻塞无法同时满足零阻塞与零丢失，不能用静默丢日志掩盖故障。
 5. 在 8/16 路 SSE、错误立即 flush、停止服务和日志目录暂时不可写等场景回归，正常磁盘条件下不得出现持续增长的 oldest-record age 或无界请求阻塞。
 
+完成状态：已完成。2026-07-11 的 Debug/Release 单元测试覆盖空闲批写、错误同步 flush、析构 drain、日志目录创建失败、注入式 writer flush 失败和慢 sink 容量背压；协议集成测试通过。Release 合成回归中 `desktop-8`/`desktop-16` 均为 0 失败、0 日志背压、0 writer failure，快照分别显示 `1017/1017`、`2009/2009` 条日志已接收/已落盘，空闲 oldest-record age 回到 0。
+
+本工作包 review 修正了三个实现问题：写入中的批次必须继续占用有界容量；batch-window wait 不能混入前序 I/O 排队时间；目录创建失败、sink 返回失败或抛异常以及 failure handler 抛异常都必须收敛为明确状态。新增 `LogSink` 注入边界、`LogWriterStatus`/故障回调，以及 batch wait、write、flush、oldest age 和 writer health 指标。默认文件 sink 的异步故障会写入宿主标准错误，后续 tray host 可替换为用户可见回调。
+
 ### 10.2 拆分双监听端点组
 
 1. 用两个明确的端点组替代单 listener + 三个全局任务：

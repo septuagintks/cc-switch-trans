@@ -488,10 +488,12 @@ rewritten_body_size
 - `--redact-sensitive true` 时脱敏 Authorization、Proxy-Authorization、Cookie、Set-Cookie 和 X-Api-Key。
 - `--redact-sensitive false` 与 `--log-body true` 会保留凭据头和完整正文；此类日志不得进入 Git、测试 fixture 或发布包。
 - 普通事件由单 writer 批量写入，最长约 `100 ms` 刷盘一次；错误事件必须触发立即 flush。
-- 异步日志队列不能静默丢事件；队列满时对生产者施加背压。
+- 异步日志队列不能静默丢事件；队列满时对生产者施加背压。容量统计包含 deque 中和正在写入但尚未 flush 的全部记录，慢盘不能通过提前释放批次容量绕过上限。
 - 正常磁盘和未满队列下，普通事件超过批写窗口仍不可见属于缺陷；指标必须分别呈现批次等待、队列背压和文件 flush 耗时。
-- writer I/O 失败必须进入可观察的失败状态并反馈给宿主，不能让调用方误以为日志仍在工作。
+- writer I/O 失败必须进入可观察的失败状态并反馈给宿主，不能让调用方误以为日志仍在工作。错误事件的 `log()` 只有在对应序号完成 flush 后才返回成功；普通事件返回成功表示已进入有界 pending 集合。
 - 请求/响应 body 日志和改写诊断不能额外扩大敏感信息范围。
+
+阶段 10.1 已实现并验证以下观测字段：`log_batch_wait_time_us` 只统计 writer 主动等待批写窗口的时间，`log_backpressure_*` 只统计 pending 容量耗尽后的生产者等待，`log_file_write_time_us` 与 `log_file_flush_time_us` 分开累计实际 sink I/O；`oldest_log_record_age_us` 表示当前最老未落盘记录年龄，`max_log_record_age_us` 记录已完成批次高水位，`log_writer_healthy`/`log_writer_failures` 表示 writer 健康状态。原有 `current_log_queue_*` 现在按全部 pending 记录计算，包含正在写入的批次。
 
 ## 错误模型
 
@@ -530,7 +532,7 @@ rewritten_body_size
 
 - WinHTTP session 在进程生命周期内复用，每个请求拥有独立 request handle。
 - SSE 不聚合完整 response body，只记录累计字节、chunk 数和有序增量日志。
-- 日志由单 writer 线程批量写入，有界队列满时对生产者施加背压。
+- 日志由单 writer 线程批量写入，所有未落盘记录共享一个有界 pending 容量，容量满时对生产者施加背压。
 - `max-connections` 限制活动与排队连接总量，过载返回稳定 `503`。
 - 请求体、非流式响应缓冲和日志 body 分别设置上限。
 - 客户端断开由一个共享 `WSAPoll` 线程观察，不按 SSE 连接创建 watcher 线程。

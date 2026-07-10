@@ -3,14 +3,17 @@
 #include "config/config.hpp"
 #include "core/runtime_metrics.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
-#include <fstream>
+#include <filesystem>
+#include <functional>
 #include <initializer_list>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -27,41 +30,77 @@ LogField field_number(std::string name, long long value);
 LogField field_bool(std::string name, bool value);
 LogField field_raw(std::string name, std::string raw_json);
 
+class LogSink {
+public:
+    virtual ~LogSink() = default;
+
+    virtual bool open(const std::filesystem::path& path, std::string& error) = 0;
+    virtual bool write(std::string_view data, std::string& error) = 0;
+    virtual bool flush(std::string& error) = 0;
+    virtual void close() noexcept = 0;
+};
+
+enum class LogWriterState {
+    Closed,
+    Running,
+    Failed,
+    Stopped,
+};
+
+struct LogWriterStatus {
+    LogWriterState state = LogWriterState::Closed;
+    std::string error;
+    std::size_t pending_records = 0;
+    std::size_t pending_bytes = 0;
+};
+
 class Logger {
 public:
-    explicit Logger(AppConfig config, std::shared_ptr<RuntimeMetrics> metrics = {});
+    using FailureHandler = std::function<void(const std::string&)>;
+
+    explicit Logger(
+        AppConfig config,
+        std::shared_ptr<RuntimeMetrics> metrics = {},
+        std::unique_ptr<LogSink> sink = {},
+        FailureHandler failure_handler = {});
     ~Logger();
 
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
 
     bool open(std::string& error);
-    void log(std::string level, std::string event, std::initializer_list<LogField> fields) const;
-    void log(std::string level, std::string event, const std::vector<LogField>& fields) const;
+    bool log(std::string level, std::string event, std::initializer_list<LogField> fields) const;
+    bool log(std::string level, std::string event, const std::vector<LogField>& fields) const;
+    LogWriterStatus status() const;
 
 private:
     struct QueuedRecord {
         std::uint64_t sequence = 0;
         std::string line;
         bool immediate_flush = false;
+        std::chrono::steady_clock::time_point enqueued_at;
     };
 
     void writer_loop();
+    void report_writer_failure(std::string error);
 
     AppConfig config_;
     std::shared_ptr<RuntimeMetrics> metrics_;
+    std::unique_ptr<LogSink> sink_;
+    FailureHandler failure_handler_;
     mutable std::mutex mutex_;
     mutable std::condition_variable queue_cv_;
     mutable std::condition_variable space_cv_;
     mutable std::condition_variable flushed_cv_;
     mutable std::deque<QueuedRecord> queue_;
-    mutable std::size_t queued_bytes_ = 0;
+    mutable std::size_t pending_records_ = 0;
+    mutable std::size_t pending_bytes_ = 0;
+    mutable std::chrono::steady_clock::time_point oldest_pending_at_{};
     mutable std::uint64_t next_sequence_ = 1;
     mutable std::uint64_t flushed_sequence_ = 0;
-    mutable bool opened_ = false;
     mutable bool stopping_ = false;
-    mutable bool writer_failed_ = false;
-    std::ofstream file_;
+    mutable LogWriterState state_ = LogWriterState::Closed;
+    mutable std::string writer_error_;
     std::thread writer_;
 };
 
