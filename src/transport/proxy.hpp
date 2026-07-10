@@ -1,10 +1,12 @@
 #pragma once
 
-#include "config/config.hpp"
 #include "core/http_types.hpp"
+#include "core/task.hpp"
 
-#include <stdexcept>
+#include <cstddef>
 #include <functional>
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace ccs {
@@ -26,17 +28,25 @@ public:
     using HeaderCallback = std::function<bool(const HttpResponse&)>;
     using ChunkCallback = std::function<bool(const std::string&)>;
 
-    explicit Proxy(AppConfig config);
+    Proxy(int timeout_ms, std::size_t max_response_body_size);
+    ~Proxy();
 
-    HttpResponse forward(const HttpRequest& request, const std::string& upstream_path) const;
+    Proxy(const Proxy&) = delete;
+    Proxy& operator=(const Proxy&) = delete;
+
+    HttpResponse forward(const HttpRequest& request, const UpstreamTarget& target) const;
     HttpResponse forward_streaming(
         const HttpRequest& request,
-        const std::string& upstream_path,
+        const UpstreamTarget& target,
         const HeaderCallback& on_headers,
         const ChunkCallback& on_chunk) const;
 
 private:
-    AppConfig config_;
+    struct Impl;
+
+    int timeout_ms_;
+    std::size_t max_response_body_size_;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace ccs

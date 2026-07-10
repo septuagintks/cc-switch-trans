@@ -1,5 +1,6 @@
 #include "logging/logger.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
@@ -83,6 +84,23 @@ int level_value(const std::string& level) {
     return 2;
 }
 
+std::string render_line(const std::string& level, const std::string& event, const std::vector<LogField>& fields) {
+    std::ostringstream out;
+    out << "{\"time\":\"" << json_escape(timestamp()) << "\""
+        << ",\"level\":\"" << json_escape(level) << "\""
+        << ",\"event\":\"" << json_escape(event) << "\"";
+    for (const auto& field : fields) {
+        out << ",\"" << json_escape(field.name) << "\":";
+        if (field.quoted) {
+            out << "\"" << json_escape(field.value) << "\"";
+        } else {
+            out << field.value;
+        }
+    }
+    out << "}\n";
+    return out.str();
+}
+
 } // namespace
 
 LogField field_string(std::string name, std::string value) {
@@ -104,9 +122,20 @@ LogField field_raw(std::string name, std::string raw_json) {
 Logger::Logger(AppConfig config)
     : config_(std::move(config)) {}
 
+Logger::~Logger() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+    }
+    queue_cv_.notify_all();
+    space_cv_.notify_all();
+    if (writer_.joinable()) {
+        writer_.join();
+    }
+}
+
 bool Logger::open(std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
-
     const auto parent = config_.log_path.parent_path();
     if (!parent.empty()) {
         std::error_code ec;
@@ -117,11 +146,20 @@ bool Logger::open(std::string& error) {
         }
     }
 
-    file_.open(config_.log_path, std::ios::app);
+    file_.open(config_.log_path, std::ios::app | std::ios::binary);
     if (!file_) {
         error = "failed to open log file: " + config_.log_path.string();
         return false;
     }
+
+    try {
+        writer_ = std::thread([this]() { writer_loop(); });
+    } catch (const std::exception& ex) {
+        error = "failed to start log writer: " + std::string(ex.what());
+        file_.close();
+        return false;
+    }
+    opened_ = true;
     return true;
 }
 
@@ -134,26 +172,90 @@ void Logger::log(std::string level, std::string event, const std::vector<LogFiel
         return;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!file_) {
+    const bool immediate_flush = level == "error";
+    auto line = render_line(level, event, fields);
+    const auto line_size = line.size();
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!opened_ || stopping_ || writer_failed_) {
+        return;
+    }
+    space_cv_.wait(lock, [&]() {
+        return stopping_ || writer_failed_ || queue_.empty()
+            || queued_bytes_ + line_size <= config_.log_queue_capacity;
+    });
+    if (stopping_ || writer_failed_) {
         return;
     }
 
-    file_ << "{\"time\":\"" << json_escape(timestamp()) << "\""
-          << ",\"level\":\"" << json_escape(level) << "\""
-          << ",\"event\":\"" << json_escape(event) << "\"";
+    const auto sequence = next_sequence_++;
+    queued_bytes_ += line_size;
+    queue_.push_back(QueuedRecord{sequence, std::move(line), immediate_flush});
+    queue_cv_.notify_one();
 
-    for (const auto& field : fields) {
-        file_ << ",\"" << json_escape(field.name) << "\":";
-        if (field.quoted) {
-            file_ << "\"" << json_escape(field.value) << "\"";
-        } else {
-            file_ << field.value;
+    if (immediate_flush) {
+        flushed_cv_.wait(lock, [&]() {
+            return flushed_sequence_ >= sequence || writer_failed_ || stopping_;
+        });
+    }
+}
+
+void Logger::writer_loop() {
+    const auto flush_interval = std::chrono::milliseconds(config_.log_flush_interval_ms);
+    while (true) {
+        std::deque<QueuedRecord> batch;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            queue_cv_.wait(lock, [&]() { return stopping_ || !queue_.empty(); });
+            if (queue_.empty() && stopping_) {
+                break;
+            }
+
+            const auto has_immediate = [&]() {
+                return std::any_of(queue_.begin(), queue_.end(), [](const QueuedRecord& record) {
+                    return record.immediate_flush;
+                });
+            };
+            if (!stopping_ && !has_immediate()) {
+                queue_cv_.wait_for(lock, flush_interval, [&]() {
+                    return stopping_ || has_immediate();
+                });
+            }
+
+            batch.swap(queue_);
+            queued_bytes_ = 0;
+            space_cv_.notify_all();
+        }
+
+        for (const auto& record : batch) {
+            file_ << record.line;
+        }
+        file_.flush();
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!file_) {
+                writer_failed_ = true;
+            }
+            if (!batch.empty()) {
+                flushed_sequence_ = batch.back().sequence;
+            }
+        }
+        flushed_cv_.notify_all();
+        if (writer_failed_) {
+            space_cv_.notify_all();
+            return;
         }
     }
 
-    file_ << "}\n";
     file_.flush();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!queue_.empty()) {
+            writer_failed_ = true;
+        }
+    }
+    flushed_cv_.notify_all();
 }
 
 } // namespace ccs

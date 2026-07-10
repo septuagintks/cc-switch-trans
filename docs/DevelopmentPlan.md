@@ -1,5 +1,13 @@
 # ccs-trans 下一阶段开发计划
 
+## 当前进度
+
+`0.2.0` 已完成阶段 0–7 的代码实现：任务路由、双上游配置、findcg Responses `image_gen` transform、改写日志、Chat 独立入口、纯逻辑测试和双 mock upstream 集成测试均已落地。
+
+根据已确认的性能取舍，进程级 WinHTTP session、100 ms 批量日志 writer、错误立即 flush、SSE 序号 chunk 日志、流式响应去聚合、连接总量上限，以及请求/非流式响应/日志限额拆分已经提前完成。阶段 9 仍需 benchmark、客户端取消传播和分阶段 timeout。
+
+阶段 8 的 Release 构建、`0.2.0` 打包、文档同步和包内 exe 集成测试已经完成。当前只剩需要真实凭据和客户端环境的 Codex -> ccs-trans -> findcg `hi` 人工回归。
+
 ## 当前目标
 
 让 `ccs-trans` 接管当前 Codex 发往 findcg 的 OpenAI Responses 请求，并在转发前删除请求体中的 `image_gen` 工具声明，避免上游因为图片生成权限返回 `403 permission_error`。

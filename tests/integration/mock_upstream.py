@@ -23,6 +23,7 @@ class Handler(BaseHTTPRequestHandler):
             "mock": True,
             "path": self.path,
             "method": "GET",
+            "server_port": self.server.server_address[1],
             "headers": dict(self.headers.items()),
             "remaining": 12.5,
             "unit": "USD",
@@ -32,17 +33,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._maybe_delay()
-        if parse_qs(urlparse(self.path).query).get("stream", [""])[0] == "sse":
+        query = parse_qs(urlparse(self.path).query)
+        if query.get("stream", [""])[0] == "sse":
+            server_port = self.server.server_address[1]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             for index in range(3):
-                self.wfile.write(f"data: chunk-{index}\n\n".encode("utf-8"))
+                self.wfile.write(f"data: {server_port}-chunk-{index}\n\n".encode("utf-8"))
                 self.wfile.flush()
                 time.sleep(0.25)
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
+            return
+
+        response_bytes = query.get("response_bytes", [])
+        if response_bytes:
+            size = max(0, int(response_bytes[0]))
+            encoded = b"x" * size
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
             return
 
         length = int(self.headers.get("Content-Length", "0"))
@@ -51,6 +65,7 @@ class Handler(BaseHTTPRequestHandler):
             "mock": True,
             "path": self.path,
             "method": "POST",
+            "server_port": self.server.server_address[1],
             "headers": dict(self.headers.items()),
             "body": body,
         }

@@ -1,5 +1,5 @@
 #include "config/config.hpp"
-#include "server/server.hpp"
+#include "core/app_service.hpp"
 
 #include <iostream>
 
@@ -24,6 +24,11 @@ int main(int argc, char** argv) {
 
     ccs::print_config_summary(std::cout, parse_result.config);
 
-    ccs::Server server(parse_result.config);
-    return server.run();
+    ccs::AppService service(parse_result.config);
+    std::string error;
+    if (!service.start(error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+    }
+    return service.wait();
 }

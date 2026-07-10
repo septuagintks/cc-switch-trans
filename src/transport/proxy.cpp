@@ -1,10 +1,12 @@
 #include "transport/proxy.hpp"
 
+#include "core/url.hpp"
 #include "transport/header_filter.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -17,13 +19,6 @@
 namespace ccs {
 
 namespace {
-
-struct ParsedUrl {
-    bool secure = false;
-    std::string host;
-    INTERNET_PORT port = 0;
-    std::string base_path = "/";
-};
 
 std::wstring widen(const std::string& value) {
 #ifdef _WIN32
@@ -78,63 +73,6 @@ std::string lower_copy(std::string value) {
     return value;
 }
 
-ParsedUrl parse_url(const std::string& raw_url) {
-    ParsedUrl parsed;
-    std::string rest;
-    if (raw_url.rfind("http://", 0) == 0) {
-        parsed.secure = false;
-        parsed.port = INTERNET_DEFAULT_HTTP_PORT;
-        rest = raw_url.substr(7);
-    } else if (raw_url.rfind("https://", 0) == 0) {
-        parsed.secure = true;
-        parsed.port = INTERNET_DEFAULT_HTTPS_PORT;
-        rest = raw_url.substr(8);
-    } else {
-        throw ProxyError(502, "upstream_error", "upstream URL must start with http:// or https://");
-    }
-
-    const auto slash = rest.find('/');
-    const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
-    parsed.base_path = slash == std::string::npos ? "/" : rest.substr(slash);
-    if (parsed.base_path.empty()) {
-        parsed.base_path = "/";
-    }
-
-    const auto colon = authority.rfind(':');
-    if (colon == std::string::npos) {
-        parsed.host = authority;
-    } else {
-        parsed.host = authority.substr(0, colon);
-        const auto port_text = authority.substr(colon + 1);
-        try {
-            parsed.port = static_cast<INTERNET_PORT>(std::stoul(port_text));
-        } catch (...) {
-            throw ProxyError(502, "upstream_error", "invalid upstream port");
-        }
-    }
-
-    if (parsed.host.empty()) {
-        throw ProxyError(502, "upstream_error", "upstream host is empty");
-    }
-
-    return parsed;
-}
-
-std::string join_path(const std::string& base_path, const std::string& route_path, const std::string& query) {
-    std::string path = base_path.empty() ? "/" : base_path;
-    if (path.back() == '/' && !route_path.empty() && route_path.front() == '/') {
-        path.pop_back();
-    } else if (path.back() != '/' && (route_path.empty() || route_path.front() != '/')) {
-        path.push_back('/');
-    }
-    path += route_path;
-    if (!query.empty()) {
-        path += "?";
-        path += query;
-    }
-    return path;
-}
-
 std::wstring build_header_block(const Headers& headers) {
     std::ostringstream out;
     for (const auto& [name, value] : filter_request_headers(headers)) {
@@ -160,10 +98,9 @@ Headers parse_raw_headers(const std::wstring& raw_headers) {
             continue;
         }
         const auto colon = line.find(':');
-        if (colon == std::string::npos) {
-            continue;
+        if (colon != std::string::npos) {
+            headers.emplace_back(trim(line.substr(0, colon)), trim(line.substr(colon + 1)));
         }
-        headers.emplace_back(trim(line.substr(0, colon)), trim(line.substr(colon + 1)));
     }
     return filter_response_headers(headers);
 }
@@ -179,9 +116,8 @@ bool is_event_stream(const Headers& headers) {
 
 std::string winhttp_error_message(const std::string& prefix) {
 #ifdef _WIN32
-    const auto err = GetLastError();
     std::ostringstream out;
-    out << prefix << " (winhttp error " << err << ")";
+    out << prefix << " (winhttp error " << GetLastError() << ")";
     return out.str();
 #else
     return prefix;
@@ -265,7 +201,10 @@ int query_status_code(HINTERNET request) {
     return static_cast<int>(status);
 }
 
-std::string read_body(HINTERNET request, const std::function<bool(const std::string&)>& on_chunk = {}) {
+std::string read_body(
+    HINTERNET request,
+    std::size_t max_buffered_size,
+    const std::function<bool(const std::string&)>& on_chunk = {}) {
     std::string body;
     while (true) {
         DWORD available = 0;
@@ -288,8 +227,14 @@ std::string read_body(HINTERNET request, const std::function<bool(const std::str
             throw ProxyError(502, "upstream_error", winhttp_error_message("failed to read upstream response data"));
         }
         chunk.resize(read);
-        if (on_chunk && !on_chunk(chunk)) {
-            break;
+        if (on_chunk) {
+            if (!on_chunk(chunk)) {
+                break;
+            }
+            continue;
+        }
+        if (chunk.size() > max_buffered_size - std::min(max_buffered_size, body.size())) {
+            throw ProxyError(502, "upstream_response_too_large", "upstream response body too large");
         }
         body += chunk;
     }
@@ -300,8 +245,29 @@ std::string read_body(HINTERNET request, const std::function<bool(const std::str
 
 } // namespace
 
+struct Proxy::Impl {
+#ifdef _WIN32
+    explicit Impl(int timeout_ms)
+        : session(WinHttpOpen(
+              L"ccs-trans/0.2.0",
+              WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+              WINHTTP_NO_PROXY_NAME,
+              WINHTTP_NO_PROXY_BYPASS,
+              0)) {
+        if (!session) {
+            throw ProxyError(502, "upstream_error", winhttp_error_message("failed to open WinHTTP session"));
+        }
+        apply_timeouts(session.get(), timeout_ms);
+    }
+
+    WinHttpHandle session;
+#else
+    explicit Impl(int) {}
+#endif
+};
+
 ProxyError::ProxyError(int status_code, std::string type, std::string message)
-    : std::runtime_error(message)
+    : std::runtime_error(std::move(message))
     , status_code_(status_code)
     , type_(std::move(type)) {}
 
@@ -313,35 +279,42 @@ const std::string& ProxyError::type() const {
     return type_;
 }
 
-Proxy::Proxy(AppConfig config)
-    : config_(std::move(config)) {}
+Proxy::Proxy(int timeout_ms, std::size_t max_response_body_size)
+    : timeout_ms_(timeout_ms)
+    , max_response_body_size_(max_response_body_size)
+    , impl_(std::make_unique<Impl>(timeout_ms)) {}
 
-HttpResponse Proxy::forward(const HttpRequest& request, const std::string& upstream_path) const {
-    return forward_streaming(request, upstream_path, {}, {});
+Proxy::~Proxy() = default;
+
+HttpResponse Proxy::forward(const HttpRequest& request, const UpstreamTarget& target) const {
+    return forward_streaming(request, target, {}, {});
 }
 
 HttpResponse Proxy::forward_streaming(
     const HttpRequest& request,
-    const std::string& upstream_path,
+    const UpstreamTarget& target,
     const HeaderCallback& on_headers,
     const ChunkCallback& on_chunk) const {
 #ifndef _WIN32
     (void)request;
-    (void)upstream_path;
+    (void)target;
     (void)on_headers;
     (void)on_chunk;
     throw ProxyError(502, "upstream_error", "upstream forwarding is implemented with WinHTTP on Windows");
 #else
-    const auto upstream = parse_url(config_.upstream_url);
-    const auto path = join_path(upstream.base_path, upstream_path, request.query);
-
-    WinHttpHandle session(WinHttpOpen(L"ccs-trans/0.1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
-    if (!session) {
-        throw ProxyError(502, "upstream_error", winhttp_error_message("failed to open WinHTTP session"));
+    ParsedUrl upstream;
+    try {
+        upstream = parse_http_url(target.base_url);
+    } catch (const std::exception& ex) {
+        throw ProxyError(500, "configuration_error", ex.what());
     }
-    apply_timeouts(session.get(), config_.timeout_ms);
+    const auto path = join_url_path(upstream.base_path, target.path, request.query);
 
-    WinHttpHandle connection(WinHttpConnect(session.get(), widen(upstream.host).c_str(), upstream.port, 0));
+    WinHttpHandle connection(WinHttpConnect(
+        impl_->session.get(),
+        widen(upstream.host).c_str(),
+        static_cast<INTERNET_PORT>(upstream.port),
+        0));
     if (!connection) {
         throw ProxyError(502, "upstream_error", winhttp_error_message("failed to connect to upstream"));
     }
@@ -358,8 +331,11 @@ HttpResponse Proxy::forward_streaming(
     if (!upstream_request) {
         throw ProxyError(502, "upstream_error", winhttp_error_message("failed to create upstream request"));
     }
-    apply_timeouts(upstream_request.get(), config_.timeout_ms);
+    apply_timeouts(upstream_request.get(), timeout_ms_);
 
+    if (request.body.size() > static_cast<std::size_t>(std::numeric_limits<DWORD>::max())) {
+        throw ProxyError(413, "invalid_request_error", "request body too large for WinHTTP");
+    }
     const auto header_block = build_header_block(request.headers);
     const void* body_data = request.body.empty() ? WINHTTP_NO_REQUEST_DATA : request.body.data();
     const DWORD body_size = static_cast<DWORD>(request.body.size());
@@ -371,16 +347,14 @@ HttpResponse Proxy::forward_streaming(
             body_size,
             body_size,
             0)) {
-        const auto err = GetLastError();
-        if (err == ERROR_WINHTTP_TIMEOUT) {
+        if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
             throw ProxyError(504, "upstream_timeout", "upstream request timed out");
         }
         throw ProxyError(502, "upstream_error", winhttp_error_message("failed to send upstream request"));
     }
 
     if (!WinHttpReceiveResponse(upstream_request.get(), nullptr)) {
-        const auto err = GetLastError();
-        if (err == ERROR_WINHTTP_TIMEOUT) {
+        if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
             throw ProxyError(504, "upstream_timeout", "upstream request timed out");
         }
         throw ProxyError(502, "upstream_error", winhttp_error_message("failed to receive upstream response"));
@@ -393,7 +367,10 @@ HttpResponse Proxy::forward_streaming(
     if (streaming && on_headers && !on_headers(response)) {
         return response;
     }
-    response.body = read_body(upstream_request.get(), streaming ? on_chunk : ChunkCallback{});
+    response.body = read_body(
+        upstream_request.get(),
+        max_response_body_size_,
+        streaming ? on_chunk : ChunkCallback{});
     return response;
 #endif
 }

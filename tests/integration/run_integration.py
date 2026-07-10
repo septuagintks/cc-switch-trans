@@ -1,3 +1,4 @@
+import concurrent.futures
 import http.client
 import json
 import pathlib
@@ -77,23 +78,34 @@ def main():
     if log_path.exists():
         log_path.unlink()
 
-    upstream_port = 19081
+    responses_upstream_port = 19081
+    chat_upstream_port = 19082
     proxy_port = 15740
 
-    upstream = subprocess.Popen(
-        [sys.executable, str(ROOT / "tests" / "integration" / "mock_upstream.py"), str(upstream_port)],
-        cwd=ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    upstreams = [
+        subprocess.Popen(
+            [sys.executable, str(ROOT / "tests" / "integration" / "mock_upstream.py"), str(port)],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for port in (responses_upstream_port, chat_upstream_port)
+    ]
     proxy = None
     try:
-        wait_for_port(upstream_port)
+        wait_for_port(responses_upstream_port)
+        wait_for_port(chat_upstream_port)
         proxy = subprocess.Popen(
             [
                 str(exe),
                 "--upstream-url",
-                f"http://127.0.0.1:{upstream_port}",
+                f"http://127.0.0.1:{responses_upstream_port}",
+                "--responses-upstream-url",
+                f"http://127.0.0.1:{responses_upstream_port}",
+                "--chat-upstream-url",
+                f"http://127.0.0.1:{chat_upstream_port}",
+                "--chat-upstream-path",
+                "/custom/chat/completions",
                 "--listen-port",
                 str(proxy_port),
                 "--log-path",
@@ -101,9 +113,13 @@ def main():
                 "--redact-sensitive",
                 "true",
                 "--body-log-limit",
-                "4",
-                "--concurrency",
+                "64",
+                "--worker-threads",
                 "2",
+                "--max-connections",
+                "2",
+                "--max-response-body-size",
+                "1024",
                 "--log-level",
                 "debug",
             ],
@@ -124,6 +140,7 @@ def main():
         assert_true(status == 200, "responses status")
         assert_true(payload["path"] == "/v1/responses/?trace=integration", "responses path")
         assert_true(payload["body"] == "abcdef", "responses body")
+        assert_true(payload["server_port"] == responses_upstream_port, "responses upstream selected")
 
         status, _, data = request(
             proxy_port,
@@ -156,7 +173,8 @@ def main():
         status, _, data = request(proxy_port, "POST", "/v1/chat/completions", body="chat")
         payload = json.loads(data)
         assert_true(status == 200, "chat status")
-        assert_true(payload["path"] == "/v1/chat/completions", "chat path")
+        assert_true(payload["path"] == "/custom/chat/completions", "chat path")
+        assert_true(payload["server_port"] == chat_upstream_port, "chat upstream selected")
 
         status, _, data = request(
             proxy_port,
@@ -168,12 +186,49 @@ def main():
         assert_true(status == 200, "usage status")
         assert_true(payload["path"] == "/v1/usage?scope=all", "usage path")
         assert_true(payload["remaining"] == 12.5, "usage remaining")
+        assert_true(payload["server_port"] == responses_upstream_port, "usage shared upstream selected")
+
+        status, _, _ = request(
+            proxy_port,
+            "POST",
+            "/v1/responses?response_bytes=2048",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert_true(status == 502, "buffered response size limit")
 
         status, _, _ = request(proxy_port, "POST", "/unknown", body="x")
         assert_true(status == 404, "unknown path status")
 
         status, _, _ = request(proxy_port, "GET", "/v1/responses/")
         assert_true(status == 405, "method status")
+
+        events_after_error = read_json_lines(log_path)
+        assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 405 for event in events_after_error), "error log flushed before response returns")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            delayed = [
+                executor.submit(
+                    request,
+                    proxy_port,
+                    "POST",
+                    "/v1/responses?delay_ms=600",
+                    "{}",
+                    {"Content-Type": "application/json"},
+                )
+                for _ in range(2)
+            ]
+            time.sleep(0.15)
+            overloaded_status, _, _ = request(
+                proxy_port,
+                "POST",
+                "/v1/responses",
+                body="{}",
+                headers={"Content-Type": "application/json"},
+            )
+            assert_true(overloaded_status == 503, "max connection limit")
+            for future in delayed:
+                assert_true(future.result()[0] == 200, "accepted delayed request")
 
         status, headers, data = request(
             proxy_port,
@@ -184,15 +239,25 @@ def main():
         )
         assert_true(status == 200, "sse status")
         assert_true(headers.get("Content-Type") == "text/event-stream", "sse content-type")
-        assert_true(b"data: chunk-0" in data and b"data: [DONE]" in data, "sse body")
+        assert_true(f"data: {responses_upstream_port}-chunk-0".encode() in data and b"data: [DONE]" in data, "sse body")
 
+        time.sleep(0.25)
         events = read_json_lines(log_path)
         rendered = "\n".join(json.dumps(event, separators=(",", ":")) for event in events)
         assert_true("usage-secret" not in rendered, "usage request is not logged")
         assert_true("Bearer secret" not in rendered, "authorization redacted")
         assert_true('"Authorization":"***"' in rendered, "redacted marker exists")
-        assert_true('"body":"abcd"' in rendered, "body limit applied")
-        assert_true(any(event.get("event") == "stream_chunk" for event in events), "stream chunks logged")
+        assert_true('"body":"abcdef"' in rendered, "request body logged")
+        stream_chunks = [event for event in events if event.get("event") == "stream_chunk"]
+        assert_true(stream_chunks, "stream chunks logged")
+        assert_true([event.get("chunk_sequence") for event in stream_chunks] == list(range(len(stream_chunks))), "stream chunk sequence")
+        assert_true(any("body" in event and "chunk-0" in event["body"] for event in stream_chunks), "stream chunk body logged")
+        stream_sent = [event for event in events if event.get("event") == "response_sent" and event.get("streaming")]
+        assert_true(stream_sent and "body" not in stream_sent[-1], "stream response body is not aggregated")
+        assert_true(stream_sent[-1].get("streamed_body_size", 0) > 0, "streamed body size counted")
+        upstream_requests = [event for event in events if event.get("event") == "upstream_request"]
+        assert_true(any(event.get("task") == "responses" and event.get("rewrite_reason") == "upstream_not_findcg" for event in upstream_requests), "Responses rewrite decision logged")
+        assert_true(any(event.get("task") == "chat_completions" and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in upstream_requests), "Chat task target logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 404 for event in events), "404 logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 405 for event in events), "405 logged")
 
@@ -204,11 +269,13 @@ def main():
                 proxy.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proxy.kill()
-        upstream.terminate()
-        try:
-            upstream.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            upstream.kill()
+        for upstream in upstreams:
+            upstream.terminate()
+        for upstream in upstreams:
+            try:
+                upstream.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                upstream.kill()
 
 
 if __name__ == "__main__":

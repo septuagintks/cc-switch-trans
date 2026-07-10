@@ -22,9 +22,19 @@ cc-switch-trans/
       config.hpp
       config.cpp
     core/
+      app_service.hpp
+      app_service.cpp
       http_types.hpp
       request_id.hpp
       request_id.cpp
+      task.hpp
+      task.cpp
+      task_router.hpp
+      task_router.cpp
+      transform.hpp
+      transform.cpp
+      url.hpp
+      url.cpp
     hosts/
       cli_main.cpp
     logging/
@@ -38,11 +48,21 @@ cc-switch-trans/
       header_filter.cpp
       proxy.hpp
       proxy.cpp
+    transforms/
+      findcg_responses_transform.hpp
+      findcg_responses_transform.cpp
 
   tests/
+    unit/
+      core_tests.cpp
     integration/
       mock_upstream.py
       run_integration.py
+
+  third_party/
+    nlohmann/
+      json.hpp
+      LICENSE.MIT
 ```
 
 ## 目录职责
@@ -50,19 +70,22 @@ cc-switch-trans/
 | 目录                | 当前职责                              | 后续扩展                                 |
 | ------------------- | ------------------------------------- | ---------------------------------------- |
 | `docs`              | 协议设计、开发顺序、结构约束          | benchmark 说明、发布流程、平台说明       |
-| `src/core`          | 不依赖平台 API 的基础 HTTP 类型和标识 | task context、transform 接口、AppService |
+| `src/core`          | HTTP 类型、任务、URL、transform 接口与 AppService | 配置快照和更细生命周期事件       |
 | `src/config`        | CLI 参数和运行配置                    | 配置文件、schema 迁移、不可变快照        |
 | `src/hosts`         | 进程入口                              | Windows tray host、macOS app host        |
-| `src/logging`       | 结构化日志 API 与文件输出             | 异步 writer、轮转、背压指标              |
-| `src/server`        | 本地 HTTP 接入和请求编排              | 路由器拆分、listener 接口、生命周期控制  |
-| `src/transport`     | 头过滤和当前 WinHTTP 上游实现         | transport 接口、连接复用、macOS 实现     |
-| `tests/integration` | mock upstream 与端到端协议测试        | 双上游、改写规则、并发和 SSE 基线        |
+| `src/logging`       | 结构化日志 API、批量 writer 与背压    | 日志轮转和队列指标                        |
+| `src/server`        | 本地 HTTP 接入、容量控制和请求编排    | listener 接口和取消传播                   |
+| `src/transport`     | 头过滤和进程级 WinHTTP session        | 分阶段 timeout、连接指标、macOS 实现      |
+| `src/transforms`    | 按任务隔离的请求改写规则              | Chat Completions 专用规则                 |
+| `tests/unit`        | 配置、URL、路由和 transform 纯逻辑测试 | 更多边界与错误用例                        |
+| `tests/integration` | 双 mock upstream 与端到端协议测试     | 8/16/50 路 SSE benchmark                  |
+| `third_party/nlohmann` | 固定版本 JSON 单头文件与许可证     | profiling 后再评估替换                    |
 
 ## CMake 目标
 
 ```text
 ccs-trans-core
-  config + core + logging + server + transport
+  config + core + logging + server + transport + transforms
 
 ccs-trans
   hosts/cli_main.cpp + ccs-trans-core
@@ -88,11 +111,13 @@ ccs-trans
 ## 依赖规则
 
 ```text
-hosts -> server/config
+hosts -> core/app_service + config
+core/app_service -> server
 server -> core/config/logging/transport
 transport -> core/config
+transforms -> core + third_party/nlohmann
 logging -> config
-core -> C++ standard library only
+core task/url/transform types -> C++ standard library only
 ```
 
 后续抽象 transport、listener 或 tray 时，平台实现依赖核心接口；核心层不得反向包含 Windows 或 macOS 类型。

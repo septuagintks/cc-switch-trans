@@ -1,0 +1,115 @@
+#include "core/url.hpp"
+
+#include <algorithm>
+#include <charconv>
+#include <cctype>
+#include <stdexcept>
+#include <string_view>
+
+namespace ccs {
+
+namespace {
+
+std::string lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+std::uint16_t parse_port(std::string_view text) {
+    unsigned int value = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (text.empty() || result.ec != std::errc{} || result.ptr != text.data() + text.size() || value == 0 || value > 65535) {
+        throw std::invalid_argument("invalid upstream port");
+    }
+    return static_cast<std::uint16_t>(value);
+}
+
+} // namespace
+
+ParsedUrl parse_http_url(const std::string& raw_url) {
+    const auto scheme_end = raw_url.find("://");
+    if (scheme_end == std::string::npos) {
+        throw std::invalid_argument("upstream URL must start with http:// or https://");
+    }
+
+    ParsedUrl parsed;
+    const auto scheme = lower_copy(raw_url.substr(0, scheme_end));
+    if (scheme == "http") {
+        parsed.port = 80;
+    } else if (scheme == "https") {
+        parsed.secure = true;
+        parsed.port = 443;
+    } else {
+        throw std::invalid_argument("upstream URL must start with http:// or https://");
+    }
+
+    const std::string rest = raw_url.substr(scheme_end + 3);
+    const auto slash = rest.find('/');
+    const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
+    parsed.base_path = slash == std::string::npos ? "/" : rest.substr(slash);
+    if (authority.empty() || authority.find('@') != std::string::npos) {
+        throw std::invalid_argument("invalid upstream authority");
+    }
+
+    if (authority.front() == '[') {
+        const auto closing = authority.find(']');
+        if (closing == std::string::npos) {
+            throw std::invalid_argument("invalid IPv6 upstream host");
+        }
+        parsed.host = authority.substr(1, closing - 1);
+        if (closing + 1 < authority.size()) {
+            if (authority[closing + 1] != ':') {
+                throw std::invalid_argument("invalid upstream authority");
+            }
+            parsed.port = parse_port(std::string_view(authority).substr(closing + 2));
+        }
+    } else {
+        const auto first_colon = authority.find(':');
+        const auto last_colon = authority.rfind(':');
+        if (first_colon != std::string::npos && first_colon != last_colon) {
+            throw std::invalid_argument("IPv6 upstream hosts must use brackets");
+        }
+        if (last_colon == std::string::npos) {
+            parsed.host = authority;
+        } else {
+            parsed.host = authority.substr(0, last_colon);
+            parsed.port = parse_port(std::string_view(authority).substr(last_colon + 1));
+        }
+    }
+
+    parsed.host = lower_copy(parsed.host);
+    while (!parsed.host.empty() && parsed.host.back() == '.') {
+        parsed.host.pop_back();
+    }
+    if (parsed.host.empty()) {
+        throw std::invalid_argument("upstream host is empty");
+    }
+    if (parsed.base_path.empty()) {
+        parsed.base_path = "/";
+    }
+    return parsed;
+}
+
+std::string join_url_path(const std::string& base_path, const std::string& route_path, const std::string& query) {
+    std::string path = base_path.empty() ? "/" : base_path;
+    if (path.back() == '/' && !route_path.empty() && route_path.front() == '/') {
+        path.pop_back();
+    } else if (path.back() != '/' && (route_path.empty() || route_path.front() != '/')) {
+        path.push_back('/');
+    }
+    path += route_path;
+    if (!query.empty()) {
+        path += "?";
+        path += query;
+    }
+    return path;
+}
+
+bool is_findcg_host(const std::string& host) {
+    const auto normalized = lower_copy(host);
+    return normalized == "findcg.com" || normalized == "www.findcg.com";
+}
+
+} // namespace ccs

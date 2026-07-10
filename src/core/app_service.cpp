@@ -1,0 +1,79 @@
+#include "core/app_service.hpp"
+
+#include "server/server.hpp"
+
+#include <exception>
+#include <utility>
+
+namespace ccs {
+
+AppService::AppService(AppConfig config)
+    : config_(std::move(config)) {}
+
+AppService::~AppService() {
+    stop();
+    wait();
+}
+
+bool AppService::start(std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ != ServiceState::Stopped || thread_.joinable()) {
+        error = "service is already running";
+        return false;
+    }
+
+    state_ = ServiceState::Starting;
+    try {
+        server_ = std::make_unique<Server>(config_);
+        thread_ = std::thread([this]() {
+            {
+                std::lock_guard<std::mutex> state_lock(mutex_);
+                if (state_ == ServiceState::Starting) {
+                    state_ = ServiceState::Running;
+                }
+            }
+            state_cv_.notify_all();
+
+            const int code = server_->run();
+            {
+                std::lock_guard<std::mutex> state_lock(mutex_);
+                exit_code_ = code;
+                state_ = ServiceState::Stopped;
+            }
+            state_cv_.notify_all();
+        });
+    } catch (const std::exception& ex) {
+        server_.reset();
+        state_ = ServiceState::Stopped;
+        error = ex.what();
+        return false;
+    }
+    return true;
+}
+
+void AppService::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ == ServiceState::Stopped) {
+        return;
+    }
+    state_ = ServiceState::Stopping;
+    if (server_) {
+        server_->request_stop();
+    }
+}
+
+int AppService::wait() {
+    if (thread_.joinable()) {
+        thread_.join();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    server_.reset();
+    return exit_code_;
+}
+
+ServiceState AppService::status() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_;
+}
+
+} // namespace ccs
