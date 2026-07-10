@@ -55,7 +55,7 @@ struct AppConfig {
     TimeoutConfig timeouts;
     std::size_t max_request_body_size = 100 * 1024 * 1024;
     std::size_t max_response_body_size = 100 * 1024 * 1024;
-    std::size_t worker_threads = 16;
+    std::size_t worker_threads = 32;
     std::size_t max_connections = 64;
 };
 

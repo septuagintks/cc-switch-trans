@@ -4,7 +4,7 @@
 
 `0.3.0` 已完成阶段 0–9：在 `0.2.0` 的双任务转发和 findcg Responses 改写基础上，新增合成 benchmark、运行时资源指标、客户端断开取消、分阶段 timeout 及其自动测试。
 
-阶段 9 的修正后基准表明，8/16 路常规 SSE 负载没有 worker 排队，保留同步 worker + WinHTTP 模型；50 路压力负载受 16 个 worker 上限约束，会产生约 2 秒首字节排队，因此继续作为明确的容量边界，而不是立即重写全异步网络栈的理由。
+阶段 9 的修正后基准表明，8/16 路常规 SSE 负载没有 worker 排队，保留同步 worker + WinHTTP 模型；阶段 10 默认 worker 调整为 32，为 16 路长 SSE 之外保留短请求和 Usage 余量。历史 50 路压力负载受 16 个 worker 上限约束，会产生约 2 秒首字节排队，因此继续作为明确的容量边界，而不是立即重写全异步网络栈的理由。
 
 2026-07-11 的 Codex -> ccs-trans -> findcg 实测包含两次 Responses 请求。两次请求都从根级 `tools` 删除了 1 个 `image_gen` namespace 工具，上游均返回 `200`；SSE 分别连续转发 57 和 72 个 chunk，序号无缺口，日志中没有 warning、error 或 4xx/5xx。`0.2.0` 功能验收至此完成。
 
@@ -527,7 +527,7 @@ chat endpoint: 127.0.0.1:15724
 
 1. 两个 listener 共用进程级有界 worker pool、连接容量、日志 writer 和运行指标，避免简单复制 `Server` 后把线程、队列和 WinHTTP session 成倍增加。
 2. `8–16` 路仍表示两个端点组合后的常规 SSE 总负载；`50` 路仍是压力测试。若以后要求两个端点各自同时承载 16 路 SSE，应作为新的 32 路 profile 单独定容量。
-3. 当前 16 个 worker 在 16 路长 SSE 下没有短请求余量。阶段 10 的候选默认值为 18：16 路常规 SSE 加 2 路 Usage/短请求余量，并通过 benchmark 决定是否落定，而不是直接为两个端点各建 16 个常驻线程。
+3. 当前 16 个 worker 在 16 路长 SSE 下没有短请求余量。阶段 10 默认值改为 32：16 路常规 SSE 加 16 路 Usage/短请求余量；这仍是一个共享进程级 worker pool，不为两个端点各复制一套完整执行层。
 4. 增加 `mixed-16` profile：Responses/Chat 合计 16 路 SSE，同时持续请求两组 Usage。验收时 Usage 不得等待某条 SSE 完成，worker queue wait 必须保持有界并可观察。
 5. 两个 listener 共享总容量可能产生端点偏置；先记录 endpoint 维度的 accepted/active/queued/rejected 指标。只有 `mixed-16` 证明存在饥饿时，才增加端点配额或独立执行队列。
 

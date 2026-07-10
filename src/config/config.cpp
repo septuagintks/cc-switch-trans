@@ -2,11 +2,9 @@
 
 #include "core/url.hpp"
 
-#include <algorithm>
 #include <charconv>
 #include <optional>
 #include <stdexcept>
-#include <thread>
 #include <unordered_set>
 
 namespace ccs {
@@ -210,8 +208,7 @@ void resolve_overrides(AppConfig& config, const Overrides& overrides) {
         overrides.legacy_max_body_size.value_or(config.max_request_body_size));
     config.max_response_body_size = overrides.max_response_body_size.value_or(config.max_response_body_size);
     config.worker_threads = overrides.worker_threads.value_or(config.worker_threads);
-    config.max_connections = overrides.max_connections.value_or(
-        std::max<std::size_t>(64, config.worker_threads * 4));
+    config.max_connections = overrides.max_connections.value_or(config.max_connections);
 
     const int fallback_timeout = overrides.legacy_timeout_ms.value_or(300000);
     config.timeouts.resolve_ms = overrides.resolve_timeout_ms.value_or(fallback_timeout);
@@ -227,11 +224,8 @@ void resolve_overrides(AppConfig& config, const Overrides& overrides) {
 ParseResult parse_args(int argc, char** argv) {
     ParseResult result;
     Overrides overrides;
-    const auto hardware_threads = std::thread::hardware_concurrency();
-    result.config.worker_threads = hardware_threads == 0
-        ? 8
-        : std::clamp<std::size_t>(hardware_threads, 8, 16);
-    result.config.max_connections = std::max<std::size_t>(64, result.config.worker_threads * 4);
+    result.config.worker_threads = 32;
+    result.config.max_connections = 64;
 
     try {
         for (int i = 1; i < argc; ++i) {

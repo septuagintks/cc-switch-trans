@@ -42,6 +42,11 @@ ccs::ParseResult parse(std::initializer_list<const char*> args) {
 }
 
 void test_config_resolution() {
+    const auto defaults = parse({"--upstream-url", "https://example.com"});
+    require(defaults.ok, defaults.error);
+    require(defaults.config.worker_threads == 32, "default worker threads");
+    require(defaults.config.max_connections == 64, "default max connections");
+
     const auto legacy = parse({"--upstream-url", "https://example.com", "--worker-threads", "8", "--max-connections", "64"});
     require(legacy.ok, legacy.error);
     require(legacy.config.responses.enabled, "legacy Responses enabled");

@@ -59,7 +59,7 @@ GET  /v1/usage
 - resolve、connect、send、response header、SSE idle 和可选 total timeout。
 - 2026-07-11 真实 Codex -> ccs-trans -> findcg Responses 回归通过。
 
-当前保留同步 worker 模型：修正后的基准显示 8/16 路常规 SSE 负载没有 worker 排队，50 路压力负载在 16 个 worker 之上按设计排队。阶段 10 开始持久配置；tray 和 macOS 继续后置。
+当前保留同步 worker 模型：修正后的基准显示 8/16 路常规 SSE 负载没有 worker 排队；阶段 10 默认 worker 调整为 32，为 16 路长 SSE 之外保留短请求和 Usage 余量。50 路仍作为压力负载按 worker 上限有界排队。阶段 10 开始持久配置；tray 和 macOS 继续后置。
 
 ## 0.3.0 范围
 
@@ -546,7 +546,7 @@ SSE 生命周期占用同步 worker
 长时间 soak 和跨平台 transport 仍需后续持续测量
 ```
 
-性能负载口径固定为：`8–16` 路并发 SSE 是桌面常规负载，`50` 路是压力测试，不是常规 SLO。修正 benchmark backlog 后，8/16 路附加 TTFB p50 约为 `10.5/10.6 ms` 且没有 worker 排队；50 路在 16 worker 配置下增加约 `2 s` TTFB。当前继续使用同步 worker，50 路结果不单独触发网络栈重写。
+性能负载口径固定为：`8–16` 路并发 SSE 是桌面常规负载，`50` 路是压力测试，不是常规 SLO。修正 benchmark backlog 后，8/16 路附加 TTFB p50 约为 `10.5/10.6 ms` 且没有 worker 排队；历史 50 路在 16 worker 配置下增加约 `2 s` TTFB。阶段 10 默认改为 32 worker，以避免 16 路长 SSE 吃满执行层；50 路结果仍不单独触发网络栈重写。
 
 WinHTTP 采用每进程一个长生命周期 session，每个请求独立 request handle；连接资源按 scheme/host/port 和代理策略隔离。配置或代理策略切换时创建新一代 transport/session，不让进行中请求切换句柄。
 
@@ -564,7 +564,7 @@ responses listener :15723 --\
 chat listener      :15724 --/                         -> shared logger/metrics
 ```
 
-常规容量仍按两个端点合计 `8–16` 路 SSE 计算。由于长 SSE 占用同步 worker，worker 数必须为 16 路常规流之外保留短请求余量；候选默认值为 18，并以 `mixed-16` benchmark 验证两组 Usage 不被长流饿死。若将来要保证每个端点各 16 路，则建立 32 路容量 profile 后再决定增加线程、端点配额或迁移异步 I/O。
+常规容量仍按两个端点合计 `8–16` 路 SSE 计算。由于长 SSE 占用同步 worker，阶段 10 默认 `worker-threads = 32`：16 路常规 SSE 之外保留 16 个短请求/Usage 余量，并以 `mixed-16` benchmark 验证两组 Usage 不被长流饿死。若将来要保证每个端点各 16 路，则建立独立的 32 路 SSE 容量 profile 后再决定增加线程、端点配额或迁移异步 I/O。
 
 双 listener 的公平性先通过 endpoint 维度的 accepted、active、queued、rejected 和 queue-wait 指标观察，不预先引入多级调度器。只有常规 profile 出现可复现饥饿时，才增加端点配额或独立队列。
 

@@ -494,7 +494,7 @@ def main():
     parser.add_argument("--exe", type=pathlib.Path, required=True)
     parser.add_argument("--profiles", nargs="+", choices=sorted(PROFILES), default=["smoke"])
     parser.add_argument("--log-body", choices=["true", "false"], default="false")
-    parser.add_argument("--worker-threads", type=int, default=16)
+    parser.add_argument("--worker-threads", type=int, default=32)
     parser.add_argument("--max-connections", type=int, default=64)
     parser.add_argument("--build-type", default="Release")
     parser.add_argument("--source-ref", default="HEAD")

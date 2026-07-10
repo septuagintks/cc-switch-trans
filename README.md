@@ -80,7 +80,7 @@ Common options:
 --response-header-timeout-ms 300000
 --stream-idle-timeout-ms 300000
 --total-timeout-ms 0
---worker-threads 16
+--worker-threads 32
 --max-connections 64
 --max-request-body-size 104857600
 --max-response-body-size 104857600
@@ -92,7 +92,7 @@ With `--redact-sensitive false` and `--log-body true`, logs can contain live Aut
 
 `--timeout-ms` remains the fallback for all stage timeouts except the optional total timeout. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
 
-The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. The next development stage starts with logger reliability and dual-listener routing, then adds persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS. A new mixed-load benchmark will keep both Usage routes responsive while 16 SSE streams are active.
+The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is moving to 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. The next development stage starts with logger reliability and dual-listener routing, then adds persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS. A new mixed-load benchmark will keep both Usage routes responsive while 16 SSE streams are active.
 
 ## Verify
 
