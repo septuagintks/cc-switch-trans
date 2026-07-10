@@ -1,7 +1,10 @@
 #pragma once
 
+#include "core/cancellation.hpp"
 #include "core/http_types.hpp"
+#include "core/runtime_metrics.hpp"
 #include "core/task.hpp"
+#include "core/timeouts.hpp"
 
 #include <cstddef>
 #include <functional>
@@ -28,24 +31,32 @@ public:
     using HeaderCallback = std::function<bool(const HttpResponse&)>;
     using ChunkCallback = std::function<bool(const std::string&)>;
 
-    Proxy(int timeout_ms, std::size_t max_response_body_size);
+    Proxy(
+        TimeoutConfig timeouts,
+        std::size_t max_response_body_size,
+        std::shared_ptr<RuntimeMetrics> metrics = {});
     ~Proxy();
 
     Proxy(const Proxy&) = delete;
     Proxy& operator=(const Proxy&) = delete;
 
-    HttpResponse forward(const HttpRequest& request, const UpstreamTarget& target) const;
+    HttpResponse forward(
+        const HttpRequest& request,
+        const UpstreamTarget& target,
+        const CancellationToken& cancellation = {}) const;
     HttpResponse forward_streaming(
         const HttpRequest& request,
         const UpstreamTarget& target,
         const HeaderCallback& on_headers,
-        const ChunkCallback& on_chunk) const;
+        const ChunkCallback& on_chunk,
+        const CancellationToken& cancellation = {}) const;
 
 private:
     struct Impl;
 
-    int timeout_ms_;
+    TimeoutConfig timeouts_;
     std::size_t max_response_body_size_;
+    std::shared_ptr<RuntimeMetrics> metrics_;
     std::unique_ptr<Impl> impl_;
 };
 

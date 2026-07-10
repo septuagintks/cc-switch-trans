@@ -4,11 +4,11 @@
 
 ## Status
 
-The current source version is `0.2.0` and runs on Windows. Responses and Chat Completions can use independent upstream targets. The legacy `--upstream-url` remains the shared fallback and supplies the Usage upstream.
+The current source version is `0.3.0` and runs on Windows. Responses and Chat Completions can use independent upstream targets. The legacy `--upstream-url` remains the shared fallback and supplies the Usage upstream.
 
 Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
 
-The packaged `0.2.0` executable passed a real Codex -> ccs-trans -> findcg Responses regression on 2026-07-11: the targeted tool was removed, findcg returned HTTP 200, and both SSE streams completed with contiguous chunk sequences.
+The packaged `0.2.0` executable passed a real Codex -> ccs-trans -> findcg Responses regression on 2026-07-11: the targeted tool was removed, findcg returned HTTP 200, and both SSE streams completed with contiguous chunk sequences. `0.3.0` adds request cancellation, split upstream timeouts, bounded runtime metrics, and a synthetic benchmark harness without changing the forwarding rules.
 
 By default it listens on:
 
@@ -71,6 +71,13 @@ Common options:
 --log-body true
 --redact-sensitive false
 --body-log-limit 1048576
+--metrics-interval-ms 0
+--resolve-timeout-ms 300000
+--connect-timeout-ms 300000
+--send-timeout-ms 300000
+--response-header-timeout-ms 300000
+--stream-idle-timeout-ms 300000
+--total-timeout-ms 0
 --worker-threads 16
 --max-connections 64
 --max-request-body-size 104857600
@@ -81,7 +88,9 @@ Common options:
 
 With `--redact-sensitive false` and `--log-body true`, logs can contain live Authorization values, cookies, full Codex context, and response chunks. Treat them as credential-bearing files. Use synthetic data for tests and benchmarks, enable sensitive-header redaction before sharing logs, and review body content separately because header redaction does not sanitize JSON bodies.
 
-The next development stage establishes repeatable 8/16/50-connection SSE benchmarks, adds client-disconnect cancellation and split timeout controls, and uses those results to decide whether the synchronous worker model needs an asynchronous I/O rewrite.
+`--timeout-ms` remains the fallback for all stage timeouts except the optional total timeout. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
+
+The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. The next development stage is persistent configuration under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS.
 
 ## Verify
 
@@ -98,6 +107,8 @@ ctest --test-dir build --output-on-failure
 python tests/integration/run_integration.py build/ccs-trans.exe
 ```
 
+Synthetic benchmarks are documented in [tests/benchmark/README.md](tests/benchmark/README.md). Generated results stay under ignored `benchmark-results/`.
+
 ## Repository Layout
 
 ```text
@@ -111,6 +122,7 @@ src/transport/         Header filtering and upstream transport
 src/transforms/        Scoped request transforms
 tests/unit/            Core configuration, routing, URL, and transform tests
 tests/integration/     Mock upstream and end-to-end tests
+tests/benchmark/       Synthetic load runner and transform microbenchmark
 third_party/nlohmann/  Pinned nlohmann/json 3.11.3 single-header dependency
 ```
 

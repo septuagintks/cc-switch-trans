@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config/config.hpp"
+#include "core/runtime_metrics.hpp"
 
 #include <condition_variable>
 #include <cstdint>
@@ -8,6 +9,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,7 +29,7 @@ LogField field_raw(std::string name, std::string raw_json);
 
 class Logger {
 public:
-    explicit Logger(AppConfig config);
+    explicit Logger(AppConfig config, std::shared_ptr<RuntimeMetrics> metrics = {});
     ~Logger();
 
     Logger(const Logger&) = delete;
@@ -47,6 +49,7 @@ private:
     void writer_loop();
 
     AppConfig config_;
+    std::shared_ptr<RuntimeMetrics> metrics_;
     mutable std::mutex mutex_;
     mutable std::condition_variable queue_cv_;
     mutable std::condition_variable space_cv_;

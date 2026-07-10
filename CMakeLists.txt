@@ -1,13 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(ccs_trans VERSION 0.2.0 LANGUAGES CXX)
+project(ccs_trans VERSION 0.3.0 LANGUAGES CXX)
 
 include(CTest)
 
 add_library(ccs-trans-core STATIC
     src/config/config.cpp
     src/core/app_service.cpp
+    src/core/cancellation.cpp
     src/core/request_id.cpp
+    src/core/runtime_metrics.cpp
     src/core/task.cpp
     src/core/task_router.cpp
     src/core/transform.cpp
@@ -40,4 +42,9 @@ if(BUILD_TESTING)
     target_link_libraries(ccs-trans-core-tests PRIVATE ccs-trans-core)
     target_include_directories(ccs-trans-core-tests PRIVATE third_party)
     add_test(NAME ccs-trans-core-tests COMMAND ccs-trans-core-tests)
+
+    add_executable(ccs-trans-transform-benchmark
+        tests/benchmark/transform_benchmark.cpp
+    )
+    target_link_libraries(ccs-trans-transform-benchmark PRIVATE ccs-trans-core)
 endif()

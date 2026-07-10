@@ -24,15 +24,20 @@ cc-switch-trans/
     core/
       app_service.hpp
       app_service.cpp
+      cancellation.hpp
+      cancellation.cpp
       http_types.hpp
       request_id.hpp
       request_id.cpp
+      runtime_metrics.hpp
+      runtime_metrics.cpp
       task.hpp
       task.cpp
       task_router.hpp
       task_router.cpp
       transform.hpp
       transform.cpp
+      timeouts.hpp
       url.hpp
       url.cpp
     hosts/
@@ -58,6 +63,11 @@ cc-switch-trans/
     integration/
       mock_upstream.py
       run_integration.py
+    benchmark/
+      README.md
+      mock_upstream.py
+      run_benchmark.py
+      transform_benchmark.cpp
 
   third_party/
     nlohmann/
@@ -70,15 +80,16 @@ cc-switch-trans/
 | 目录                | 当前职责                              | 后续扩展                                 |
 | ------------------- | ------------------------------------- | ---------------------------------------- |
 | `docs`              | 协议设计、开发顺序、结构约束          | benchmark 说明、发布流程、平台说明       |
-| `src/core`          | HTTP 类型、任务、URL、transform 接口与 AppService | 配置快照和更细生命周期事件       |
+| `src/core`          | HTTP 类型、任务、URL、transform、取消、timeout、指标与 AppService | 配置快照和更细生命周期事件 |
 | `src/config`        | CLI 参数和运行配置                    | 配置文件、schema 迁移、不可变快照        |
 | `src/hosts`         | 进程入口                              | Windows tray host、macOS menu bar host   |
-| `src/logging`       | 结构化日志 API、批量 writer 与背压    | 日志轮转和队列指标                        |
-| `src/server`        | 本地 HTTP 接入、容量控制和请求编排    | listener 接口和取消传播                   |
-| `src/transport`     | 头过滤和进程级 WinHTTP session        | 分阶段 timeout、连接指标、macOS 实现      |
+| `src/logging`       | 结构化日志 API、批量 writer、背压与指标 | 日志轮转                                 |
+| `src/server`        | 本地 HTTP 接入、容量控制、取消监控和请求编排 | listener 接口                        |
+| `src/transport`     | 头过滤、进程级 WinHTTP session、取消和分阶段 timeout | macOS 实现                  |
 | `src/transforms`    | 按任务隔离的请求改写规则              | Chat Completions 专用规则                 |
 | `tests/unit`        | 配置、URL、路由和 transform 纯逻辑测试 | 更多边界与错误用例                        |
-| `tests/integration` | 双 mock upstream 与端到端协议测试     | 8/16/50 路 SSE benchmark                  |
+| `tests/integration` | 双 mock upstream、取消、timeout 与端到端协议测试 | 更多平台错误用例                    |
+| `tests/benchmark`   | 合成 8/16/50 路负载与 transform 微基准 | soak 与跨平台对比                       |
 | `third_party/nlohmann` | 固定版本 JSON 单头文件与许可证     | profiling 后再评估替换                    |
 
 ## CMake 目标
@@ -89,6 +100,9 @@ ccs-trans-core
 
 ccs-trans
   hosts/cli_main.cpp + ccs-trans-core
+
+ccs-trans-transform-benchmark
+  tests/benchmark/transform_benchmark.cpp + ccs-trans-core
 ```
 
 宿主只负责输入参数、展示错误和控制服务生命周期。协议路由、请求改写和网络传输不能复制到 host 中。
@@ -104,6 +118,7 @@ ccs-trans
 | `dist`          | 本地发布包和人工验证日志                | 是，但删除前确认是否仍需诊断日志 |
 | `logs`          | 默认运行日志                            | 是，可能包含凭据和完整请求上下文 |
 | `tmp`           | 集成测试日志和打包暂存                  | 是                               |
+| `benchmark-results` | 本机合成性能结果                    | 是，可由固定 profile 重建        |
 | `.vscode`       | 当前开发者的编辑器设置                  | 是，不作为项目配置来源           |
 
 `.git` 是版本数据库，任何清理脚本都不得操作。工具生成的隐藏目录也不能被构建或打包脚本当作项目输入。

@@ -1,0 +1,157 @@
+#pragma once
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+
+namespace ccs {
+
+enum class UpstreamTimeoutPhase {
+    Resolve,
+    Connect,
+    Send,
+    ResponseHeader,
+    StreamIdle,
+    ResponseBody,
+    Total,
+};
+
+struct RuntimeMetricsSnapshot {
+    std::uint64_t connections_accepted = 0;
+    std::uint64_t connections_rejected = 0;
+    std::uint64_t connections_completed = 0;
+    std::uint64_t current_connections = 0;
+    std::uint64_t peak_connections = 0;
+    std::uint64_t current_queued_connections = 0;
+    std::uint64_t peak_queued_connections = 0;
+    std::uint64_t current_active_workers = 0;
+    std::uint64_t peak_active_workers = 0;
+    std::uint64_t requests_started = 0;
+    std::uint64_t requests_completed = 0;
+    std::uint64_t requests_cancelled = 0;
+    std::uint64_t client_disconnects = 0;
+    std::uint64_t sse_streams_started = 0;
+    std::uint64_t stream_chunks_forwarded = 0;
+    std::uint64_t stream_bytes_forwarded = 0;
+    std::uint64_t upstream_requests_started = 0;
+    std::uint64_t upstream_requests_completed = 0;
+    std::uint64_t upstream_requests_cancelled = 0;
+    std::uint64_t upstream_requests_failed = 0;
+    std::uint64_t upstream_resolve_timeouts = 0;
+    std::uint64_t upstream_connect_timeouts = 0;
+    std::uint64_t upstream_send_timeouts = 0;
+    std::uint64_t upstream_response_header_timeouts = 0;
+    std::uint64_t upstream_stream_idle_timeouts = 0;
+    std::uint64_t upstream_response_body_timeouts = 0;
+    std::uint64_t upstream_total_timeouts = 0;
+    std::uint64_t upstream_connection_handles_created = 0;
+    std::uint64_t upstream_request_handles_created = 0;
+    std::uint64_t upstream_bytes_sent = 0;
+    std::uint64_t upstream_bytes_received = 0;
+    std::uint64_t winhttp_connecting_events = 0;
+    std::uint64_t winhttp_connected_events = 0;
+    std::uint64_t winhttp_connection_closed_events = 0;
+    std::uint64_t log_records_enqueued = 0;
+    std::uint64_t log_records_written = 0;
+    std::uint64_t log_bytes_written = 0;
+    std::uint64_t current_log_queue_records = 0;
+    std::uint64_t peak_log_queue_records = 0;
+    std::uint64_t current_log_queue_bytes = 0;
+    std::uint64_t peak_log_queue_bytes = 0;
+    std::uint64_t log_backpressure_count = 0;
+    std::uint64_t log_backpressure_wait_us = 0;
+    std::uint64_t log_batches_written = 0;
+    std::uint64_t log_flush_count = 0;
+    std::uint64_t log_write_time_us = 0;
+    std::uint64_t max_log_batch_records = 0;
+    std::uint64_t max_log_batch_bytes = 0;
+};
+
+class RuntimeMetrics {
+public:
+    void connection_accepted(std::size_t current, std::size_t queued);
+    void connection_rejected();
+    void worker_started(std::size_t queued);
+    void worker_finished(std::size_t current);
+
+    void request_started();
+    void request_completed();
+    void request_cancelled();
+    void client_disconnected();
+    void stream_started();
+    void stream_chunk_forwarded(std::size_t bytes);
+
+    void upstream_request_started();
+    void upstream_request_completed();
+    void upstream_request_cancelled();
+    void upstream_request_failed();
+    void upstream_timeout(UpstreamTimeoutPhase phase);
+    void upstream_connection_handle_created();
+    void upstream_request_handle_created();
+    void upstream_bytes_sent(std::size_t bytes);
+    void upstream_bytes_received(std::size_t bytes);
+    void winhttp_connecting();
+    void winhttp_connected();
+    void winhttp_connection_closed();
+
+    void log_record_enqueued(std::size_t records, std::size_t bytes);
+    void log_queue_drained();
+    void log_backpressure(std::uint64_t wait_us);
+    void log_batch_written(std::size_t records, std::size_t bytes, std::uint64_t write_us);
+
+    RuntimeMetricsSnapshot snapshot() const;
+
+private:
+    static void update_peak(std::atomic<std::uint64_t>& peak, std::uint64_t value);
+
+    std::atomic<std::uint64_t> connections_accepted_{0};
+    std::atomic<std::uint64_t> connections_rejected_{0};
+    std::atomic<std::uint64_t> connections_completed_{0};
+    std::atomic<std::uint64_t> current_connections_{0};
+    std::atomic<std::uint64_t> peak_connections_{0};
+    std::atomic<std::uint64_t> current_queued_connections_{0};
+    std::atomic<std::uint64_t> peak_queued_connections_{0};
+    std::atomic<std::uint64_t> current_active_workers_{0};
+    std::atomic<std::uint64_t> peak_active_workers_{0};
+    std::atomic<std::uint64_t> requests_started_{0};
+    std::atomic<std::uint64_t> requests_completed_{0};
+    std::atomic<std::uint64_t> requests_cancelled_{0};
+    std::atomic<std::uint64_t> client_disconnects_{0};
+    std::atomic<std::uint64_t> sse_streams_started_{0};
+    std::atomic<std::uint64_t> stream_chunks_forwarded_{0};
+    std::atomic<std::uint64_t> stream_bytes_forwarded_{0};
+    std::atomic<std::uint64_t> upstream_requests_started_{0};
+    std::atomic<std::uint64_t> upstream_requests_completed_{0};
+    std::atomic<std::uint64_t> upstream_requests_cancelled_{0};
+    std::atomic<std::uint64_t> upstream_requests_failed_{0};
+    std::atomic<std::uint64_t> upstream_resolve_timeouts_{0};
+    std::atomic<std::uint64_t> upstream_connect_timeouts_{0};
+    std::atomic<std::uint64_t> upstream_send_timeouts_{0};
+    std::atomic<std::uint64_t> upstream_response_header_timeouts_{0};
+    std::atomic<std::uint64_t> upstream_stream_idle_timeouts_{0};
+    std::atomic<std::uint64_t> upstream_response_body_timeouts_{0};
+    std::atomic<std::uint64_t> upstream_total_timeouts_{0};
+    std::atomic<std::uint64_t> upstream_connection_handles_created_{0};
+    std::atomic<std::uint64_t> upstream_request_handles_created_{0};
+    std::atomic<std::uint64_t> upstream_bytes_sent_{0};
+    std::atomic<std::uint64_t> upstream_bytes_received_{0};
+    std::atomic<std::uint64_t> winhttp_connecting_events_{0};
+    std::atomic<std::uint64_t> winhttp_connected_events_{0};
+    std::atomic<std::uint64_t> winhttp_connection_closed_events_{0};
+    std::atomic<std::uint64_t> log_records_enqueued_{0};
+    std::atomic<std::uint64_t> log_records_written_{0};
+    std::atomic<std::uint64_t> log_bytes_written_{0};
+    std::atomic<std::uint64_t> current_log_queue_records_{0};
+    std::atomic<std::uint64_t> peak_log_queue_records_{0};
+    std::atomic<std::uint64_t> current_log_queue_bytes_{0};
+    std::atomic<std::uint64_t> peak_log_queue_bytes_{0};
+    std::atomic<std::uint64_t> log_backpressure_count_{0};
+    std::atomic<std::uint64_t> log_backpressure_wait_us_{0};
+    std::atomic<std::uint64_t> log_batches_written_{0};
+    std::atomic<std::uint64_t> log_flush_count_{0};
+    std::atomic<std::uint64_t> log_write_time_us_{0};
+    std::atomic<std::uint64_t> max_log_batch_records_{0};
+    std::atomic<std::uint64_t> max_log_batch_bytes_{0};
+};
+
+} // namespace ccs

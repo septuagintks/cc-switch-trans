@@ -2,23 +2,23 @@
 
 ## 当前进度
 
-`0.2.0` 已完成阶段 0–8：任务路由、双上游配置、findcg Responses `image_gen` transform、改写日志、Chat 独立入口、纯逻辑测试、双 mock upstream 集成测试、Release 打包和真实链路回归均已落地。
+`0.3.0` 已完成阶段 0–9：在 `0.2.0` 的双任务转发和 findcg Responses 改写基础上，新增合成 benchmark、运行时资源指标、客户端断开取消、分阶段 timeout 及其自动测试。
 
-根据已确认的性能取舍，进程级 WinHTTP session、100 ms 批量日志 writer、错误立即 flush、SSE 序号 chunk 日志、流式响应去聚合、连接总量上限，以及请求/非流式响应/日志限额拆分已经提前完成。阶段 9 不重复实现这些项目，而是先测量当前基线，再补客户端取消传播、分阶段 timeout 和经 profiling 证明有效的热路径优化。
+阶段 9 的修正后基准表明，8/16 路常规 SSE 负载没有 worker 排队，保留同步 worker + WinHTTP 模型；50 路压力负载受 16 个 worker 上限约束，会产生约 2 秒首字节排队，因此继续作为明确的容量边界，而不是立即重写全异步网络栈的理由。
 
 2026-07-11 的 Codex -> ccs-trans -> findcg 实测包含两次 Responses 请求。两次请求都从根级 `tools` 删除了 1 个 `image_gen` namespace 工具，上游均返回 `200`；SSE 分别连续转发 57 和 72 个 chunk，序号无缺口，日志中没有 warning、error 或 4xx/5xx。`0.2.0` 功能验收至此完成。
 
 ## 当前开发目标
 
-进入阶段 9：为同步 worker + WinHTTP 实现建立可重复的性能基线和资源指标，然后按证据补齐取消传播与分阶段超时。阶段结束时必须形成是否迁移到完整异步 I/O 的明确结论，而不是先做网络栈重写。
+进入阶段 10：实现 Windows `%USERPROFILE%/.ccs-trans/` 与 macOS `~/.ccs-trans/` 下的持久配置、schema/version 校验、CLI 覆盖层和不可变运行快照，为后续 Windows 托盘与 macOS 菜单栏宿主提供同一配置来源。
 
-本阶段保持以下 `0.2.0` 协议行为不变：
+后续阶段保持以下 `0.3.0` 协议行为不变：
 
 - Responses 任务只处理 `/v1/responses` 和 `/v1/responses/`，只在目标上游是 findcg 时执行 `image_gen` 清理。
 - Chat Completions 任务只处理 `/v1/chat/completions`，使用独立上游 URL 和路径，不参与 Responses 的 findcg 特殊改写。
 - 非 findcg Responses、Usage 和未知路由继续保持透明转发或原有错误行为。
 
-性能工作不得改变 transform 选择、body 内容、SSE 顺序、状态码、错误模型或日志完整性语义。
+持久配置工作不得改变 transform 选择、body 内容、SSE 顺序、状态码、错误模型、取消语义或日志完整性语义。
 
 ## 长期演进目标与阶段边界
 
@@ -30,17 +30,17 @@
 - 配置长期保存、启动时自动加载，以及未来由托盘菜单修改和重载配置。
 - macOS 编译和打包，同时提供命令行产物与菜单栏常驻应用。
 
-阶段 9 只推进性能基线、资源指标、取消传播和分阶段 timeout；持久配置、托盘宿主和 macOS 继续按阶段 10–12 实施。已经建立的任务、transform、transport、日志和服务边界必须保持，后续功能不能重新堆回 `Server`、`Proxy` 或 `main`。
+阶段 9 已完成；持久配置、托盘宿主和 macOS 继续按阶段 10–12 实施。已经建立的任务、transform、transport、日志和服务边界必须保持，后续功能不能重新堆回 `Server`、`Proxy` 或 `main`。
 
 ### 当前结构边界状态
 
-| 边界                         | `0.2.0` 状态                                      | 后续工作                                               |
+| 边界                         | `0.3.0` 状态                                      | 后续工作                                               |
 | ---------------------------- | ------------------------------------------------- | ------------------------------------------------------ |
-| WinHTTP 生命周期             | 已改为进程级 session，每请求独立 request handle   | 增加连接/超时指标，并实现取消传播                      |
-| SSE 内存                     | 已取消完整 response body 聚合，只保留 chunk 计数  | benchmark 验证长流内存不随累计字节线性增长             |
-| 日志写入                     | 已使用单 writer、有界队列、100 ms 批写和错误 flush | 增加队列高水位、背压计数和写入延迟指标                 |
-| 接入容量                     | 已用 `max-connections` 限制总量并返回稳定 `503`    | 测量 8/16/50 路负载，补客户端取消传播                  |
-| 同步 worker                  | SSE 生命周期仍占用一个 worker                     | benchmark 后决定是否值得迁移到异步事件循环             |
+| WinHTTP 生命周期             | 进程级 session、请求级 handle、取消和分阶段 timeout | macOS transport 保持同一语义                          |
+| SSE 内存                     | 不聚合完整 response body，只保留 chunk 计数       | 后续增加长时间 soak 回归                               |
+| 日志写入                     | 单 writer、有界队列、100 ms 批写、错误 flush 和指标 | 阶段 10/11 增加轮转与保留期                           |
+| 接入容量                     | `max-connections` 总量限制、稳定 `503`、断连取消   | 后台宿主展示运行状态                                   |
+| 同步 worker                  | 8/16 路常规负载继续使用，50 路按 worker 上限排队   | 常规负载退化时才设计全异步迁移                         |
 | Windows 网络 API            | `Proxy`/`Server` 仍依赖 WinHTTP/Winsock            | macOS 阶段抽象平台 transport/listener                  |
 | 配置生命周期                 | CLI 生成运行配置，尚无持久配置快照                 | 阶段 10 分离配置文件、CLI 覆盖和不可变快照             |
 | 服务生命周期                 | 已有 `AppService start/stop/status/wait`           | 持久配置阶段增加 reload，tray 阶段复用同一服务状态机    |
@@ -429,6 +429,34 @@ ccs-trans --responses-upstream-url https://www.findcg.com/ --chat-upstream-url <
 - 各阶段 timeout 可独立测试，错误分类稳定。
 - 优化前后有同 profile 对照，Responses/Chat/Usage/transform/SSE 自动测试不退化。
 - 形成同步模型继续使用或异步化的决策记录，结论引用 benchmark 数据。
+
+### 9.7 实施结果与决策记录
+
+阶段 9 已完成以下交付：
+
+- `tests/benchmark/` 提供合成 upstream、Windows 资源采样、8/16/50 路 profile、机器可读 JSON 结果和约 100 KB findcg transform 微基准。
+- `performance_snapshot` 记录连接/worker/日志队列高水位、背压、WinHTTP 连接事件、传输字节、失败、取消和各阶段 timeout 计数。
+- 一个共享 `WSAPoll` 监控线程观察客户端 socket；断开后通过请求级 cancellation token 关闭对应 WinHTTP request handle，不为每条 SSE 创建 watcher 线程。
+- timeout 已拆为 resolve、connect、send、response header、SSE idle 和可选 total；旧 `--timeout-ms` 只作为前五项的兼容回退。
+- 同步 WinHTTP 发送改为 `WinHttpSendRequest` 声明长度、`WinHttpWriteData` 写 body、`WinHttpReceiveResponse` 收响应头，使 send 与 response-header timeout 的阶段边界可测试。
+- 自动集成测试覆盖 504 响应头超时、已发送前缀后的 SSE idle/total 超时、两个客户端同时断开后 worker 迅速释放，以及每请求独立连续的 chunk 序号。
+
+修正 benchmark mock 的监听 backlog 后，本机 Release、无 body 日志短时结果如下；这些数字用于同机回归，不作为跨机器 SLO：
+
+| profile | 代理附加 TTFB p50 | 峰值 Working Set | 峰值 worker | 失败 |
+| ------- | ----------------- | ---------------- | ----------- | ---- |
+| smoke   | `1.058 ms`        | `12.2 MB`        | `4`         | `0`  |
+| desktop-8 | `10.535 ms`     | `12.2 MB`        | `8`         | `0`  |
+| desktop-16 | `10.640 ms`    | `13.3 MB`        | `16`        | `0`  |
+| stress-50 | `1998.996 ms`   | `14.8 MB`        | `16`        | `0`  |
+
+`desktop-16` 开启 body 日志后，附加 TTFB p50 从 `10.640 ms` 增至 `13.116 ms`，日志写入量从约 `0.45 MB` 增至 `2.49 MB`，未触发日志背压。smoke 的 40 个请求只出现 4 次物理连接事件，证明进程级 WinHTTP session 正在复用连接。
+
+早期 `0.2.0` benchmark 使用 Python `ThreadingHTTPServer` 默认 backlog=5；16/50 路同时建连会随机把 direct 或 proxied 一侧分批排队，因此旧高并发 TTFB 只保留为历史原始结果，不用于精确同比。当前 mock 固定 `request_queue_size=128`，后续比较必须使用修正后的 runner。
+
+决策：8–16 路常规桌面负载继续使用同步 worker 模型。50 路压力测试清楚显示连接数高于 `worker-threads` 时会排队，但资源仍有界且无失败；现阶段不承担完整异步 I/O 重构成本。若未来常规负载、后台宿主或 macOS transport 出现不可接受的线程/排队数据，再单独启动异步架构设计。
+
+完成状态：已完成。阶段 10 可以在既有取消、指标和资源边界上开始持久配置实现。
 
 ## 阶段 10：持久配置
 

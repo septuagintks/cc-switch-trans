@@ -58,6 +58,20 @@ def raw_extra_separator_request(port, path, body):
     return status, data
 
 
+def fire_and_disconnect(port, path):
+    body = b"{}"
+    request_bytes = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii") + body
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(request_bytes)
+
+
 def assert_true(condition, message):
     if not condition:
         raise AssertionError(message)
@@ -114,12 +128,20 @@ def main():
                 "true",
                 "--body-log-limit",
                 "64",
+                "--metrics-interval-ms",
+                "100",
                 "--worker-threads",
                 "2",
                 "--max-connections",
                 "2",
                 "--max-response-body-size",
                 "1024",
+                "--response-header-timeout-ms",
+                "100",
+                "--stream-idle-timeout-ms",
+                "400",
+                "--total-timeout-ms",
+                "1500",
                 "--log-level",
                 "debug",
             ],
@@ -212,7 +234,7 @@ def main():
                     request,
                     proxy_port,
                     "POST",
-                    "/v1/responses?delay_ms=600",
+                    "/v1/responses?stream=sse&chunk_count=3&chunk_interval_ms=300",
                     "{}",
                     {"Content-Type": "application/json"},
                 )
@@ -230,6 +252,30 @@ def main():
             for future in delayed:
                 assert_true(future.result()[0] == 200, "accepted delayed request")
 
+        status, _, _ = request(
+            proxy_port,
+            "POST",
+            "/v1/responses?delay_ms=800",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert_true(status == 504, f"response header timeout status: {status}")
+
+        fire_and_disconnect(proxy_port, "/v1/responses?delay_ms=5000")
+        fire_and_disconnect(proxy_port, "/v1/responses?delay_ms=5000")
+        time.sleep(0.4)
+        cancellation_started = time.monotonic()
+        status, _, _ = request(
+            proxy_port,
+            "POST",
+            "/v1/responses",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        cancellation_elapsed = time.monotonic() - cancellation_started
+        assert_true(status == 200, "client cancellation releases worker capacity")
+        assert_true(cancellation_elapsed < 2, "client cancellation completes promptly")
+
         status, headers, data = request(
             proxy_port,
             "POST",
@@ -241,6 +287,24 @@ def main():
         assert_true(headers.get("Content-Type") == "text/event-stream", "sse content-type")
         assert_true(f"data: {responses_upstream_port}-chunk-0".encode() in data and b"data: [DONE]" in data, "sse body")
 
+        status, _, idle_data = request(
+            proxy_port,
+            "POST",
+            "/v1/responses/?stream=sse&chunk_count=3&chunk_interval_ms=700",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert_true(status == 200 and b"chunk-0" in idle_data, "stream idle timeout preserves sent prefix")
+
+        status, _, total_data = request(
+            proxy_port,
+            "POST",
+            "/v1/responses/?stream=sse&chunk_count=10&chunk_interval_ms=250",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert_true(status == 200 and b"chunk-0" in total_data, "total timeout preserves sent prefix")
+
         time.sleep(0.25)
         events = read_json_lines(log_path)
         rendered = "\n".join(json.dumps(event, separators=(",", ":")) for event in events)
@@ -250,7 +314,13 @@ def main():
         assert_true('"body":"abcdef"' in rendered, "request body logged")
         stream_chunks = [event for event in events if event.get("event") == "stream_chunk"]
         assert_true(stream_chunks, "stream chunks logged")
-        assert_true([event.get("chunk_sequence") for event in stream_chunks] == list(range(len(stream_chunks))), "stream chunk sequence")
+        chunk_sequences = {}
+        for event in stream_chunks:
+            chunk_sequences.setdefault(event.get("request_id"), []).append(event.get("chunk_sequence"))
+        assert_true(
+            all(sequence == list(range(len(sequence))) for sequence in chunk_sequences.values()),
+            "stream chunk sequence per request",
+        )
         assert_true(any("body" in event and "chunk-0" in event["body"] for event in stream_chunks), "stream chunk body logged")
         stream_sent = [event for event in events if event.get("event") == "response_sent" and event.get("streaming")]
         assert_true(stream_sent and "body" not in stream_sent[-1], "stream response body is not aggregated")
@@ -260,6 +330,23 @@ def main():
         assert_true(any(event.get("task") == "chat_completions" and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in upstream_requests), "Chat task target logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 404 for event in events), "404 logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 405 for event in events), "405 logged")
+        cancelled = [event for event in events if event.get("event") == "request_cancelled"]
+        assert_true(len(cancelled) >= 2, "client cancellation logged")
+        timeout_types = {
+            event.get("type")
+            for event in events
+            if event.get("event") == "request_error" and event.get("status_code") == 504
+        }
+        assert_true("upstream_response_header_timeout" in timeout_types, "header timeout classified")
+        assert_true("upstream_stream_idle_timeout" in timeout_types, "stream idle timeout classified")
+        assert_true("upstream_total_timeout" in timeout_types, "total timeout classified")
+        snapshots = [event for event in events if event.get("event") == "performance_snapshot"]
+        assert_true(snapshots, "performance snapshot logged")
+        latest_snapshot = snapshots[-1]
+        assert_true(latest_snapshot.get("upstream_requests_failed", 0) >= 3, "upstream failures counted")
+        assert_true(latest_snapshot.get("upstream_response_header_timeouts", 0) >= 1, "header timeout counted")
+        assert_true(latest_snapshot.get("upstream_stream_idle_timeouts", 0) >= 1, "stream idle timeout counted")
+        assert_true(latest_snapshot.get("upstream_total_timeouts", 0) >= 1, "total timeout counted")
 
         print("integration ok")
     finally:

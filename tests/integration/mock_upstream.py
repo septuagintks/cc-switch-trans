@@ -32,18 +32,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(payload)
 
     def do_POST(self):
-        self._maybe_delay()
         query = parse_qs(urlparse(self.path).query)
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
+        self._maybe_delay()
         if query.get("stream", [""])[0] == "sse":
             server_port = self.server.server_address[1]
+            chunk_count = max(1, int(query.get("chunk_count", ["3"])[0]))
+            chunk_interval_ms = max(0, int(query.get("chunk_interval_ms", ["250"])[0]))
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            for index in range(3):
+            for index in range(chunk_count):
                 self.wfile.write(f"data: {server_port}-chunk-{index}\n\n".encode("utf-8"))
                 self.wfile.flush()
-                time.sleep(0.25)
+                if index + 1 < chunk_count:
+                    time.sleep(chunk_interval_ms / 1000)
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
             return
@@ -59,8 +64,6 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(encoded)
             return
 
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length).decode("utf-8", errors="replace")
         payload = {
             "mock": True,
             "path": self.path,

@@ -119,8 +119,9 @@ LogField field_raw(std::string name, std::string raw_json) {
     return LogField{std::move(name), std::move(raw_json), false};
 }
 
-Logger::Logger(AppConfig config)
-    : config_(std::move(config)) {}
+Logger::Logger(AppConfig config, std::shared_ptr<RuntimeMetrics> metrics)
+    : config_(std::move(config))
+    , metrics_(std::move(metrics)) {}
 
 Logger::~Logger() {
     {
@@ -180,10 +181,18 @@ void Logger::log(std::string level, std::string event, const std::vector<LogFiel
     if (!opened_ || stopping_ || writer_failed_) {
         return;
     }
-    space_cv_.wait(lock, [&]() {
+    const auto has_space = [&]() {
         return stopping_ || writer_failed_ || queue_.empty()
             || queued_bytes_ + line_size <= config_.log_queue_capacity;
-    });
+    };
+    const bool backpressured = !has_space();
+    const auto wait_started = std::chrono::steady_clock::now();
+    space_cv_.wait(lock, has_space);
+    if (backpressured && metrics_) {
+        const auto waited = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - wait_started);
+        metrics_->log_backpressure(static_cast<std::uint64_t>(waited.count()));
+    }
     if (stopping_ || writer_failed_) {
         return;
     }
@@ -191,6 +200,9 @@ void Logger::log(std::string level, std::string event, const std::vector<LogFiel
     const auto sequence = next_sequence_++;
     queued_bytes_ += line_size;
     queue_.push_back(QueuedRecord{sequence, std::move(line), immediate_flush});
+    if (metrics_) {
+        metrics_->log_record_enqueued(queue_.size(), queued_bytes_);
+    }
     queue_cv_.notify_one();
 
     if (immediate_flush) {
@@ -204,6 +216,7 @@ void Logger::writer_loop() {
     const auto flush_interval = std::chrono::milliseconds(config_.log_flush_interval_ms);
     while (true) {
         std::deque<QueuedRecord> batch;
+        std::size_t batch_bytes = 0;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             queue_cv_.wait(lock, [&]() { return stopping_ || !queue_.empty(); });
@@ -223,14 +236,25 @@ void Logger::writer_loop() {
             }
 
             batch.swap(queue_);
+            batch_bytes = queued_bytes_;
             queued_bytes_ = 0;
+            if (metrics_) {
+                metrics_->log_queue_drained();
+            }
             space_cv_.notify_all();
         }
 
+        const auto write_started = std::chrono::steady_clock::now();
         for (const auto& record : batch) {
             file_ << record.line;
         }
         file_.flush();
+        const auto write_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - write_started);
+        if (metrics_) {
+            metrics_->log_batch_written(
+                batch.size(), batch_bytes, static_cast<std::uint64_t>(write_elapsed.count()));
+        }
 
         {
             std::lock_guard<std::mutex> lock(mutex_);

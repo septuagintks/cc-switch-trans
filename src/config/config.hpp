@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/task.hpp"
+#include "core/timeouts.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -49,8 +50,9 @@ struct AppConfig {
     std::size_t body_log_limit = 1024 * 1024;
     std::size_t log_queue_capacity = 16 * 1024 * 1024;
     int log_flush_interval_ms = 100;
+    int metrics_interval_ms = 0;
 
-    int timeout_ms = 300000;
+    TimeoutConfig timeouts;
     std::size_t max_request_body_size = 100 * 1024 * 1024;
     std::size_t max_response_body_size = 100 * 1024 * 1024;
     std::size_t worker_threads = 16;

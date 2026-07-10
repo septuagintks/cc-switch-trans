@@ -35,6 +35,74 @@ namespace {
 constexpr int kBacklog = 64;
 constexpr std::size_t kHeaderLimit = 64 * 1024;
 
+class RequestMetricsScope {
+public:
+    RequestMetricsScope(std::shared_ptr<RuntimeMetrics> metrics, CancellationToken cancellation)
+        : metrics_(std::move(metrics))
+        , cancellation_(std::move(cancellation)) {
+        if (metrics_) {
+            metrics_->request_started();
+        }
+    }
+
+    ~RequestMetricsScope() {
+        if (metrics_) {
+            if (cancellation_.is_cancelled()) {
+                metrics_->request_cancelled();
+            } else {
+                metrics_->request_completed();
+            }
+        }
+    }
+
+private:
+    std::shared_ptr<RuntimeMetrics> metrics_;
+    CancellationToken cancellation_;
+};
+
+class PeriodicReporter {
+public:
+    PeriodicReporter(int interval_ms, std::function<void()> report)
+        : interval_(interval_ms)
+        , report_(std::move(report)) {
+        if (interval_.count() > 0) {
+            thread_ = std::thread([this]() { run(); });
+        }
+    }
+
+    ~PeriodicReporter() {
+        stop();
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+private:
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!cv_.wait_for(lock, interval_, [this]() { return stopping_; })) {
+            lock.unlock();
+            report_();
+            lock.lock();
+        }
+    }
+
+    std::chrono::milliseconds interval_;
+    std::function<void()> report_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stopping_ = false;
+    std::thread thread_;
+};
+
 std::string trim(std::string value) {
     auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char ch) {
@@ -319,6 +387,127 @@ struct ClientJob {
     std::string client_ip;
 };
 
+class ClientCancellationMonitor {
+public:
+    explicit ClientCancellationMonitor(std::shared_ptr<RuntimeMetrics> metrics)
+        : metrics_(std::move(metrics))
+        , thread_([this]() { run(); }) {}
+
+    ~ClientCancellationMonitor() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    std::uint64_t watch(SOCKET socket, const CancellationSource& source) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto id = next_id_++;
+        entries_.push_back(Entry{id, socket, source});
+        cv_.notify_all();
+        return id;
+    }
+
+    void unwatch(std::uint64_t id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        entries_.erase(
+            std::remove_if(entries_.begin(), entries_.end(), [id](const Entry& entry) {
+                return entry.id == id;
+            }),
+            entries_.end());
+    }
+
+    void cancel(const CancellationSource& source) {
+        if (source.cancel()) {
+            metrics_->client_disconnected();
+        }
+    }
+
+private:
+    struct Entry {
+        std::uint64_t id;
+        SOCKET socket;
+        CancellationSource source;
+    };
+
+    void run() {
+        while (true) {
+            std::vector<Entry> entries;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait_for(lock, std::chrono::milliseconds(50), [this]() {
+                    return stopping_ || !entries_.empty();
+                });
+                if (stopping_) {
+                    return;
+                }
+                entries = entries_;
+            }
+            if (entries.empty()) {
+                continue;
+            }
+
+            std::vector<WSAPOLLFD> poll_entries;
+            poll_entries.reserve(entries.size());
+            for (const auto& entry : entries) {
+                poll_entries.push_back(WSAPOLLFD{entry.socket, POLLRDNORM, 0});
+            }
+            const int result = WSAPoll(poll_entries.data(), static_cast<ULONG>(poll_entries.size()), 50);
+            if (result <= 0) {
+                continue;
+            }
+
+            for (std::size_t i = 0; i < poll_entries.size(); ++i) {
+                const auto revents = poll_entries[i].revents;
+                bool disconnected = (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
+                if (!disconnected && (revents & POLLRDNORM) != 0) {
+                    char byte = 0;
+                    const int received = recv(entries[i].socket, &byte, 1, MSG_PEEK);
+                    disconnected = received == 0
+                        || (received == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK);
+                }
+                if (disconnected) {
+                    cancel(entries[i].source);
+                }
+            }
+        }
+    }
+
+    std::shared_ptr<RuntimeMetrics> metrics_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<Entry> entries_;
+    std::uint64_t next_id_ = 1;
+    bool stopping_ = false;
+    std::thread thread_;
+};
+
+class SocketWatch {
+public:
+    SocketWatch(ClientCancellationMonitor& monitor, SOCKET socket, const CancellationSource& source)
+        : monitor_(&monitor)
+        , id_(monitor.watch(socket, source)) {}
+
+    ~SocketWatch() {
+        stop();
+    }
+
+    void stop() {
+        if (monitor_ != nullptr) {
+            monitor_->unwatch(id_);
+            monitor_ = nullptr;
+        }
+    }
+
+private:
+    ClientCancellationMonitor* monitor_;
+    std::uint64_t id_;
+};
+
 std::atomic_bool& shutdown_requested() {
     static std::atomic_bool value{false};
     return value;
@@ -428,12 +617,28 @@ std::string peer_ip(sockaddr_storage& storage) {
     return host;
 }
 
-void handle_client(SOCKET client, const Server* server, std::size_t max_body_size, std::string client_ip) {
+void handle_client(
+    SOCKET client,
+    const Server* server,
+    ClientCancellationMonitor& cancellation_monitor,
+    std::size_t max_body_size,
+    std::string client_ip) {
     try {
         const auto raw = recv_request(client, max_body_size);
-        server->process_raw_request_to_sender(raw, client_ip, [&](const std::string& data) {
-            return send_all(client, data);
-        });
+        CancellationSource cancellation_source;
+        SocketWatch watch(cancellation_monitor, client, cancellation_source);
+        server->process_raw_request_to_sender(
+            raw,
+            client_ip,
+            [&](const std::string& data) {
+                const bool sent = send_all(client, data);
+                if (!sent) {
+                    cancellation_monitor.cancel(cancellation_source);
+                }
+                return sent;
+            },
+            cancellation_source.token());
+        watch.stop();
     } catch (const std::exception& ex) {
         if (std::strcmp(ex.what(), "client disconnected before request") == 0) {
             close_socket(client);
@@ -478,9 +683,10 @@ void reject_overloaded_client(SOCKET client, const Server* server) {
 
 Server::Server(AppConfig config)
     : config_(config)
+    , metrics_(std::make_shared<RuntimeMetrics>())
     , router_(config_)
-    , proxy_(config_.timeout_ms, config_.max_response_body_size)
-    , logger_(config_) {
+    , proxy_(config_.timeouts, config_.max_response_body_size, metrics_)
+    , logger_(config_, metrics_) {
 #ifdef _WIN32
     shutdown_requested().store(false, std::memory_order_relaxed);
 #endif
@@ -513,9 +719,11 @@ std::string Server::process_raw_request(const std::string& raw, const std::strin
 bool Server::process_raw_request_to_sender(
     const std::string& raw,
     const std::string& client_ip,
-    const std::function<bool(const std::string&)>& sender) const {
+    const std::function<bool(const std::string&)>& sender,
+    const CancellationToken& cancellation) const {
     const auto request_id = make_request_id();
     const auto started = std::chrono::steady_clock::now();
+    RequestMetricsScope metrics_scope(metrics_, cancellation);
 
     try {
         auto request = parse_request(raw, client_ip);
@@ -528,7 +736,7 @@ bool Server::process_raw_request_to_sender(
                 response.body = error_json("unsupported route", "invalid_request_error");
                 return sender(build_response(std::move(response)));
             }
-            return sender(build_response(handle_usage_request(request, *route.task)));
+            return sender(build_response(handle_usage_request(request, *route.task, cancellation)));
         }
 
         request.request_id = request_id;
@@ -634,6 +842,7 @@ bool Server::process_raw_request_to_sender(
                     route.task->upstream,
                     [&](const HttpResponse& headers_response) {
                         streamed = true;
+                        metrics_->stream_started();
                         std::vector<LogField> upstream_response_fields = {
                             field_string("request_id", request.request_id),
                             field_string("task", task_name(route.task->kind)),
@@ -656,9 +865,25 @@ bool Server::process_raw_request_to_sender(
                         logger_.log("info", "stream_chunk", chunk_fields);
                         ++stream_chunk_count;
                         streamed_body_size += chunk.size();
-                        return sender(chunk);
-                    });
+                        const bool sent = sender(chunk);
+                        if (sent) {
+                            metrics_->stream_chunk_forwarded(chunk.size());
+                        }
+                        return sent;
+                    },
+                    cancellation);
             } catch (const ProxyError& ex) {
+                if (ex.type() == "client_cancelled") {
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - started);
+                    logger_.log("info", "request_cancelled", {
+                        field_string("request_id", request.request_id),
+                        field_string("task", task_name(route.task->kind)),
+                        field_number("duration_ms", elapsed.count()),
+                    });
+                    return false;
+                }
+                metrics_->upstream_request_failed();
                 logger_.log("error", "request_error", {
                     field_string("request_id", request.request_id),
                     field_string("task", task_name(route.task->kind)),
@@ -728,6 +953,15 @@ bool Server::process_raw_request_to_sender(
             return true;
         }
         return sender(build_response(std::move(response)));
+    } catch (const ProxyError& ex) {
+        if (ex.type() == "client_cancelled") {
+            logger_.log("info", "request_cancelled", {
+                field_string("request_id", request_id),
+                field_string("task", "usage"),
+            });
+            return false;
+        }
+        throw;
     } catch (const std::exception& ex) {
         logger_.log("error", "request_error", {
             field_string("request_id", request_id),
@@ -744,7 +978,65 @@ bool Server::process_raw_request_to_sender(
     }
 }
 
-HttpResponse Server::handle_usage_request(const HttpRequest& request, const TaskConfig& task) const {
+void Server::log_performance_snapshot(const std::string& reason) const {
+    const auto snapshot = metrics_->snapshot();
+    logger_.log("info", "performance_snapshot", {
+        field_string("reason", reason),
+        field_number("connections_accepted", static_cast<long long>(snapshot.connections_accepted)),
+        field_number("connections_rejected", static_cast<long long>(snapshot.connections_rejected)),
+        field_number("connections_completed", static_cast<long long>(snapshot.connections_completed)),
+        field_number("current_connections", static_cast<long long>(snapshot.current_connections)),
+        field_number("peak_connections", static_cast<long long>(snapshot.peak_connections)),
+        field_number("current_queued_connections", static_cast<long long>(snapshot.current_queued_connections)),
+        field_number("peak_queued_connections", static_cast<long long>(snapshot.peak_queued_connections)),
+        field_number("current_active_workers", static_cast<long long>(snapshot.current_active_workers)),
+        field_number("peak_active_workers", static_cast<long long>(snapshot.peak_active_workers)),
+        field_number("requests_started", static_cast<long long>(snapshot.requests_started)),
+        field_number("requests_completed", static_cast<long long>(snapshot.requests_completed)),
+        field_number("requests_cancelled", static_cast<long long>(snapshot.requests_cancelled)),
+        field_number("client_disconnects", static_cast<long long>(snapshot.client_disconnects)),
+        field_number("sse_streams_started", static_cast<long long>(snapshot.sse_streams_started)),
+        field_number("stream_chunks_forwarded", static_cast<long long>(snapshot.stream_chunks_forwarded)),
+        field_number("stream_bytes_forwarded", static_cast<long long>(snapshot.stream_bytes_forwarded)),
+        field_number("upstream_requests_started", static_cast<long long>(snapshot.upstream_requests_started)),
+        field_number("upstream_requests_completed", static_cast<long long>(snapshot.upstream_requests_completed)),
+        field_number("upstream_requests_cancelled", static_cast<long long>(snapshot.upstream_requests_cancelled)),
+        field_number("upstream_requests_failed", static_cast<long long>(snapshot.upstream_requests_failed)),
+        field_number("upstream_resolve_timeouts", static_cast<long long>(snapshot.upstream_resolve_timeouts)),
+        field_number("upstream_connect_timeouts", static_cast<long long>(snapshot.upstream_connect_timeouts)),
+        field_number("upstream_send_timeouts", static_cast<long long>(snapshot.upstream_send_timeouts)),
+        field_number("upstream_response_header_timeouts", static_cast<long long>(snapshot.upstream_response_header_timeouts)),
+        field_number("upstream_stream_idle_timeouts", static_cast<long long>(snapshot.upstream_stream_idle_timeouts)),
+        field_number("upstream_response_body_timeouts", static_cast<long long>(snapshot.upstream_response_body_timeouts)),
+        field_number("upstream_total_timeouts", static_cast<long long>(snapshot.upstream_total_timeouts)),
+        field_number("upstream_connection_handles_created", static_cast<long long>(snapshot.upstream_connection_handles_created)),
+        field_number("upstream_request_handles_created", static_cast<long long>(snapshot.upstream_request_handles_created)),
+        field_number("upstream_bytes_sent", static_cast<long long>(snapshot.upstream_bytes_sent)),
+        field_number("upstream_bytes_received", static_cast<long long>(snapshot.upstream_bytes_received)),
+        field_number("winhttp_connecting_events", static_cast<long long>(snapshot.winhttp_connecting_events)),
+        field_number("winhttp_connected_events", static_cast<long long>(snapshot.winhttp_connected_events)),
+        field_number("winhttp_connection_closed_events", static_cast<long long>(snapshot.winhttp_connection_closed_events)),
+        field_number("log_records_enqueued", static_cast<long long>(snapshot.log_records_enqueued)),
+        field_number("log_records_written", static_cast<long long>(snapshot.log_records_written)),
+        field_number("log_bytes_written", static_cast<long long>(snapshot.log_bytes_written)),
+        field_number("current_log_queue_records", static_cast<long long>(snapshot.current_log_queue_records)),
+        field_number("peak_log_queue_records", static_cast<long long>(snapshot.peak_log_queue_records)),
+        field_number("current_log_queue_bytes", static_cast<long long>(snapshot.current_log_queue_bytes)),
+        field_number("peak_log_queue_bytes", static_cast<long long>(snapshot.peak_log_queue_bytes)),
+        field_number("log_backpressure_count", static_cast<long long>(snapshot.log_backpressure_count)),
+        field_number("log_backpressure_wait_us", static_cast<long long>(snapshot.log_backpressure_wait_us)),
+        field_number("log_batches_written", static_cast<long long>(snapshot.log_batches_written)),
+        field_number("log_flush_count", static_cast<long long>(snapshot.log_flush_count)),
+        field_number("log_write_time_us", static_cast<long long>(snapshot.log_write_time_us)),
+        field_number("max_log_batch_records", static_cast<long long>(snapshot.max_log_batch_records)),
+        field_number("max_log_batch_bytes", static_cast<long long>(snapshot.max_log_batch_bytes)),
+    });
+}
+
+HttpResponse Server::handle_usage_request(
+    const HttpRequest& request,
+    const TaskConfig& task,
+    const CancellationToken& cancellation) const {
     if (request.method != "GET") {
         HttpResponse response;
         response.status_code = 405;
@@ -755,12 +1047,16 @@ HttpResponse Server::handle_usage_request(const HttpRequest& request, const Task
     }
 
     try {
-        auto response = proxy_.forward(request, task.upstream);
+        auto response = proxy_.forward(request, task.upstream, cancellation);
         if (response.reason.empty()) {
             response.reason = reason_phrase(response.status_code);
         }
         return response;
     } catch (const ProxyError& ex) {
+        if (ex.type() == "client_cancelled") {
+            throw;
+        }
+        metrics_->upstream_request_failed();
         HttpResponse response;
         response.status_code = ex.status_code();
         response.reason = reason_phrase(response.status_code);
@@ -880,6 +1176,17 @@ int Server::run() {
             field_string("log_path", config_.log_path.string()),
             field_number("worker_threads", static_cast<long long>(config_.worker_threads)),
             field_number("max_connections", static_cast<long long>(config_.max_connections)),
+            field_number("metrics_interval_ms", config_.metrics_interval_ms),
+            field_number("resolve_timeout_ms", config_.timeouts.resolve_ms),
+            field_number("connect_timeout_ms", config_.timeouts.connect_ms),
+            field_number("send_timeout_ms", config_.timeouts.send_ms),
+            field_number("response_header_timeout_ms", config_.timeouts.response_header_ms),
+            field_number("stream_idle_timeout_ms", config_.timeouts.stream_idle_ms),
+            field_number("total_timeout_ms", config_.timeouts.total_ms),
+        });
+
+        PeriodicReporter reporter(config_.metrics_interval_ms, [this]() {
+            log_performance_snapshot("periodic");
         });
 
         std::mutex queue_mutex;
@@ -887,6 +1194,7 @@ int Server::run() {
         std::queue<ClientJob> client_queue;
         std::size_t open_connections = 0;
         bool accepting_done = false;
+        ClientCancellationMonitor cancellation_monitor(metrics_);
 
         std::vector<std::thread> workers;
         workers.reserve(config_.worker_threads);
@@ -904,11 +1212,18 @@ int Server::run() {
                         }
                         job = std::move(client_queue.front());
                         client_queue.pop();
+                        metrics_->worker_started(client_queue.size());
                     }
-                    handle_client(job.client, this, config_.max_request_body_size, std::move(job.client_ip));
+                    handle_client(
+                        job.client,
+                        this,
+                        cancellation_monitor,
+                        config_.max_request_body_size,
+                        std::move(job.client_ip));
                     {
                         std::lock_guard<std::mutex> lock(queue_mutex);
                         --open_connections;
+                        metrics_->worker_finished(open_connections);
                     }
                 }
             });
@@ -931,10 +1246,12 @@ int Server::run() {
                 if (open_connections < config_.max_connections) {
                     ++open_connections;
                     client_queue.push(ClientJob{client, peer_ip(client_addr)});
+                    metrics_->connection_accepted(open_connections, client_queue.size());
                     queued = true;
                 }
             }
             if (!queued) {
+                metrics_->connection_rejected();
                 reject_overloaded_client(client, this);
                 continue;
             }
@@ -952,6 +1269,8 @@ int Server::run() {
                 worker.join();
             }
         }
+        reporter.stop();
+        log_performance_snapshot("server_stop");
         logger_.log("info", "server_stop", {
             field_string("listen_host", config_.listen_host),
             field_number("listen_port", config_.listen_port),

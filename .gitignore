@@ -1,5 +1,6 @@
 # Build outputs
 build/
+build-debug/
 build-release/
 dist/
 out/
@@ -7,6 +8,7 @@ out/
 # Runtime logs and temporary test artifacts
 logs/
 tmp/
+benchmark-results/
 *.log
 
 # CMake generated files

@@ -13,7 +13,7 @@ namespace ccs {
 
 namespace {
 
-constexpr const char* kVersion = "0.2.0";
+constexpr const char* kVersion = "0.3.0";
 
 struct Overrides {
     std::optional<std::string> shared_upstream_url;
@@ -28,6 +28,13 @@ struct Overrides {
     std::optional<std::size_t> max_response_body_size;
     std::optional<std::size_t> worker_threads;
     std::optional<std::size_t> max_connections;
+    std::optional<int> legacy_timeout_ms;
+    std::optional<int> resolve_timeout_ms;
+    std::optional<int> connect_timeout_ms;
+    std::optional<int> send_timeout_ms;
+    std::optional<int> response_header_timeout_ms;
+    std::optional<int> stream_idle_timeout_ms;
+    std::optional<int> total_timeout_ms;
 };
 
 bool parse_bool(const std::string& value, bool& out) {
@@ -77,7 +84,14 @@ bool needs_value(const std::string& arg) {
         "--log-body",
         "--redact-sensitive",
         "--body-log-limit",
+        "--metrics-interval-ms",
         "--timeout-ms",
+        "--resolve-timeout-ms",
+        "--connect-timeout-ms",
+        "--send-timeout-ms",
+        "--response-header-timeout-ms",
+        "--stream-idle-timeout-ms",
+        "--total-timeout-ms",
         "--max-body-size",
         "--max-request-body-size",
         "--max-response-body-size",
@@ -136,8 +150,13 @@ bool validate_config(const AppConfig& config, std::string& error) {
         error = "--listen-port must be between 1 and 65535";
         return false;
     }
-    if (config.timeout_ms <= 0) {
-        error = "--timeout-ms must be greater than 0";
+    if (config.timeouts.resolve_ms <= 0
+        || config.timeouts.connect_ms <= 0
+        || config.timeouts.send_ms <= 0
+        || config.timeouts.response_header_ms <= 0
+        || config.timeouts.stream_idle_ms <= 0
+        || config.timeouts.total_ms < 0) {
+        error = "stage timeouts must be greater than 0; --total-timeout-ms may also be 0";
         return false;
     }
     if (config.max_request_body_size == 0 || config.max_response_body_size == 0) {
@@ -193,6 +212,14 @@ void resolve_overrides(AppConfig& config, const Overrides& overrides) {
     config.worker_threads = overrides.worker_threads.value_or(config.worker_threads);
     config.max_connections = overrides.max_connections.value_or(
         std::max<std::size_t>(64, config.worker_threads * 4));
+
+    const int fallback_timeout = overrides.legacy_timeout_ms.value_or(300000);
+    config.timeouts.resolve_ms = overrides.resolve_timeout_ms.value_or(fallback_timeout);
+    config.timeouts.connect_ms = overrides.connect_timeout_ms.value_or(fallback_timeout);
+    config.timeouts.send_ms = overrides.send_timeout_ms.value_or(fallback_timeout);
+    config.timeouts.response_header_ms = overrides.response_header_timeout_ms.value_or(fallback_timeout);
+    config.timeouts.stream_idle_ms = overrides.stream_idle_timeout_ms.value_or(fallback_timeout);
+    config.timeouts.total_ms = overrides.total_timeout_ms.value_or(0);
 }
 
 } // namespace
@@ -275,11 +302,60 @@ ParseResult parse_args(int argc, char** argv) {
                     result.error = "--body-log-limit must be a positive integer";
                     return result;
                 }
+            } else if (arg == "--metrics-interval-ms") {
+                if (!parse_integer(value, result.config.metrics_interval_ms)) {
+                    result.error = "--metrics-interval-ms must be a non-negative integer";
+                    return result;
+                }
             } else if (arg == "--timeout-ms") {
-                if (!parse_integer(value, result.config.timeout_ms)) {
+                int parsed = 0;
+                if (!parse_integer(value, parsed) || parsed <= 0) {
                     result.error = "--timeout-ms must be a positive integer";
                     return result;
                 }
+                overrides.legacy_timeout_ms = parsed;
+            } else if (arg == "--resolve-timeout-ms") {
+                int parsed = 0;
+                if (!parse_integer(value, parsed) || parsed <= 0) {
+                    result.error = "--resolve-timeout-ms must be a positive integer";
+                    return result;
+                }
+                overrides.resolve_timeout_ms = parsed;
+            } else if (arg == "--connect-timeout-ms") {
+                int parsed = 0;
+                if (!parse_integer(value, parsed) || parsed <= 0) {
+                    result.error = "--connect-timeout-ms must be a positive integer";
+                    return result;
+                }
+                overrides.connect_timeout_ms = parsed;
+            } else if (arg == "--send-timeout-ms") {
+                int parsed = 0;
+                if (!parse_integer(value, parsed) || parsed <= 0) {
+                    result.error = "--send-timeout-ms must be a positive integer";
+                    return result;
+                }
+                overrides.send_timeout_ms = parsed;
+            } else if (arg == "--response-header-timeout-ms") {
+                int parsed = 0;
+                if (!parse_integer(value, parsed) || parsed <= 0) {
+                    result.error = "--response-header-timeout-ms must be a positive integer";
+                    return result;
+                }
+                overrides.response_header_timeout_ms = parsed;
+            } else if (arg == "--stream-idle-timeout-ms") {
+                int parsed = 0;
+                if (!parse_integer(value, parsed) || parsed <= 0) {
+                    result.error = "--stream-idle-timeout-ms must be a positive integer";
+                    return result;
+                }
+                overrides.stream_idle_timeout_ms = parsed;
+            } else if (arg == "--total-timeout-ms") {
+                int parsed = 0;
+                if (!parse_integer(value, parsed)) {
+                    result.error = "--total-timeout-ms must be a non-negative integer";
+                    return result;
+                }
+                overrides.total_timeout_ms = parsed;
             } else if (arg == "--max-body-size") {
                 std::size_t parsed = 0;
                 if (!parse_integer(value, parsed)) {
@@ -354,7 +430,14 @@ void print_help(std::ostream& os) {
         << "  --log-body <true|false>             Write request/response bodies\n"
         << "  --redact-sensitive <true|false>     Redact sensitive headers\n"
         << "  --body-log-limit <bytes>            Per-event body log limit\n"
+        << "  --metrics-interval-ms <ms>          Performance snapshot interval (0 disables)\n"
         << "  --timeout-ms <ms>                   Upstream timeout (default: 300000)\n"
+        << "  --resolve-timeout-ms <ms>           DNS resolution timeout\n"
+        << "  --connect-timeout-ms <ms>           Upstream connection timeout\n"
+        << "  --send-timeout-ms <ms>              Upstream request send timeout\n"
+        << "  --response-header-timeout-ms <ms>   Upstream response header timeout\n"
+        << "  --stream-idle-timeout-ms <ms>       Maximum idle gap between SSE data\n"
+        << "  --total-timeout-ms <ms>             Optional whole-request timeout (0 disables)\n"
         << "  --max-request-body-size <bytes>     Max local request body size\n"
         << "  --max-response-body-size <bytes>    Max buffered upstream response size\n"
         << "  --max-body-size <bytes>             Legacy request body size option\n"
@@ -387,7 +470,13 @@ void print_config_summary(std::ostream& os, const AppConfig& config) {
        << "  log_body: " << (config.log_body ? "true" : "false") << "\n"
        << "  redact_sensitive: " << (config.redact_sensitive ? "true" : "false") << "\n"
        << "  body_log_limit: " << config.body_log_limit << "\n"
-       << "  timeout_ms: " << config.timeout_ms << "\n"
+       << "  metrics_interval_ms: " << config.metrics_interval_ms << "\n"
+       << "  resolve_timeout_ms: " << config.timeouts.resolve_ms << "\n"
+       << "  connect_timeout_ms: " << config.timeouts.connect_ms << "\n"
+       << "  send_timeout_ms: " << config.timeouts.send_ms << "\n"
+       << "  response_header_timeout_ms: " << config.timeouts.response_header_ms << "\n"
+       << "  stream_idle_timeout_ms: " << config.timeouts.stream_idle_ms << "\n"
+       << "  total_timeout_ms: " << config.timeouts.total_ms << "\n"
        << "  max_request_body_size: " << config.max_request_body_size << "\n"
        << "  max_response_body_size: " << config.max_response_body_size << "\n"
        << "  worker_threads: " << config.worker_threads << "\n"
