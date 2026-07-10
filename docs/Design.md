@@ -1,423 +1,144 @@
-# ccs-trans 命令行工具设计
+# ccs-trans 项目设计
 
-## 目标
+## 文档状态
 
-`ccs-trans` 是一个本地 HTTP 转发命令行工具，默认监听：
+| 项目 | 内容 |
+| --- | --- |
+| 文档性质 | 下一阶段实现基线 |
+| 当前程序版本 | `0.1.0` |
+| 当前平台 | Windows x64 |
+| 默认监听地址 | `http://127.0.0.1:15723` |
+| 下一阶段主目标 | 双上游任务与 findcg Responses 请求改写 |
 
-```text
-http://127.0.0.1:15723
-```
+本文描述“要构建什么”以及必须遵守的行为和架构边界。具体构建顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，目录归属见 [ProjectStructure.md](ProjectStructure.md)。
 
-工具接收 OpenAI 兼容 API 请求，并将请求原样或按配置转发到指定上游 URL，再把上游响应返回给原请求方。
+## 项目定位
 
-需要支持两个可并行处理的 OpenAI API 格式任务：
+`ccs-trans` 是运行在本机的 OpenAI 兼容 HTTP 转发服务。它接收 Codex 或其他客户端发来的请求，按任务选择上游，在必要时执行明确配置的请求改写，再把上游响应返回给原客户端。
 
-- Responses API: `POST /v1/responses` 或 `POST /v1/responses/`
-- Chat Completions API: `POST /v1/chat/completions`
+项目遵循两个默认行为：
 
-另外支持 Usage 查询请求：
+1. 没有命中改写规则时保持透明转发。
+2. 所有介入行为必须能通过结构化日志证明，不能静默修改请求。
 
-- Usage API: `GET /v1/usage`
-
-Usage 请求只做透明转发，不写入请求链路日志。
-
-工具必须完整记录请求、转发、响应和错误日志，并允许通过命令行参数修改日志路径。
-
-## 设计状态与长期约束
-
-本文前半部分保留 `0.1.x` 已实现协议和 CLI 行为。后续结构设计以本节以及后面的目标配置、模块边界和性能章节为准；它们与早期的单一 `AppConfig -> Server -> Proxy` 草案冲突时，优先采用后续结构。
-
-当前要增加的业务能力是：
-
-- Responses 与 Chat Completions 使用互相独立的上游任务配置。
-- 只有目标为 findcg 的 Responses 请求在上游发送前删除根级 `tools` 中的 `image_gen` 工具声明。
-- Chat Completions 暂时透明转发，但拥有独立的 transform 入口，供以后改写其他请求。
-
-已确定但暂不实现的长期能力是：
-
-- 性能优化和长时间后台运行。
-- Windows 托盘图标、点击菜单和双击隐式启动。
-- 配置文件持久化、校验、保存与重载。
-- macOS 命令行编译打包，以及后续菜单栏应用。
-
-预留不等于现在实现全部功能。当前必须做的是把任务路由、请求改写、上游传输、日志写入、配置来源和进程宿主分开，使这些部分以后可以独立替换。
-
-目标依赖方向：
-
-```text
-CLI host / future tray host / future macOS host
-                    |
-                    v
-                AppService
-                    |
-                    v
-TaskRouter -> TransformPipeline -> UpstreamTransport
-                    |                     |
-                    +------ Logger -------+
-```
-
-核心业务代码只能依赖内部 HTTP 类型和抽象接口，不能依赖 WinHTTP handle、Winsock socket、Windows 消息或 macOS Framework 对象。
-
-## 命令行接口
-
-### 基础参数
-
-```text
-ccs-trans \
-  --listen-host 127.0.0.1 \
-  --listen-port 15723 \
-  --upstream-url https://example.com \
-  --log-path ./logs/ccs-trans.log
-```
-
-### 参数说明
-
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `--listen-host` | `127.0.0.1` | 本地监听地址 |
-| `--listen-port` | `15723` | 本地监听端口 |
-| `--upstream-url` | 无，必填 | 上游服务基础地址，例如 `https://api.example.com` |
-| `--responses-path` | `/v1/responses/` | 本地 Responses API 路径，匹配时兼容尾斜杠 |
-| `--chat-path` | `/v1/chat/completions` | 本地 Chat Completions API 路径 |
-| `--usage-path` | `/v1/usage` | 本地 Usage API 路径 |
-| `--upstream-responses-path` | 同 `--responses-path` | 上游 Responses API 路径 |
-| `--upstream-chat-path` | 同 `--chat-path` | 上游 Chat Completions API 路径 |
-| `--upstream-usage-path` | 同 `--usage-path` | 上游 Usage API 路径 |
-| `--log-path` | `./logs/ccs-trans.log` | 日志文件路径 |
-| `--log-level` | `info` | 日志级别：`trace`、`debug`、`info`、`warn`、`error` |
-| `--log-body` | `true` | 是否记录完整请求体和响应体 |
-| `--timeout-ms` | `300000` | 转发请求超时时间 |
-| `--max-body-size` | `104857600` | 单个请求或响应体最大字节数 |
-| `--concurrency` | CPU 核心数 | HTTP 处理线程数 |
-
-### 示例
-
-```text
-ccs-trans --upstream-url https://example.com
-```
-
-本地调用：
-
-```text
-POST http://127.0.0.1:15723/v1/responses
-POST http://127.0.0.1:15723/v1/chat/completions
-GET  http://127.0.0.1:15723/v1/usage
-```
-
-会分别转发到：
-
-```text
-POST https://example.com/v1/responses/
-POST https://example.com/v1/chat/completions
-GET  https://example.com/v1/usage
-```
-
-## 路由设计
-
-### Responses API
-
-本地入口：
+主要本地入口：
 
 ```text
 POST /v1/responses
 POST /v1/responses/
-```
-
-处理规则：
-
-1. 读取完整 HTTP 请求方法、路径、查询参数、请求头和请求体。
-2. 验证方法必须为 `POST`。
-3. 不解析或修改 OpenAI Responses JSON 主体，默认透明转发。
-4. 本地匹配兼容尾斜杠，因此 `/v1/responses` 与 `/v1/responses/` 都会进入该路由。
-5. 将请求发送到：
-
-```text
-{upstream-url}{upstream-responses-path}{query-string}
-```
-
-6. 将上游状态码、响应头和响应体返回给请求来源。
-
-### Chat Completions API
-
-本地入口：
-
-```text
 POST /v1/chat/completions
+GET  /v1/usage
 ```
 
-处理规则与 Responses API 相同，转发目标为：
+Responses 与 Chat Completions 是两个可并行、可指向不同上游、可拥有不同改写规则的主任务。Usage 是保留的辅助透明转发入口。
+
+## 当前基线
+
+`0.1.0` 已实现：
+
+- Windows 本地 HTTP 监听和固定工作线程池。
+- Responses、Chat Completions 与 Usage 路由。
+- Responses 本地路径尾斜杠兼容。
+- 普通 JSON 响应和 SSE 流式响应转发。
+- 查询参数、主要请求头、状态码和响应头透传。
+- JSON Lines 链路日志、body 限制和可选敏感头脱敏。
+- Usage 请求不写入普通请求链路日志。
+- 上游不可达、超时、请求过大、未知路由和方法错误处理。
+- 针对 JSON body 前导空白和额外 HTTP body 分隔符的兼容处理。
+- Debug、Release 构建和 Python 集成测试。
+
+当前实现仍使用单一 `upstream_url`，请求路由、日志、流式编排和上游调用集中在 `Server`/`Proxy` 中，WinHTTP session 也按请求创建。下一阶段不能继续在这些分支中直接追加特殊逻辑。
+
+## 下一阶段范围
+
+### 必须实现
+
+1. Responses 与 Chat Completions 使用独立的上游 URL 和路径配置。
+2. 旧 `--upstream-url` 和旧上游路径参数继续作为兼容回退。
+3. 只有“Responses 任务 + findcg 主机”启用 `image_gen` 工具清理。
+4. 清理只作用于请求 JSON 根级 `tools` 数组，不改背景文本或用户输入。
+5. Chat Completions 当前保持透明，但建立独立 transform 入口。
+6. 日志记录任务选择、规则命中和改写结果。
+7. 普通响应、SSE、Usage、错误处理和现有路径兼容不能退化。
+8. 先建立任务、改写、传输、日志和服务生命周期边界，为后续性能工作预留替换点。
+
+### 暂不实现
+
+- 全异步 HTTP 服务端或完整网络栈替换。
+- 日志异步批写、连接池和 benchmark 优化。
+- 配置文件持久化与热重载。
+- Windows 托盘图标、菜单、后台宿主和双击隐式启动。
+- macOS transport、菜单栏应用和发布包。
+
+这些延期功能已经影响当前接口设计，但不进入本阶段交付范围。
+
+## 设计原则
+
+### 透明优先
+
+非 findcg Responses、所有 Chat Completions，以及没有命中 transform 的请求，都不得承担不必要的 JSON 重新序列化。现有协议兼容性规范化完成后，未修改的 body 应复用原始存储。
+
+### 显式任务
+
+路由结果不是一组散落的布尔判断，而是一个包含任务类型、上游目标、路径和 transform 列表的 `TaskContext`。后续增加 Chat 改写时不修改 Responses 规则。
+
+### 平台隔离
+
+业务规则不能读取或持有 WinHTTP、Winsock、Windows 消息循环或 macOS Framework 类型。平台实现依赖核心接口，核心层不反向依赖平台实现。
+
+### 结构化处理
+
+URL 使用解析后的 scheme/host/port/path 判断，JSON 使用结构化解析器修改。不得通过字符串包含判断识别 findcg，也不得通过文本替换删除 `image_gen`。
+
+### 可观测且失败明确
+
+请求是否被修改、删除了多少工具、发送到哪个任务上游，都必须能用 `request_id` 在日志中串联。解析或改写失败不能发送部分损坏的 body。
+
+## 目标架构
 
 ```text
-{upstream-url}{upstream-chat-path}{query-string}
+CLI host
+   |
+   v
+AppService
+   |
+   v
+Listener/Server
+   |
+   v
+TaskRouter -> TransformPipeline -> UpstreamTransport
+   |                |                  |
+   +----------------+------ Logger ----+
 ```
 
-### Usage API
-
-本地入口：
+### 依赖方向
 
 ```text
-GET /v1/usage
+hosts -> app service/config
+server -> core/config/logging/transport interfaces
+transforms -> core JSON and task types
+platform transport/listener -> core interfaces
+core -> C++ standard library and selected platform-neutral JSON API
 ```
 
-处理规则：
+### 模块职责
 
-1. 读取完整 HTTP 请求方法、路径、查询参数和请求头。
-2. 验证方法必须为 `GET`。
-3. 将请求发送到：
-
-```text
-{upstream-url}{upstream-usage-path}{query-string}
-```
-
-4. 将上游状态码、响应头和响应体返回给请求来源。
-5. 不记录 `request_received`、`upstream_request`、`upstream_response`、`response_sent` 和 `request_error` 等请求链路日志。
-
-### 不支持的路径
-
-未知路径返回：
-
-```json
-{
-  "error": {
-    "message": "unsupported route",
-    "type": "invalid_request_error"
-  }
-}
-```
-
-HTTP 状态码为 `404`。
-
-## 转发策略
-
-### 请求头
-
-默认透传所有请求头，但以下头由本工具重新生成或跳过：
-
-| Header | 处理 |
-| --- | --- |
-| `Host` | 改为上游 Host |
-| `Content-Length` | 由 HTTP 客户端重新计算 |
-| `Connection` | 不透传 |
-| `Transfer-Encoding` | 由 HTTP 客户端处理 |
-
-`Authorization`、`OpenAI-Organization`、`OpenAI-Project` 等 OpenAI 相关头默认透传。
-
-### 响应头
-
-默认透传上游响应头，但以下头由本工具重新生成或跳过：
-
-| Header | 处理 |
-| --- | --- |
-| `Content-Length` | 由 HTTP 服务端重新计算 |
-| `Connection` | 不透传 |
-| `Transfer-Encoding` | 由 HTTP 服务端处理 |
-
-### 流式响应
-
-OpenAI API 常见 `stream: true` 请求会返回 SSE。
-
-设计要求：
-
-1. 检测上游响应头 `Content-Type: text/event-stream`。
-2. 不缓存完整响应体，边读边写给客户端。
-3. 每个数据块仍记录元信息日志。
-4. 如果启用 `--log-body true`，可以记录 SSE 原始片段，但需要按大小限制截断，避免日志无限增长。
-
-## 并发模型
-
-工具需要允许 Responses API 与 Chat Completions API 同端口并行工作。
-
-建议模型：
-
-1. 主线程负责解析 CLI、初始化配置、日志和 HTTP 服务。
-2. HTTP 服务使用线程池或异步事件循环处理请求。
-3. 每个请求分配唯一 `request_id`。
-4. Responses 与 Chat Completions 共用监听器、线程池、日志器和上游 HTTP 客户端连接池。
-5. 单个请求的转发和返回互不阻塞其他请求。
-
-推荐 C++ 技术选型：
-
-| 能力 | 推荐库 |
-| --- | --- |
-| HTTP 服务端 | Boost.Beast、cpp-httplib、Crow、Drogon |
-| HTTP 客户端 | Boost.Beast、libcurl、cpp-httplib |
-| CLI 参数 | CLI11、cxxopts |
-| 日志 | spdlog |
-| JSON 校验，可选 | nlohmann/json |
-
-如果优先快速实现，可选：
-
-- `cpp-httplib` 同时处理服务端和客户端
-- `CLI11` 处理命令行
-- `spdlog` 处理文件日志
-
-## 日志设计
-
-### 日志路径
-
-通过 `--log-path` 指定日志文件。启动时需要：
-
-1. 检查父目录是否存在。
-2. 不存在则创建目录。
-3. 无法创建或无法写入时启动失败，并在标准错误输出原因。
-
-### 日志格式
-
-建议使用 JSON Lines，每行一条完整事件，便于检索和后续分析。
-
-示例：
-
-```json
-{"time":"2026-07-10T04:30:00.123+08:00","level":"info","event":"request_received","request_id":"01JZ...","method":"POST","path":"/v1/responses/","query":"","client_ip":"127.0.0.1","headers":{"authorization":"Bearer ***"},"body":"{...}"}
-```
-
-### 必须记录的事件
-
-| 事件 | 说明 |
-| --- | --- |
-| `server_start` | 启动配置、监听地址、上游地址、日志路径 |
-| `request_received` | 收到本地请求 |
-| `upstream_request` | 准备转发到上游 |
-| `upstream_response` | 收到上游响应 |
-| `response_sent` | 已返回给原请求方 |
-| `request_error` | 请求处理失败 |
-| `server_stop` | 服务退出 |
-
-### 请求日志字段
-
-```text
-time
-level
-event
-request_id
-api_type
-method
-local_path
-upstream_url
-query
-client_ip
-headers
-body
-body_size
-```
-
-### 响应日志字段
-
-```text
-time
-level
-event
-request_id
-status_code
-headers
-body
-body_size
-duration_ms
-streaming
-```
-
-### 敏感信息处理
-
-需求要求“完整地记录所有信息”，因此默认设计可以完整记录请求体和响应体。
-
-但为了降低误泄露风险，建议同时提供：
-
-| 参数 | 默认值 | 说明 |
+| 模块 | 职责 | 不应承担 |
 | --- | --- | --- |
-| `--redact-sensitive` | `false` | 是否脱敏敏感头 |
-| `--body-log-limit` | `1048576` | 单条 body 日志最大字节数，超出后截断 |
+| `config` | CLI 解析、兼容回退、校验、生成配置快照 | 路由请求、执行网络调用 |
+| `core/task_router` | 从 method/path 生成 `TaskContext` | 解析 JSON、调用 WinHTTP |
+| `core/transform` | 定义改写接口和结果所有权 | 选择本地路由、写日志文件 |
+| `responses_transform` | findcg 匹配与 `image_gen` 清理 | 处理 Chat、创建连接 |
+| `server` | 接收请求、编排流水线、返回响应 | 保存上游主机特例 |
+| `upstream_transport` | 接收明确的目标并执行普通/流式调用 | 判断 findcg、修改 OpenAI JSON |
+| `logging` | 接收结构化事件并输出 | 决定业务规则 |
+| `AppService` | 启动、停止、状态和资源关闭顺序 | CLI 参数展示、托盘 UI |
 
-当 `--redact-sensitive true` 时，以下头需要脱敏：
+当前 CMake 已分为 `ccs-trans-core` 静态库和 `ccs-trans` CLI target。下一阶段在现有目录内逐步增加上述接口，不为了目录形式提前创建空模块。
 
-```text
-Authorization
-Proxy-Authorization
-Cookie
-Set-Cookie
-X-Api-Key
-```
+## 任务与配置模型
 
-## 错误处理
-
-### 上游不可达
-
-返回：
-
-```json
-{
-  "error": {
-    "message": "upstream request failed",
-    "type": "upstream_error"
-  }
-}
-```
-
-HTTP 状态码建议为 `502`。
-
-### 上游超时
-
-返回：
-
-```json
-{
-  "error": {
-    "message": "upstream request timed out",
-    "type": "upstream_timeout"
-  }
-}
-```
-
-HTTP 状态码建议为 `504`。
-
-### 请求体过大
-
-返回：
-
-```json
-{
-  "error": {
-    "message": "request body too large",
-    "type": "invalid_request_error"
-  }
-}
-```
-
-HTTP 状态码建议为 `413`。
-
-## 配置结构
-
-以下结构描述当前 `0.1.x` 的集中配置。增加双任务时不继续平铺更多 `responses_*`、`chat_*` 字段，而应迁移到后面的目标配置模型。
-
-内部配置可以抽象为：
-
-```cpp
-struct AppConfig {
-    std::string listen_host = "127.0.0.1";
-    uint16_t listen_port = 15723;
-
-    std::string upstream_url;
-    std::string responses_path = "/v1/responses/";
-    std::string chat_path = "/v1/chat/completions";
-    std::string usage_path = "/v1/usage";
-    std::string upstream_responses_path = "/v1/responses/";
-    std::string upstream_chat_path = "/v1/chat/completions";
-    std::string upstream_usage_path = "/v1/usage";
-
-    std::filesystem::path log_path = "./logs/ccs-trans.log";
-    std::string log_level = "info";
-    bool log_body = true;
-    bool redact_sensitive = false;
-    std::size_t body_log_limit = 1024 * 1024;
-
-    std::chrono::milliseconds timeout = std::chrono::milliseconds(300000);
-    std::size_t max_body_size = 100 * 1024 * 1024;
-    std::size_t concurrency = std::thread::hardware_concurrency();
-};
-```
-
-### 目标配置模型
-
-概念结构如下，实际字段名可以根据实现调整：
+概念模型：
 
 ```cpp
 enum class ApiTaskKind {
@@ -433,6 +154,7 @@ struct UpstreamTarget {
 
 struct TaskConfig {
     ApiTaskKind kind;
+    bool enabled;
     std::string local_path;
     UpstreamTarget upstream;
     std::vector<std::string> transforms;
@@ -440,182 +162,294 @@ struct TaskConfig {
 
 struct AppConfig {
     ListenerConfig listener;
-    std::vector<TaskConfig> tasks;
+    TaskConfig responses;
+    TaskConfig chat_completions;
+    TaskConfig usage;
     LogConfig logging;
     RuntimeLimits limits;
 };
 ```
 
-配置系统分为三层：
+实际实现可以使用固定字段而非 `vector<TaskConfig>`，但路由和代理层必须通过统一任务类型读取目标，不能继续直接访问全局单一 URL。
+
+### CLI 参数
+
+下一阶段新增：
+
+| 参数 | 作用 | 回退 |
+| --- | --- | --- |
+| `--responses-upstream-url` | Responses 上游 base URL | `--upstream-url` |
+| `--chat-upstream-url` | Chat Completions 上游 base URL | `--upstream-url` |
+| `--responses-upstream-path` | Responses 上游路径 | `--upstream-responses-path` |
+| `--chat-upstream-path` | Chat Completions 上游路径 | `--upstream-chat-path` |
+
+继续支持：
 
 ```text
-内置默认值
-  <- 持久配置文件
-  <- CLI 显式覆盖
-  -> 校验后的不可变 ConfigSnapshot
+--listen-host
+--listen-port
+--upstream-url
+--responses-path
+--chat-path
+--usage-path
+--upstream-responses-path
+--upstream-chat-path
+--upstream-usage-path
+--log-path
+--log-level
+--log-body
+--redact-sensitive
+--body-log-limit
+--timeout-ms
+--max-body-size
+--concurrency
 ```
 
-命令行覆盖默认不写回磁盘。未来只有显式的保存命令或托盘“应用”操作才持久化。请求开始时获取一个不可变配置快照，保证重载不会改变进行中请求的目标或改写规则。
+兼容规则：
 
-## 核心模块
+1. 专用 URL 或路径优先于旧共享参数。
+2. 旧参数未被专用参数覆盖时保持 `0.1.0` 行为。
+3. 启动时至少有一个主任务能解析出完整上游目标。
+4. Usage 在本阶段继续使用旧 `--upstream-url` 和 `--upstream-usage-path`；未设置共享 URL 时禁用 Usage 路由。
+5. 配置摘要和 `server_start` 日志分别显示三个任务的最终目标及 enabled 状态。
+
+双上游示例：
 
 ```text
-src/
-  config/
-    config.hpp/.cpp          AppConfig 与 CLI 解析
-  core/
-    http_types.hpp           平台无关 HTTP 类型
-    request_id.hpp/.cpp      request_id 生成
-  hosts/
-    cli_main.cpp             CLI 入口与服务启动
-  logging/
-    logger.hpp/.cpp          JSON Lines 日志封装
-  server/
-    server.hpp/.cpp          HTTP 服务端、路由与请求编排
-  transport/
-    proxy.hpp/.cpp           当前 WinHTTP 上游传输
-    header_filter.hpp/.cpp   请求和响应头过滤
+ccs-trans \
+  --upstream-url https://www.findcg.com \
+  --responses-upstream-url https://www.findcg.com \
+  --chat-upstream-url https://chat.example.com \
+  --log-path ./logs/ccs-trans.log
 ```
 
-当前 CMake 将除 host 外的实现编译为 `ccs-trans-core` 静态库，再由 `ccs-trans` CLI 链接。这样未来增加 tray 或 macOS host 时不需要复制代理实现。
+## 路由行为
 
-### 目标模块边界
+| 方法和本地路径 | 任务 | 默认上游路径 | 改写 |
+| --- | --- | --- | --- |
+| `POST /v1/responses` | Responses | `/v1/responses/` | 仅 findcg 目标执行 `image_gen` 清理 |
+| `POST /v1/responses/` | Responses | `/v1/responses/` | 同上 |
+| `POST /v1/chat/completions` | Chat Completions | `/v1/chat/completions` | 本阶段无改写 |
+| `GET /v1/usage` | Usage | `/v1/usage` | 无改写，不记录普通链路日志 |
 
-后续目录不要求一次性全部建立，但职责边界从下一阶段开始执行：
+路由规则：
+
+1. 本地 Responses 路径匹配时忽略尾部斜杠差异。
+2. 查询字符串原样追加到选定的上游路径。
+3. 主任务路由存在但任务未配置时返回明确的本地配置错误，不能误用另一个任务的上游。
+4. 未知路径返回 `404 invalid_request_error`。
+5. 已知路径使用错误方法时返回 `405` 并包含 `Allow`。
+
+## findcg Responses 改写
+
+### 命中条件
+
+必须同时满足：
 
 ```text
-src/core/
-  app_service.*            服务生命周期、状态和优雅停止
-  task_router.*            本地路由到任务和上游目标的选择
-  transform.*              请求改写接口与结果
-  responses_transform.*    findcg Responses 的 image_gen 清理
-  http_types.*             平台无关的请求、响应和流事件
-
-src/config/
-  config_model.*           持久字段和运行时限制
-  config_resolver.*        默认值、文件和 CLI 合并
-  config_store.*           未来的原子保存与 schema 迁移
-
-src/transport/
-  upstream_transport.*     平台无关接口
-  winhttp_transport.*      Windows 上游实现
-  listener.*               本地 HTTP listener 接口
-  winsock_listener.*       Windows listener 实现
-
-src/logging/
-  logger.*                 结构化事件接口
-  log_writer.*             当前同步、未来异步批量 writer
-
-src/hosts/
-  cli_main.cpp             CLI host
-  windows_tray_main.cpp    未来 Windows 托盘 host
-  macos_app_main.*         未来 macOS 菜单栏 host
+task == Responses
+method == POST
+upstream hostname == findcg.com 或 www.findcg.com
+request body 是需要转发的 JSON
 ```
 
-`Server` 不再负责判断 findcg 或操作 JSON；`Proxy` 不再从全局配置里猜测请求应发往哪个上游；平台 transport 不知道 `image_gen` 等业务规则。
+hostname 比较忽略大小写，但必须是完整主机名相等。`findcg.com.example.org`、查询参数或 body 中出现 `findcg.com` 都不能触发规则。
 
-### Server
+### 修改范围
 
-职责：
-
-1. 监听指定 host 和 port。
-2. 注册 `/v1/responses/`、`/v1/chat/completions` 与 `/v1/usage`。
-3. 为每个请求生成 `request_id`。
-4. 调用 `Proxy` 完成上游转发。
-5. 处理 404、405、413 等本地错误。
-
-### Proxy
-
-职责：
-
-1. 构造上游 URL。
-2. 过滤和重写请求头。
-3. 发送 HTTP 请求。
-4. 支持普通响应和流式响应。
-5. 返回统一的 `ProxyResult`。
-
-### Logger
-
-职责：
-
-1. 写入 JSON Lines 日志。
-2. 提供线程安全写入。
-3. 支持完整 body 记录、截断记录和敏感头脱敏。
-4. 在每条日志中自动补齐时间、级别和事件名。
-
-## 请求改写模型
-
-请求流水线固定为：
+只检查 JSON 根对象的 `tools` 数组。数组元素为对象且满足以下任一条件时删除：
 
 ```text
-路由匹配
-  -> 生成 TaskContext 和 UpstreamTarget
-  -> 依次执行该任务的 RequestTransform
-  -> 过滤 hop-by-hop headers
-  -> 上游传输
+type == "namespace" && name == "image_gen"
+name == "image_gen"
+namespace == "image_gen"
 ```
 
-每个 transform 返回：
+不得修改：
+
+- 用户消息中的 `image_gen` 文本。
+- developer/system 背景说明中的 `image_gen` 文本。
+- 非根级对象中的同名字段。
+- `view_image`、`web_search`、`tool_search` 或其他工具。
+- Chat Completions 请求。
+- 非 findcg Responses 请求。
+
+### 处理顺序
 
 ```text
-是否命中
-是否修改
-修改后的 body 所有权
-结构化诊断字段
-错误类型
+接收并完成现有 HTTP/JSON 兼容性规范化
+  -> 选择 Responses 任务与上游
+  -> 精确匹配 findcg hostname
+  -> 解析 JSON DOM
+  -> 过滤根级 tools
+  -> 仅在有删除时序列化新 body
+  -> 由 transport 重算 Content-Length
 ```
 
-未命中的 transform 必须复用原始 body，不解析和重新序列化 JSON。findcg `image_gen` 清理只绑定到 `Responses + host(findcg.com)`，不能通过普通字符串替换实现，也不能删除背景文本里的同名词。
+未删除任何元素时继续使用 transform 输入 body，不为了格式化而生成新 JSON。发生删除时允许 JSON 空白和对象字段顺序变化，但语义必须保持。
 
-## 性能设计空间
+### 异常策略
 
-### 已知热路径
+| 情况 | 行为 |
+| --- | --- |
+| 根对象没有 `tools` | 不修改，正常转发 |
+| `tools` 不是数组 | 不修改，记录 `removed_tools_count: 0` |
+| `tools` 含非对象元素 | 保留该元素，继续检查其他元素 |
+| findcg Responses JSON 无法解析 | 不发送上游，返回 `400 invalid_request_error`，日志类型为 `rewrite_error` |
+| 序列化失败 | 不发送上游，返回 `500 server_error`，记录 `rewrite_error` |
 
-当前实现存在以下确定成本：
+选择失败关闭而非透明发送，是为了避免在代理已经承诺清理时把未经检查的 `image_gen` 再发送给 findcg。
 
-1. 每个请求创建 WinHTTP session 和 connection，连接复用边界过短。
-2. 请求从 socket 原始缓冲解析到 `HttpRequest` 时有多次字符串复制。
-3. SSE 已发送的 chunk 仍追加到完整响应 body，长流内存持续增长。
-4. 所有日志调用竞争同一个 mutex，并且每行立即刷新磁盘。
-5. 每个同步 worker 在上游等待和 SSE 生命周期内不可服务其他连接。
-6. 接入队列没有容量上限，过载时资源增长不可控。
+## Transform 接口
 
-### 优化顺序
+概念结果：
 
-性能工作遵循“测量、局部替换、复测”：
+```cpp
+struct TransformResult {
+    bool matched = false;
+    bool modified = false;
+    std::optional<std::string> rewritten_body;
+    std::vector<DiagnosticField> diagnostics;
+};
+```
 
-1. 建立非流式、请求改写、并发 SSE、客户端断开和日志开关基线。
-2. 先复用进程级上游 session/连接资源。
-3. 再去除 SSE 完整聚合，并传播下游取消。
-4. 日志改为单 writer、批量写和有界队列。
-5. 为接入队列、活动连接和单上游并发设置上限。
-6. 只在命中改写时解析 JSON，减少 body 和 headers 的所有权复制。
-7. 如果压测仍证明线程被长 SSE 耗尽，再迁移到异步 listener/transport。
+约束：
 
-必须长期保持的资源不变量：
+1. `modified == false` 时不复制完整 body。
+2. transform 不直接写文件日志，只返回结构化诊断。
+3. transform 不知道 socket、WinHTTP handle 或客户端发送回调。
+4. pipeline 按任务配置顺序执行，后一规则读取前一规则输出。
+5. 任一规则失败时终止上游发送并返回明确错误。
+
+本阶段 Responses 配置一个 findcg transform，Chat 配置空 pipeline。接口仍按多规则设计，避免以后为 Chat 改写重做调用链。
+
+## HTTP 转发
+
+### 请求头
+
+默认透传请求头，以下 hop-by-hop 或传输控制头由本工具处理：
+
+| Header | 行为 |
+| --- | --- |
+| `Host` | 使用上游 host |
+| `Content-Length` | 根据最终 body 重算 |
+| `Connection` | 不透传 |
+| `Transfer-Encoding` | 由 transport 管理 |
+
+`Authorization`、`OpenAI-Organization`、`OpenAI-Project`、`X-Api-Key` 等端到端头默认透传。
+
+### 响应头
+
+默认透传上游响应头，但 `Content-Length`、`Connection` 和 `Transfer-Encoding` 由本地服务重新管理。
+
+### SSE
+
+上游 `Content-Type` 包含 `text/event-stream` 时：
+
+1. 收到响应头后立即向客户端发送本地响应头。
+2. 上游 chunk 按顺序写入客户端，不等待完整响应结束。
+3. 客户端发送失败时停止继续写入，并为以后取消上游请求保留接口。
+4. transform 只发生在请求 body 发送前，不解析或修改 SSE 响应事件。
+
+下一阶段必须保持现有 SSE 行为。取消传播和“不聚合完整流”属于后续性能阶段，但 transport callback 不能妨碍这两项优化。
+
+## 日志设计
+
+日志继续使用 JSON Lines，每行一个完整事件，通过 `request_id` 关联。
+
+### 基础事件
 
 ```text
-SSE 内存不随累计流长度线性增长
-所有内部队列都有明确上限
-客户端断开后上游请求可取消
-非改写请求不承担 JSON DOM 成本
-连接池按完整上游身份和代理配置隔离
+server_start
+request_received
+upstream_request
+upstream_response
+response_sent
+request_error
+server_stop
 ```
 
-### 日志与吞吐取舍
+Usage 继续不记录 `request_received`、`upstream_request`、`upstream_response`、`response_sent` 和普通 `request_error` 链路；服务级启动停止事件不受影响。
 
-“完整记录”和“最高吞吐”无法同时无成本成立。设计提供明确模式，而不是暗中丢日志：
+### 任务和改写字段
 
-- 完整性模式：事件和配置允许范围内的 body 不丢失；异步队列满时对请求施加背压；正常关闭时等待 writer 排空。
-- 轻量模式：用户显式关闭 body 后只记录大小、哈希和链路元信息，以降低 I/O。
-- 无论模式如何，错误、启动停止、改写结果和计数事件都不能丢失。
-- SSE body 使用有序 chunk 事件或 writer 内合并方式增量记录，不能为了日志完整性在请求线程中聚合整条流。
+`upstream_request` 或独立 rewrite 事件至少包含：
 
-JSON 改写第一版使用可靠的结构化 DOM 解析，但只对命中的 findcg Responses 执行。只有 profiling 证明其成为主要成本时，才考虑 SAX 或定向流式重写；这部分复杂度不提前支付。
+```text
+request_id
+task
+upstream_url
+upstream_path
+rewrite_enabled
+rewrite_name
+rewrite_reason
+removed_tools_count
+removed_tools
+original_body_size
+rewritten_body_size
+```
 
-## 服务生命周期与后台宿主
+`removed_tools` 只记录名称和类型，不复制完整工具 schema。非 findcg、Chat 和未删除场景也记录明确的 `rewrite_enabled`/计数结果，便于证明代理没有介入。
 
-核心服务需要提供至少以下状态和操作：
+### 完整性与敏感信息
+
+- `--log-body true` 时按 `body_log_limit` 记录 body，并标记是否截断。
+- `--redact-sensitive true` 时脱敏 Authorization、Proxy-Authorization、Cookie、Set-Cookie 和 X-Api-Key。
+- 后续异步日志模式不能静默丢事件；队列满时应背压或由用户显式选择轻量策略。
+- 请求/响应 body 日志和改写诊断不能额外扩大敏感信息范围。
+
+## 错误模型
+
+错误响应保持 OpenAI 风格：
+
+```json
+{
+  "error": {
+    "message": "...",
+    "type": "..."
+  }
+}
+```
+
+| 场景 | HTTP 状态码 | type/日志分类 |
+| --- | --- | --- |
+| 未知路由 | `404` | `invalid_request_error` |
+| 方法不允许 | `405` | `invalid_request_error` |
+| 请求体过大 | `413` | `invalid_request_error` |
+| findcg body 无法改写 | `400` | 响应 `invalid_request_error`，日志 `rewrite_error` |
+| 主任务没有可用上游 | `500` | `configuration_error` |
+| 上游不可达 | `502` | `upstream_error` |
+| 上游超时 | `504` | `upstream_timeout` |
+| 内部异常 | `500` | `server_error` |
+
+所有非 Usage 链路错误写入 `request_error`，并包含 task、status code 和稳定错误类型。
+
+## 并发与性能边界
+
+当前同步线程池可以满足少量并发请求，但存在已知限制：
+
+- 每个请求创建 WinHTTP session/connection。
+- SSE 生命周期占用工作线程。
+- SSE response body 当前会继续聚合到内存。
+- 日志在全局互斥锁内逐行 flush。
+- 客户端接入队列没有容量上限。
+
+本阶段不直接改成完整异步模型，但新接口必须允许后续完成：
+
+```text
+进程级 session 和按上游隔离的连接资源
+SSE 不聚合完整 body
+客户端断开向上游传播取消
+异步批量日志 writer 和有界队列
+有界接入队列及过载响应
+分离连接、发送、响应头、流空闲和总超时
+```
+
+长期资源不变量：所有内部队列有上限；非改写请求不承担 JSON DOM 成本；SSE 内存不随累计流长度线性增长。具体 benchmark 和优化顺序以 DevelopmentPlan 阶段 9 为准。
+
+## 生命周期与后续宿主
+
+`AppService` 最终提供：
 
 ```text
 Stopped -> Starting -> Running -> Stopping -> Stopped
@@ -625,59 +459,99 @@ status()
 reload(new_snapshot)
 ```
 
-CLI 只负责参数、输出和退出码。未来 Windows tray host 负责图标、点击菜单、通知、单实例和双击隐式启动，但调用同一个 `AppService`。托盘退出必须先停止 listener、取消或等待进行中请求，再排空日志 writer。
+下一阶段只需要把 CLI 启动流程收敛到可复用生命周期边界，不实现 tray。未来 Windows tray host 和 macOS host 必须调用同一个服务对象，不能复制路由、配置或日志初始化代码。
 
-Windows CLI 与无控制台 tray host 是否最终做成一个 launcher 或两个 executable，需要通过命令行重定向、双击体验和打包复杂度原型后决定；核心库边界使这个选择不会影响代理逻辑。
-
-## 持久配置设计
-
-配置文件包含 `schema_version`，并通过临时文件写入、完整校验和原子替换保存。默认路径：
+持久配置未来采用：
 
 ```text
-Windows: %APPDATA%/ccs-trans/config.json
-macOS:   ~/Library/Application Support/ccs-trans/config.json
+内置默认值
+  <- 配置文件
+  <- CLI 显式覆盖
+  -> 校验后的不可变 ConfigSnapshot
 ```
 
-第一版持久化监听设置、任务上游、路径、日志选项、超时和资源限制，不持久化请求中的 `Authorization`、API key、Cookie 等转发凭据。配置损坏时必须报告错误，不能静默使用默认值后监听错误端口或转发到错误上游。
+命令行覆盖默认不自动写回。配置文件使用 `schema_version`、完整校验和原子替换，不保存转发请求中的 Authorization/API key/Cookie。
 
-## 跨平台与打包边界
+## 跨平台边界
 
-CMake 目标最终分为平台无关 core、平台 transport/listener 和宿主 executable。Windows 继续使用 WinHTTP 是可接受的，只要它实现统一 transport 接口；macOS 可以选用 libcurl、Boost.Beast 或其他支持 TLS、系统代理、SSE 和取消的实现，最终选择由可复现构建与 benchmark 决定。
+Windows 当前使用 Winsock listener 和 WinHTTP transport。macOS 阶段可以选择 libcurl、Boost.Beast 或其他实现，但选择必须满足：
 
-macOS 交付顺序：
+- TLS 与系统代理行为可验证。
+- 支持 SSE 增量读取。
+- 支持客户端取消向上游传播。
+- 可在 CI 或固定环境中复现构建。
+- 不改变 task、transform、日志和测试语义。
 
-1. 先提供 `arm64` CLI 并运行完整协议测试。
-2. 根据用户范围补 `x86_64` 或 Universal 2。
-3. 再增加菜单栏 `.app`、应用图标、签名和公证。
-4. Windows 与 macOS 使用同一套 mock upstream 样例验证请求改写和流式语义。
+CMake 继续保持 core、平台实现和 host 分层。macOS 先交付 `arm64` CLI，再根据需求提供 `x86_64`/Universal 2 和菜单栏 `.app`。
 
-## 请求处理流程
+## 测试策略
+
+### 单元测试
+
+下一阶段新增可独立运行的纯逻辑测试：
+
+- URL hostname 规范化和 findcg 精确匹配。
+- TaskRouter 的方法、路径、尾斜杠和 disabled task 行为。
+- CLI 专用参数、旧参数回退和校验。
+- 根级 `tools` 中不同形式的 `image_gen` 删除。
+- 无 `tools`、非数组、混合元素、非法 JSON 和无删除场景。
+- 非命中 transform 不创建 rewritten body。
+
+### 集成测试
+
+扩展 `tests/integration` 的 mock upstream，使其可同时启动两个实例并回显目标与 body，覆盖：
+
+1. Responses 与 Chat 请求到达不同上游。
+2. findcg 匹配使用可注入/可测试目标规则，或通过纯逻辑测试证明 hostname 匹配后在 mock 中验证改写结果。
+3. 非 findcg Responses 保留 `image_gen`。
+4. Chat 不执行 Responses 改写。
+5. 改写后的 `Content-Length` 正确。
+6. `stream: true` 改写后仍能实时返回 SSE。
+7. Usage、404、405、413、502 和 504 行为不退化。
+8. 日志能证明任务选择与删除数量。
+
+真实 findcg 只用于最终人工回归，不作为自动测试依赖。
+
+## 下一阶段验收标准
+
+1. 旧单上游命令仍可启动并通过现有集成测试。
+2. Responses 与 Chat Completions 可以同时使用不同 base URL 和路径。
+3. 两个任务可在同一监听端口并行处理普通和流式请求。
+4. findcg Responses 根级 `image_gen` 工具不会出现在实际上游 body 中。
+5. 背景文本、其他工具、Chat 和非 findcg Responses 不被误改。
+6. 改写失败不会发送损坏或未经检查的请求。
+7. 日志可以用 `request_id` 证明目标任务、目标上游和改写结果。
+8. `Server`、WinHTTP transport 和 CLI host 中不包含硬编码的 `image_gen` 业务判断。
+9. fresh Debug/Release 构建和全部自动测试通过。
+10. dist 可执行文件与仓库文档来自同一次 Release 构建，并通过一次 Codex -> ccs-trans -> findcg 的 `hi` 回归。
+
+## 已决策与延期决策
+
+| 事项 | 结论 |
+| --- | --- |
+| findcg 识别 | 解析 URL 后精确匹配 `findcg.com`/`www.findcg.com` |
+| 改写范围 | 仅 Responses 根级 `tools` |
+| JSON 策略 | 首版使用 DOM；仅命中目标时解析 |
+| 无删除 body | 复用输入，不重新序列化 |
+| 非法 JSON | 失败关闭，不发送上游 |
+| Chat 当前行为 | 独立任务，透明转发 |
+| 旧 CLI | 保留并作为专用参数回退 |
+| 网络模型 | 本阶段保留同步实现和流 callback |
+| 完整异步 I/O | benchmark 后决定 |
+| tray 单/双 executable | tray 原型阶段决定 |
+| macOS transport 库 | 以构建、代理、SSE、取消和 benchmark 结果决定 |
+
+## 实现入口
+
+下一步构建从以下顺序开始：
 
 ```text
-client
-  -> local server
-  -> route match
-  -> create request_id
-  -> log request_received
-  -> build upstream request
-  -> log upstream_request
-  -> send to upstream
-  -> receive upstream response
-  -> log upstream_response
-  -> return response to client
-  -> log response_sent
+1. TaskConfig、UpstreamTarget 与兼容 CLI 解析
+2. TaskRouter 和任务日志字段
+3. RequestTransform/TransformResult 接口
+4. findcg Responses image_gen transform 及纯逻辑测试
+5. Proxy 改为接收已解析 UpstreamTarget
+6. 双 mock upstream、SSE 和错误回归
 ```
 
-## 验收标准
-
-1. 默认启动后监听 `127.0.0.1:15723`。
-2. 可以通过参数修改监听端口。
-3. `POST /v1/responses/` 可以转发 OpenAI Responses 格式请求。
-4. `POST /v1/chat/completions` 可以转发 OpenAI Chat Completions 格式请求。
-5. `GET /v1/usage` 可以转发 Usage 查询请求，且不记录请求链路日志。
-6. 两个主要接口可以在同一端口并行处理多个请求。
-7. 可以通过参数指定上游 URL。
-8. 可以通过参数修改日志路径。
-9. 日志包含请求、上游请求、上游响应、返回响应和错误信息。
-10. 普通 JSON 响应与 SSE 流式响应都能正确转发。
-11. 上游异常时返回明确的 OpenAI 风格错误 JSON。
+这六项完成后再进入打包和真实 findcg 验证，不在中途混入 tray、配置持久化或完整性能重写。
