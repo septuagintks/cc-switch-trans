@@ -47,16 +47,16 @@ cc-switch-trans/
 
 ## 目录职责
 
-| 目录 | 当前职责 | 后续扩展 |
-| --- | --- | --- |
-| `docs` | 协议设计、开发顺序、结构约束 | benchmark 说明、发布流程、平台说明 |
-| `src/core` | 不依赖平台 API 的基础 HTTP 类型和标识 | task context、transform 接口、AppService |
-| `src/config` | CLI 参数和运行配置 | 配置文件、schema 迁移、不可变快照 |
-| `src/hosts` | 进程入口 | Windows tray host、macOS app host |
-| `src/logging` | 结构化日志 API 与文件输出 | 异步 writer、轮转、背压指标 |
-| `src/server` | 本地 HTTP 接入和请求编排 | 路由器拆分、listener 接口、生命周期控制 |
-| `src/transport` | 头过滤和当前 WinHTTP 上游实现 | transport 接口、连接复用、macOS 实现 |
-| `tests/integration` | mock upstream 与端到端协议测试 | 双上游、改写规则、并发和 SSE 基线 |
+| 目录                | 当前职责                              | 后续扩展                                 |
+| ------------------- | ------------------------------------- | ---------------------------------------- |
+| `docs`              | 协议设计、开发顺序、结构约束          | benchmark 说明、发布流程、平台说明       |
+| `src/core`          | 不依赖平台 API 的基础 HTTP 类型和标识 | task context、transform 接口、AppService |
+| `src/config`        | CLI 参数和运行配置                    | 配置文件、schema 迁移、不可变快照        |
+| `src/hosts`         | 进程入口                              | Windows tray host、macOS app host        |
+| `src/logging`       | 结构化日志 API 与文件输出             | 异步 writer、轮转、背压指标              |
+| `src/server`        | 本地 HTTP 接入和请求编排              | 路由器拆分、listener 接口、生命周期控制  |
+| `src/transport`     | 头过滤和当前 WinHTTP 上游实现         | transport 接口、连接复用、macOS 实现     |
+| `tests/integration` | mock upstream 与端到端协议测试        | 双上游、改写规则、并发和 SSE 基线        |
 
 ## CMake 目标
 
@@ -74,14 +74,14 @@ ccs-trans
 
 以下目录受 `.gitignore` 管理，可以存在于工作区，但不提交：
 
-| 目录 | 用途 | 是否可删除重建 |
-| --- | --- | --- |
-| `build` | 默认/调试构建和 `compile_commands.json` | 是 |
-| `build-release` | Release 构建 | 是 |
-| `dist` | 本地发布包和人工验证日志 | 是，但删除前确认是否仍需诊断日志 |
-| `logs` | 默认运行日志 | 是，但可能包含排障证据 |
-| `tmp` | 集成测试日志和打包暂存 | 是 |
-| `.vscode` | 当前开发者的编辑器设置 | 是，不作为项目配置来源 |
+| 目录            | 用途                                    | 是否可删除重建                   |
+| --------------- | --------------------------------------- | -------------------------------- |
+| `build`         | 默认/调试构建和 `compile_commands.json` | 是                               |
+| `build-release` | Release 构建                            | 是                               |
+| `dist`          | 本地发布包和人工验证日志                | 是，但删除前确认是否仍需诊断日志 |
+| `logs`          | 默认运行日志                            | 是，但可能包含排障证据           |
+| `tmp`           | 集成测试日志和打包暂存                  | 是                               |
+| `.vscode`       | 当前开发者的编辑器设置                  | 是，不作为项目配置来源           |
 
 `.git` 是版本数据库，任何清理脚本都不得操作。工具生成的隐藏目录也不能被构建或打包脚本当作项目输入。
 

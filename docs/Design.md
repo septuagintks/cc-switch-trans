@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-| 项目 | 内容 |
-| --- | --- |
-| 文档性质 | 下一阶段实现基线 |
-| 当前程序版本 | `0.1.0` |
-| 当前平台 | Windows x64 |
-| 默认监听地址 | `http://127.0.0.1:15723` |
+| 项目           | 内容                                   |
+| -------------- | -------------------------------------- |
+| 文档性质       | 下一阶段实现基线                       |
+| 当前程序版本   | `0.1.0`                                |
+| 当前平台       | Windows x64                            |
+| 默认监听地址   | `http://127.0.0.1:15723`               |
 | 下一阶段主目标 | 双上游任务与 findcg Responses 请求改写 |
 
 本文描述“要构建什么”以及必须遵守的行为和架构边界。具体构建顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，目录归属见 [ProjectStructure.md](ProjectStructure.md)。
@@ -123,16 +123,16 @@ core -> C++ standard library and selected platform-neutral JSON API
 
 ### 模块职责
 
-| 模块 | 职责 | 不应承担 |
-| --- | --- | --- |
-| `config` | CLI 解析、兼容回退、校验、生成配置快照 | 路由请求、执行网络调用 |
-| `core/task_router` | 从 method/path 生成 `TaskContext` | 解析 JSON、调用 WinHTTP |
-| `core/transform` | 定义改写接口和结果所有权 | 选择本地路由、写日志文件 |
-| `responses_transform` | findcg 匹配与 `image_gen` 清理 | 处理 Chat、创建连接 |
-| `server` | 接收请求、编排流水线、返回响应 | 保存上游主机特例 |
-| `upstream_transport` | 接收明确的目标并执行普通/流式调用 | 判断 findcg、修改 OpenAI JSON |
-| `logging` | 接收结构化事件并输出 | 决定业务规则 |
-| `AppService` | 启动、停止、状态和资源关闭顺序 | CLI 参数展示、托盘 UI |
+| 模块                  | 职责                                   | 不应承担                      |
+| --------------------- | -------------------------------------- | ----------------------------- |
+| `config`              | CLI 解析、兼容回退、校验、生成配置快照 | 路由请求、执行网络调用        |
+| `core/task_router`    | 从 method/path 生成 `TaskContext`      | 解析 JSON、调用 WinHTTP       |
+| `core/transform`      | 定义改写接口和结果所有权               | 选择本地路由、写日志文件      |
+| `responses_transform` | findcg 匹配与 `image_gen` 清理         | 处理 Chat、创建连接           |
+| `server`              | 接收请求、编排流水线、返回响应         | 保存上游主机特例              |
+| `upstream_transport`  | 接收明确的目标并执行普通/流式调用      | 判断 findcg、修改 OpenAI JSON |
+| `logging`             | 接收结构化事件并输出                   | 决定业务规则                  |
+| `AppService`          | 启动、停止、状态和资源关闭顺序         | CLI 参数展示、托盘 UI         |
 
 当前 CMake 已分为 `ccs-trans-core` 静态库和 `ccs-trans` CLI target。下一阶段在现有目录内逐步增加上述接口，不为了目录形式提前创建空模块。
 
@@ -176,12 +176,16 @@ struct AppConfig {
 
 下一阶段新增：
 
-| 参数 | 作用 | 回退 |
-| --- | --- | --- |
-| `--responses-upstream-url` | Responses 上游 base URL | `--upstream-url` |
-| `--chat-upstream-url` | Chat Completions 上游 base URL | `--upstream-url` |
-| `--responses-upstream-path` | Responses 上游路径 | `--upstream-responses-path` |
-| `--chat-upstream-path` | Chat Completions 上游路径 | `--upstream-chat-path` |
+| 参数                        | 作用                           | 回退                        |
+| --------------------------- | ------------------------------ | --------------------------- |
+| `--responses-upstream-url`  | Responses 上游 base URL        | `--upstream-url`            |
+| `--chat-upstream-url`       | Chat Completions 上游 base URL | `--upstream-url`            |
+| `--responses-upstream-path` | Responses 上游路径             | `--upstream-responses-path` |
+| `--chat-upstream-path`      | Chat Completions 上游路径      | `--upstream-chat-path`      |
+| `--worker-threads`          | 同步 HTTP worker 数            | 默认至少覆盖桌面常规负载    |
+| `--max-connections`         | 活动与排队连接总上限           | 默认覆盖 50 路压力场景      |
+| `--max-request-body-size`   | 本地请求体上限                 | `--max-body-size`           |
+| `--max-response-body-size`  | 非流式上游响应缓冲上限         | 独立默认值                  |
 
 继续支持：
 
@@ -202,7 +206,6 @@ struct AppConfig {
 --body-log-limit
 --timeout-ms
 --max-body-size
---concurrency
 ```
 
 兼容规则：
@@ -212,6 +215,8 @@ struct AppConfig {
 3. 启动时至少有一个主任务能解析出完整上游目标。
 4. Usage 在本阶段继续使用旧 `--upstream-url` 和 `--upstream-usage-path`；未设置共享 URL 时禁用 Usage 路由。
 5. 配置摘要和 `server_start` 日志分别显示三个任务的最终目标及 enabled 状态。
+6. 不兼容旧 `--concurrency`；线程数与连接容量分别由 `--worker-threads`、`--max-connections` 表达。
+7. `--max-body-size` 仅作为旧请求体上限的回退，不再同时表达响应和日志限制。
 
 双上游示例：
 
@@ -225,12 +230,12 @@ ccs-trans \
 
 ## 路由行为
 
-| 方法和本地路径 | 任务 | 默认上游路径 | 改写 |
-| --- | --- | --- | --- |
-| `POST /v1/responses` | Responses | `/v1/responses/` | 仅 findcg 目标执行 `image_gen` 清理 |
-| `POST /v1/responses/` | Responses | `/v1/responses/` | 同上 |
-| `POST /v1/chat/completions` | Chat Completions | `/v1/chat/completions` | 本阶段无改写 |
-| `GET /v1/usage` | Usage | `/v1/usage` | 无改写，不记录普通链路日志 |
+| 方法和本地路径              | 任务             | 默认上游路径           | 改写                                |
+| --------------------------- | ---------------- | ---------------------- | ----------------------------------- |
+| `POST /v1/responses`        | Responses        | `/v1/responses/`       | 仅 findcg 目标执行 `image_gen` 清理 |
+| `POST /v1/responses/`       | Responses        | `/v1/responses/`       | 同上                                |
+| `POST /v1/chat/completions` | Chat Completions | `/v1/chat/completions` | 本阶段无改写                        |
+| `GET /v1/usage`             | Usage            | `/v1/usage`            | 无改写，不记录普通链路日志          |
 
 路由规则：
 
@@ -290,13 +295,13 @@ namespace == "image_gen"
 
 ### 异常策略
 
-| 情况 | 行为 |
-| --- | --- |
-| 根对象没有 `tools` | 不修改，正常转发 |
-| `tools` 不是数组 | 不修改，记录 `removed_tools_count: 0` |
-| `tools` 含非对象元素 | 保留该元素，继续检查其他元素 |
+| 情况                           | 行为                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| 根对象没有 `tools`             | 不修改，正常转发                                                         |
+| `tools` 不是数组               | 不修改，记录 `removed_tools_count: 0`                                    |
+| `tools` 含非对象元素           | 保留该元素，继续检查其他元素                                             |
 | findcg Responses JSON 无法解析 | 不发送上游，返回 `400 invalid_request_error`，日志类型为 `rewrite_error` |
-| 序列化失败 | 不发送上游，返回 `500 server_error`，记录 `rewrite_error` |
+| 序列化失败                     | 不发送上游，返回 `500 server_error`，记录 `rewrite_error`                |
 
 选择失败关闭而非透明发送，是为了避免在代理已经承诺清理时把未经检查的 `image_gen` 再发送给 findcg。
 
@@ -329,12 +334,12 @@ struct TransformResult {
 
 默认透传请求头，以下 hop-by-hop 或传输控制头由本工具处理：
 
-| Header | 行为 |
-| --- | --- |
-| `Host` | 使用上游 host |
-| `Content-Length` | 根据最终 body 重算 |
-| `Connection` | 不透传 |
-| `Transfer-Encoding` | 由 transport 管理 |
+| Header              | 行为               |
+| ------------------- | ------------------ |
+| `Host`              | 使用上游 host      |
+| `Content-Length`    | 根据最终 body 重算 |
+| `Connection`        | 不透传             |
+| `Transfer-Encoding` | 由 transport 管理  |
 
 `Authorization`、`OpenAI-Organization`、`OpenAI-Project`、`X-Api-Key` 等端到端头默认透传。
 
@@ -350,8 +355,10 @@ struct TransformResult {
 2. 上游 chunk 按顺序写入客户端，不等待完整响应结束。
 3. 客户端发送失败时停止继续写入，并为以后取消上游请求保留接口。
 4. transform 只发生在请求 body 发送前，不解析或修改 SSE 响应事件。
+5. 每个 chunk 以从 `0` 开始的序号增量记录，包含 chunk 大小和允许记录的原始内容。
+6. 流式路径不再把已发送内容累积到 `response.body`。
 
-下一阶段必须保持现有 SSE 行为。取消传播和“不聚合完整流”属于后续性能阶段，但 transport callback 不能妨碍这两项优化。
+下一阶段必须保持现有 SSE 实时性，同时落实序号 chunk 日志和去聚合。客户端取消传播仍由后续 transport 优化补齐。
 
 ## 日志设计
 
@@ -395,7 +402,8 @@ rewritten_body_size
 
 - `--log-body true` 时按 `body_log_limit` 记录 body，并标记是否截断。
 - `--redact-sensitive true` 时脱敏 Authorization、Proxy-Authorization、Cookie、Set-Cookie 和 X-Api-Key。
-- 后续异步日志模式不能静默丢事件；队列满时应背压或由用户显式选择轻量策略。
+- 普通事件由单 writer 批量写入，最长约 `100 ms` 刷盘一次；错误事件必须触发立即 flush。
+- 异步日志队列不能静默丢事件；队列满时对生产者施加背压。
 - 请求/响应 body 日志和改写诊断不能额外扩大敏感信息范围。
 
 ## 错误模型
@@ -411,16 +419,16 @@ rewritten_body_size
 }
 ```
 
-| 场景 | HTTP 状态码 | type/日志分类 |
-| --- | --- | --- |
-| 未知路由 | `404` | `invalid_request_error` |
-| 方法不允许 | `405` | `invalid_request_error` |
-| 请求体过大 | `413` | `invalid_request_error` |
-| findcg body 无法改写 | `400` | 响应 `invalid_request_error`，日志 `rewrite_error` |
-| 主任务没有可用上游 | `500` | `configuration_error` |
-| 上游不可达 | `502` | `upstream_error` |
-| 上游超时 | `504` | `upstream_timeout` |
-| 内部异常 | `500` | `server_error` |
+| 场景                 | HTTP 状态码 | type/日志分类                                      |
+| -------------------- | ----------- | -------------------------------------------------- |
+| 未知路由             | `404`       | `invalid_request_error`                            |
+| 方法不允许           | `405`       | `invalid_request_error`                            |
+| 请求体过大           | `413`       | `invalid_request_error`                            |
+| findcg body 无法改写 | `400`       | 响应 `invalid_request_error`，日志 `rewrite_error` |
+| 主任务没有可用上游   | `500`       | `configuration_error`                              |
+| 上游不可达           | `502`       | `upstream_error`                                   |
+| 上游超时             | `504`       | `upstream_timeout`                                 |
+| 内部异常             | `500`       | `server_error`                                     |
 
 所有非 Usage 链路错误写入 `request_error`，并包含 task、status code 和稳定错误类型。
 
@@ -444,6 +452,12 @@ SSE 不聚合完整 body
 有界接入队列及过载响应
 分离连接、发送、响应头、流空闲和总超时
 ```
+
+性能负载口径已经确定：`8–16` 路并发 SSE 是桌面常规负载，`50` 路是压力测试，不是常规 SLO。当前继续使用同步 worker；只有基线证明 50 路压力下的线程占用会影响常规请求，才进入完整异步 I/O 重写。
+
+WinHTTP 采用每进程一个长生命周期 session，每个请求独立 request handle；连接资源按 scheme/host/port 和代理策略隔离。配置或代理策略切换时创建新一代 transport/session，不让进行中请求切换句柄。
+
+JSON 首版使用仓库固定版本的 `nlohmann/json` DOM，只在命中 findcg Responses 规则时解析。请求体、非流式响应缓冲和日志 body 使用三个独立上限；SSE 不设置累计响应上限，但单 chunk 日志仍受日志规则约束。
 
 长期资源不变量：所有内部队列有上限；非改写请求不承担 JSON DOM 成本；SSE 内存不随累计流长度线性增长。具体 benchmark 和优化顺序以 DevelopmentPlan 阶段 9 为准。
 
@@ -527,19 +541,25 @@ CMake 继续保持 core、平台实现和 host 分层。macOS 先交付 `arm64` 
 
 ## 已决策与延期决策
 
-| 事项 | 结论 |
-| --- | --- |
-| findcg 识别 | 解析 URL 后精确匹配 `findcg.com`/`www.findcg.com` |
-| 改写范围 | 仅 Responses 根级 `tools` |
-| JSON 策略 | 首版使用 DOM；仅命中目标时解析 |
-| 无删除 body | 复用输入，不重新序列化 |
-| 非法 JSON | 失败关闭，不发送上游 |
-| Chat 当前行为 | 独立任务，透明转发 |
-| 旧 CLI | 保留并作为专用参数回退 |
-| 网络模型 | 本阶段保留同步实现和流 callback |
-| 完整异步 I/O | benchmark 后决定 |
-| tray 单/双 executable | tray 原型阶段决定 |
-| macOS transport 库 | 以构建、代理、SSE、取消和 benchmark 结果决定 |
+| 事项                  | 结论                                              |
+| --------------------- | ------------------------------------------------- |
+| findcg 识别           | 解析 URL 后精确匹配 `findcg.com`/`www.findcg.com` |
+| 改写范围              | 仅 Responses 根级 `tools`                         |
+| JSON 策略             | 固定版本 `nlohmann/json` DOM；仅命中目标时解析    |
+| 无删除 body           | 复用输入，不重新序列化                            |
+| 非法 JSON             | 失败关闭，不发送上游                              |
+| Chat 当前行为         | 独立任务，透明转发                                |
+| 旧 CLI                | 保留上游与请求体参数回退；不兼容 `--concurrency`  |
+| 网络模型              | 本阶段保留同步实现和流 callback                   |
+| 常规/压力负载         | 8–16 路 SSE 为常规，50 路为压力测试               |
+| 日志落盘              | 普通事件约 100 ms 批写，错误事件立即 flush        |
+| SSE 日志              | 带序号 chunk 增量记录，不保留完整 response body   |
+| WinHTTP 生命周期      | 每进程一个 session，每请求独立 request handle     |
+| 容量参数              | `--worker-threads` 与 `--max-connections` 分离     |
+| body 上限             | 请求、非流式响应缓冲、日志分别配置                |
+| 完整异步 I/O          | benchmark 后决定                                  |
+| tray 单/双 executable | tray 原型阶段决定                                 |
+| macOS transport 库    | 以构建、代理、SSE、取消和 benchmark 结果决定      |
 
 ## 实现入口
 

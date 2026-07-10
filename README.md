@@ -2,6 +2,12 @@
 
 `ccs-trans` is a local OpenAI-compatible HTTP forwarding tool.
 
+## Status
+
+The current `0.1.0` implementation runs on Windows and uses one shared `--upstream-url` for Responses, Chat Completions, and Usage forwarding. The next development stage will split Responses and Chat Completions into independent upstream tasks and add the scoped findcg Responses rewrite described in [docs/Design.md](docs/Design.md).
+
+The planned `--responses-upstream-url` and `--chat-upstream-url` options are not available in the current executable yet. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md) for the implementation order.
+
 By default it listens on:
 
 ```text
