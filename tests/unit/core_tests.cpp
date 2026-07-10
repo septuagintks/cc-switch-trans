@@ -1,4 +1,5 @@
 #include "config/config.hpp"
+#include "core/app_service.hpp"
 #include "core/cancellation.hpp"
 #include "core/task_router.hpp"
 #include "core/runtime_metrics.hpp"
@@ -170,6 +171,13 @@ void test_config_resolution() {
     });
     require(!same_listener.ok && same_listener.error.find("same listen address") != std::string::npos,
         "enabled endpoints cannot share a listen address");
+    const auto disabled_same_listener = parse({
+        "run",
+        "--responses-upstream-url", "https://example.com",
+        "--chat-listen-port", "15723",
+    });
+    require(!disabled_same_listener.ok && disabled_same_listener.error.find("same listen address") != std::string::npos,
+        "all bound endpoints require distinct listen addresses");
     const auto overlapping_routes = parse({
         "run",
         "--responses-upstream-url", "https://example.com",
@@ -487,9 +495,9 @@ void test_logger_open_failure_contract() {
 
 void test_runtime_metrics() {
     ccs::RuntimeMetrics metrics;
-    metrics.connection_accepted(1, 1);
-    metrics.connection_accepted(2, 2);
-    metrics.worker_started(1);
+    metrics.connection_accepted(ccs::EndpointGroupKind::Responses, 1, 1);
+    metrics.connection_accepted(ccs::EndpointGroupKind::Chat, 2, 2);
+    metrics.worker_started(ccs::EndpointGroupKind::Responses, 1, 25);
     metrics.request_started();
     metrics.stream_started();
     metrics.stream_chunk_forwarded(512);
@@ -499,8 +507,8 @@ void test_runtime_metrics() {
     metrics.upstream_timeout(ccs::UpstreamTimeoutPhase::StreamIdle);
     metrics.upstream_timeout(ccs::UpstreamTimeoutPhase::Total);
     metrics.request_completed();
-    metrics.worker_finished(1);
-    metrics.connection_rejected();
+    metrics.worker_finished(ccs::EndpointGroupKind::Responses, 1);
+    metrics.connection_rejected(ccs::EndpointGroupKind::Chat);
 
     const auto snapshot = metrics.snapshot();
     require(snapshot.connections_accepted == 2, "accepted connection metric");
@@ -508,12 +516,44 @@ void test_runtime_metrics() {
     require(snapshot.peak_connections == 2, "connection high water metric");
     require(snapshot.peak_queued_connections == 2, "queue high water metric");
     require(snapshot.peak_active_workers == 1, "worker high water metric");
+    require(snapshot.connection_queue_wait_time_us == 25, "global connection queue wait metric");
+    require(snapshot.responses_endpoint.connections_accepted == 1, "Responses accepted metric");
+    require(snapshot.responses_endpoint.connections_completed == 1, "Responses completed metric");
+    require(snapshot.responses_endpoint.max_connection_queue_wait_us == 25, "Responses queue wait metric");
+    require(snapshot.chat_endpoint.connections_accepted == 1, "Chat accepted metric");
+    require(snapshot.chat_endpoint.connections_rejected == 1, "Chat rejected metric");
     require(snapshot.stream_chunks_forwarded == 1, "stream chunk metric");
     require(snapshot.stream_bytes_forwarded == 512, "stream byte metric");
     require(snapshot.upstream_requests_failed == 1, "upstream failure metric");
     require(snapshot.upstream_response_header_timeouts == 1, "response header timeout metric");
     require(snapshot.upstream_stream_idle_timeouts == 1, "stream idle timeout metric");
     require(snapshot.upstream_total_timeouts == 1, "total timeout metric");
+}
+
+void test_app_service_startup_failure() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto log_path = std::filesystem::temp_directory_path()
+        / ("ccs-trans-service-startup-" + std::to_string(nonce) + ".log");
+    {
+        ccs::AppConfig config;
+        config.responses_endpoint.upstream_url = "https://example.com";
+        config.responses_endpoint.listen_host = "bad host";
+        config.log_path = log_path;
+        ccs::AppService service(config);
+        std::string error;
+        require(!service.start(error), "service startup failure is synchronous");
+        require(error.find("failed to resolve responses listen address") != std::string::npos,
+            "service startup returns the listener error");
+        require(service.status() == ccs::ServiceState::Stopped, "failed service remains stopped");
+        require(service.wait() != 0, "failed service keeps a non-zero exit code");
+        std::string retry_error;
+        require(!service.start(retry_error), "failed service can retry startup after joining its thread");
+        require(retry_error.find("failed to resolve responses listen address") != std::string::npos,
+            "retried startup returns the listener error");
+        require(service.wait() != 0, "retried startup failure remains non-zero");
+    }
+    std::error_code ec;
+    std::filesystem::remove(log_path, ec);
 }
 
 void test_cancellation() {
@@ -560,6 +600,7 @@ int main() {
         {"logger failure contract", test_logger_failure_contract},
         {"logger open failure contract", test_logger_open_failure_contract},
         {"runtime metrics", test_runtime_metrics},
+        {"app service startup failure", test_app_service_startup_failure},
         {"cancellation", test_cancellation},
     };
 

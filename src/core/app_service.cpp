@@ -16,27 +16,40 @@ AppService::~AppService() {
 }
 
 bool AppService::start(std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     if (state_ != ServiceState::Stopped || thread_.joinable()) {
         error = "service is already running";
         return false;
     }
 
     state_ = ServiceState::Starting;
+    startup_complete_ = false;
+    startup_succeeded_ = false;
+    startup_error_.clear();
+    exit_code_ = 1;
     try {
         server_ = std::make_unique<Server>(config_);
         thread_ = std::thread([this]() {
-            {
-                std::lock_guard<std::mutex> state_lock(mutex_);
-                if (state_ == ServiceState::Starting) {
-                    state_ = ServiceState::Running;
+            const int code = server_->run([this](bool succeeded, const std::string& startup_error) {
+                {
+                    std::lock_guard<std::mutex> state_lock(mutex_);
+                    startup_complete_ = true;
+                    startup_succeeded_ = succeeded && state_ == ServiceState::Starting;
+                    startup_error_ = startup_succeeded_
+                        ? std::string{}
+                        : startup_error.empty() ? "service startup was cancelled" : startup_error;
+                    state_ = startup_succeeded_ ? ServiceState::Running : ServiceState::Stopped;
                 }
-            }
-            state_cv_.notify_all();
+                state_cv_.notify_all();
+            });
 
-            const int code = server_->run();
             {
                 std::lock_guard<std::mutex> state_lock(mutex_);
+                if (!startup_complete_) {
+                    startup_complete_ = true;
+                    startup_succeeded_ = false;
+                    startup_error_ = "service stopped before startup completed";
+                }
                 exit_code_ = code;
                 state_ = ServiceState::Stopped;
             }
@@ -48,7 +61,20 @@ bool AppService::start(std::string& error) {
         error = ex.what();
         return false;
     }
-    return true;
+
+    state_cv_.wait(lock, [this]() { return startup_complete_; });
+    if (startup_succeeded_) {
+        return true;
+    }
+
+    error = startup_error_;
+    lock.unlock();
+    if (thread_.joinable()) {
+        thread_.join();
+    }
+    lock.lock();
+    server_.reset();
+    return false;
 }
 
 void AppService::stop() {

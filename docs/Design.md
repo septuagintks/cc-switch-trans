@@ -464,7 +464,7 @@ request_error
 server_stop
 ```
 
-Usage 继续不记录 `request_received`、`upstream_request`、`upstream_response`、`response_sent` 和普通 `request_error` 链路；服务级启动停止事件不受影响。
+Usage 继续不记录 `request_received`、`upstream_request`、`upstream_response`、`response_sent` 和普通 `request_error` 链路；服务级启动停止事件不受影响。阶段 10 增加不含 headers/body/query 的 `usage_completed` summary，只记录 `request_id`、endpoint、`responses_usage`/`chat_usage` task、是否实际转发、upstream 目标、状态码和耗时；未配置 endpoint 使用 `usage_rejected`。
 
 ### 任务和改写字段
 

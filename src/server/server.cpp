@@ -375,6 +375,8 @@ std::string build_stream_response_head(HttpResponse response) {
 struct ClientJob {
     SOCKET client = INVALID_SOCKET;
     std::string client_ip;
+    EndpointGroupKind endpoint = EndpointGroupKind::Responses;
+    std::chrono::steady_clock::time_point accepted_at;
 };
 
 class ClientCancellationMonitor {
@@ -532,6 +534,99 @@ void close_socket(SOCKET socket) {
     }
 }
 
+class BoundListener {
+public:
+    explicit BoundListener(const EndpointGroupConfig& endpoint)
+        : endpoint_(&endpoint) {}
+
+    ~BoundListener() {
+        close();
+    }
+
+    BoundListener(const BoundListener&) = delete;
+    BoundListener& operator=(const BoundListener&) = delete;
+
+    bool open(std::string& error) {
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        hints.ai_flags = AI_PASSIVE;
+
+        addrinfo* result = nullptr;
+        const auto port = std::to_string(endpoint_->listen_port);
+        const int rc = getaddrinfo(endpoint_->listen_host.c_str(), port.c_str(), &hints, &result);
+        if (rc != 0 || result == nullptr) {
+            error = "failed to resolve " + std::string(endpoint_group_name(endpoint_->kind))
+                + " listen address: " + endpoint_->listen_host + ":" + port;
+            return false;
+        }
+
+        for (addrinfo* ptr = result; ptr != nullptr; ptr = ptr->ai_next) {
+            socket_ = ::socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
+            if (socket_ == INVALID_SOCKET) {
+                continue;
+            }
+
+            const BOOL exclusive = TRUE;
+            if (setsockopt(
+                    socket_,
+                    SOL_SOCKET,
+                    SO_EXCLUSIVEADDRUSE,
+                    reinterpret_cast<const char*>(&exclusive),
+                    sizeof(exclusive)) == SOCKET_ERROR) {
+                close_socket(socket_);
+                socket_ = INVALID_SOCKET;
+                continue;
+            }
+            if (bind(socket_, ptr->ai_addr, static_cast<int>(ptr->ai_addrlen)) == 0) {
+                break;
+            }
+            close_socket(socket_);
+            socket_ = INVALID_SOCKET;
+        }
+        freeaddrinfo(result);
+
+        if (socket_ == INVALID_SOCKET) {
+            error = "failed to bind " + std::string(endpoint_group_name(endpoint_->kind))
+                + " endpoint " + endpoint_->listen_host + ":" + port;
+            return false;
+        }
+        if (listen(socket_, kBacklog) == SOCKET_ERROR) {
+            error = "failed to listen on " + std::string(endpoint_group_name(endpoint_->kind))
+                + " endpoint " + endpoint_->listen_host + ":" + port;
+            close();
+            return false;
+        }
+
+        const int accept_timeout_ms = 500;
+        setsockopt(
+            socket_,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&accept_timeout_ms),
+            sizeof(accept_timeout_ms));
+        return true;
+    }
+
+    void close() {
+        close_socket(socket_);
+        socket_ = INVALID_SOCKET;
+    }
+
+    SOCKET socket() const {
+        return socket_;
+    }
+
+    const EndpointGroupConfig& endpoint() const {
+        return *endpoint_;
+    }
+
+private:
+    const EndpointGroupConfig* endpoint_;
+    SOCKET socket_ = INVALID_SOCKET;
+};
+
 bool send_all(SOCKET socket, const std::string& data) {
     const char* cursor = data.data();
     std::size_t remaining = data.size();
@@ -612,7 +707,8 @@ void handle_client(
     const Server* server,
     ClientCancellationMonitor& cancellation_monitor,
     std::size_t max_body_size,
-    std::string client_ip) {
+    std::string client_ip,
+    EndpointGroupKind endpoint) {
     try {
         const auto raw = recv_request(client, max_body_size);
         CancellationSource cancellation_source;
@@ -620,6 +716,7 @@ void handle_client(
         server->process_raw_request_to_sender(
             raw,
             client_ip,
+            endpoint,
             [&](const std::string& data) {
                 const bool sent = send_all(client, data);
                 if (!sent) {
@@ -640,7 +737,8 @@ void handle_client(
             ? "request body too large"
             : "internal server error";
         const int status = too_large ? 413 : 500;
-        server->log_request_error(status, too_large ? "invalid_request_error" : "server_error", message);
+        server->log_request_error(
+            endpoint, status, too_large ? "invalid_request_error" : "server_error", message);
         HttpResponse response;
         response.status_code = status;
         response.reason = reason_phrase(status);
@@ -651,8 +749,8 @@ void handle_client(
     close_socket(client);
 }
 
-void reject_overloaded_client(SOCKET client, const Server* server) {
-    server->log_request_error(503, "server_overloaded", "maximum connection count reached");
+void reject_overloaded_client(SOCKET client, const Server* server, EndpointGroupKind endpoint) {
+    server->log_request_error(endpoint, 503, "server_overloaded", "maximum connection count reached");
     HttpResponse response;
     response.status_code = 503;
     response.reason = reason_phrase(503);
@@ -674,7 +772,8 @@ void reject_overloaded_client(SOCKET client, const Server* server) {
 Server::Server(AppConfig config)
     : config_(config)
     , metrics_(std::make_shared<RuntimeMetrics>())
-    , router_({&config_.responses_endpoint, &config_.chat_endpoint})
+    , responses_router_({&config_.responses_endpoint})
+    , chat_router_({&config_.chat_endpoint})
     , proxy_(config_.timeouts, config_.max_response_body_size, metrics_)
     , logger_(config_, metrics_) {
 #ifdef _WIN32
@@ -682,9 +781,14 @@ Server::Server(AppConfig config)
 #endif
 }
 
-void Server::log_request_error(int status_code, const std::string& type, const std::string& message) const {
+void Server::log_request_error(
+    EndpointGroupKind endpoint,
+    int status_code,
+    const std::string& type,
+    const std::string& message) const {
     logger_.log("error", "request_error", {
         field_string("request_id", make_request_id()),
+        field_string("endpoint", endpoint_group_name(endpoint)),
         field_string("message", message),
         field_string("type", type),
         field_number("status_code", status_code),
@@ -697,9 +801,12 @@ void Server::request_stop() {
 #endif
 }
 
-std::string Server::process_raw_request(const std::string& raw, const std::string& client_ip) const {
+std::string Server::process_raw_request(
+    const std::string& raw,
+    const std::string& client_ip,
+    EndpointGroupKind endpoint) const {
     std::string output;
-    process_raw_request_to_sender(raw, client_ip, [&](const std::string& data) {
+    process_raw_request_to_sender(raw, client_ip, endpoint, [&](const std::string& data) {
         output += data;
         return true;
     });
@@ -709,6 +816,7 @@ std::string Server::process_raw_request(const std::string& raw, const std::strin
 bool Server::process_raw_request_to_sender(
     const std::string& raw,
     const std::string& client_ip,
+    EndpointGroupKind endpoint,
     const std::function<bool(const std::string&)>& sender,
     const CancellationToken& cancellation) const {
     const auto request_id = make_request_id();
@@ -718,25 +826,46 @@ bool Server::process_raw_request_to_sender(
 
     try {
         auto request = parse_request(raw, client_ip);
-        const auto route = router_.route(request.path);
+        const auto& router = endpoint == EndpointGroupKind::Responses ? responses_router_ : chat_router_;
+        const auto route = router.route(request.path);
         request_task = route.task == nullptr ? "unknown" : task_name(route.task->kind);
         if (route.task != nullptr && is_usage_task(route.task->kind)) {
+            request.request_id = request_id;
             if (!route.configured()) {
                 HttpResponse response;
                 response.status_code = 404;
                 response.reason = reason_phrase(404);
                 response.body = error_json("unsupported route", "invalid_request_error");
+                logger_.log("info", "usage_rejected", {
+                    field_string("request_id", request.request_id),
+                    field_string("endpoint", endpoint_group_name(endpoint)),
+                    field_string("task", task_name(route.task->kind)),
+                    field_number("status_code", response.status_code),
+                });
                 return sender(build_response(std::move(response)));
             }
-            return sender(build_response(handle_usage_request(
-                request, *route.endpoint, *route.task, cancellation)));
+            auto response = handle_usage_request(request, *route.endpoint, *route.task, cancellation);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
+            const auto upstream = route.upstream_target();
+            logger_.log("info", "usage_completed", {
+                field_string("request_id", request.request_id),
+                field_string("endpoint", endpoint_group_name(endpoint)),
+                field_string("task", task_name(route.task->kind)),
+                field_bool("forwarded", request.method == route.task->method),
+                field_string("upstream_url", upstream.base_url),
+                field_string("upstream_path", upstream.path),
+                field_number("status_code", response.status_code),
+                field_number("duration_ms", elapsed.count()),
+            });
+            return sender(build_response(std::move(response)));
         }
 
         request.request_id = request_id;
         std::vector<LogField> request_fields = {
             field_string("request_id", request.request_id),
             field_string("api_type", route.task == nullptr ? "unknown" : task_name(route.task->kind)),
-            field_string("endpoint", route.endpoint == nullptr ? "unknown" : endpoint_group_name(route.endpoint->kind)),
+            field_string("endpoint", endpoint_group_name(endpoint)),
             field_string("method", request.method),
             field_string("local_path", request.path),
             field_string("query", request.query),
@@ -757,6 +886,7 @@ bool Server::process_raw_request_to_sender(
                 request.body.erase(0, trim_bytes);
                 logger_.log("debug", "request_body_normalized", {
                     field_string("request_id", request.request_id),
+                    field_string("endpoint", endpoint_group_name(endpoint)),
                     field_number("trimmed_leading_bytes", static_cast<long long>(trim_bytes)),
                     field_number("body_size", static_cast<long long>(request.body.size())),
                 });
@@ -784,6 +914,7 @@ bool Server::process_raw_request_to_sender(
                 logger_.log("error", "request_error", {
                     field_string("request_id", request.request_id),
                     field_string("task", task_name(route.task->kind)),
+                    field_string("endpoint", endpoint_group_name(endpoint)),
                     field_string("message", ex.what()),
                     field_string("type", "rewrite_error"),
                     field_number("status_code", ex.status_code()),
@@ -797,6 +928,7 @@ bool Server::process_raw_request_to_sender(
                 std::vector<LogField> sent_fields = {
                     field_string("request_id", request.request_id),
                     field_string("task", task_name(route.task->kind)),
+                    field_string("endpoint", endpoint_group_name(endpoint)),
                     field_number("status_code", response.status_code),
                     field_number("duration_ms", elapsed.count()),
                     field_bool("streaming", false),
@@ -844,6 +976,7 @@ bool Server::process_raw_request_to_sender(
                         std::vector<LogField> upstream_response_fields = {
                             field_string("request_id", request.request_id),
                             field_string("task", task_name(route.task->kind)),
+                            field_string("endpoint", endpoint_group_name(endpoint)),
                             field_number("status_code", headers_response.status_code),
                             field_bool("streaming", true),
                             field_raw("headers", headers_to_json(headers_response.headers, config_.redact_sensitive)),
@@ -856,6 +989,7 @@ bool Server::process_raw_request_to_sender(
                         std::vector<LogField> chunk_fields = {
                             field_string("request_id", request.request_id),
                             field_string("task", task_name(route.task->kind)),
+                            field_string("endpoint", endpoint_group_name(endpoint)),
                             field_number("chunk_sequence", static_cast<long long>(stream_chunk_count)),
                             field_number("chunk_size", static_cast<long long>(chunk.size())),
                         };
@@ -877,6 +1011,7 @@ bool Server::process_raw_request_to_sender(
                     logger_.log("info", "request_cancelled", {
                         field_string("request_id", request.request_id),
                         field_string("task", task_name(route.task->kind)),
+                        field_string("endpoint", endpoint_group_name(endpoint)),
                         field_number("duration_ms", elapsed.count()),
                     });
                     return false;
@@ -885,6 +1020,7 @@ bool Server::process_raw_request_to_sender(
                 logger_.log("error", "request_error", {
                     field_string("request_id", request.request_id),
                     field_string("task", task_name(route.task->kind)),
+                    field_string("endpoint", endpoint_group_name(endpoint)),
                     field_string("message", ex.what()),
                     field_string("type", ex.type()),
                     field_number("status_code", ex.status_code()),
@@ -904,6 +1040,7 @@ bool Server::process_raw_request_to_sender(
                 std::vector<LogField> upstream_response_fields = {
                     field_string("request_id", request.request_id),
                     field_string("task", task_name(route.task->kind)),
+                    field_string("endpoint", endpoint_group_name(endpoint)),
                     field_number("status_code", response.status_code),
                     field_bool("streaming", false),
                     field_raw("headers", headers_to_json(response.headers, config_.redact_sensitive)),
@@ -912,7 +1049,7 @@ bool Server::process_raw_request_to_sender(
                 logger_.log("info", "upstream_response", upstream_response_fields);
             }
         } else {
-            response = handle_local_route_error(request);
+            response = handle_local_route_error(request, route);
             if (response.status_code >= 400) {
                 const std::string error_message = response.status_code == 404
                     ? "unsupported route"
@@ -923,6 +1060,7 @@ bool Server::process_raw_request_to_sender(
                 logger_.log("error", "request_error", {
                     field_string("request_id", request.request_id),
                     field_string("task", route.task == nullptr ? "unknown" : task_name(route.task->kind)),
+                    field_string("endpoint", endpoint_group_name(endpoint)),
                     field_string("message", error_message),
                     field_string("type", error_type),
                     field_number("status_code", response.status_code),
@@ -935,6 +1073,7 @@ bool Server::process_raw_request_to_sender(
         std::vector<LogField> sent_fields = {
             field_string("request_id", request.request_id),
             field_string("task", route.task == nullptr ? "unknown" : task_name(route.task->kind)),
+            field_string("endpoint", endpoint_group_name(endpoint)),
             field_number("status_code", response.status_code),
             field_number("duration_ms", elapsed.count()),
             field_bool("streaming", streamed),
@@ -956,6 +1095,7 @@ bool Server::process_raw_request_to_sender(
             logger_.log("info", "request_cancelled", {
                 field_string("request_id", request_id),
                 field_string("task", request_task),
+                field_string("endpoint", endpoint_group_name(endpoint)),
             });
             return false;
         }
@@ -963,6 +1103,7 @@ bool Server::process_raw_request_to_sender(
     } catch (const std::exception& ex) {
         logger_.log("error", "request_error", {
             field_string("request_id", request_id),
+            field_string("endpoint", endpoint_group_name(endpoint)),
             field_string("message", ex.what()),
             field_string("type", "server_error"),
             field_number("status_code", 500),
@@ -989,6 +1130,30 @@ void Server::log_performance_snapshot(const std::string& reason) const {
         field_number("peak_queued_connections", static_cast<long long>(snapshot.peak_queued_connections)),
         field_number("current_active_workers", static_cast<long long>(snapshot.current_active_workers)),
         field_number("peak_active_workers", static_cast<long long>(snapshot.peak_active_workers)),
+        field_number("connection_queue_wait_time_us", static_cast<long long>(snapshot.connection_queue_wait_time_us)),
+        field_number("max_connection_queue_wait_us", static_cast<long long>(snapshot.max_connection_queue_wait_us)),
+        field_number("responses_connections_accepted", static_cast<long long>(snapshot.responses_endpoint.connections_accepted)),
+        field_number("responses_connections_rejected", static_cast<long long>(snapshot.responses_endpoint.connections_rejected)),
+        field_number("responses_connections_completed", static_cast<long long>(snapshot.responses_endpoint.connections_completed)),
+        field_number("responses_current_connections", static_cast<long long>(snapshot.responses_endpoint.current_connections)),
+        field_number("responses_peak_connections", static_cast<long long>(snapshot.responses_endpoint.peak_connections)),
+        field_number("responses_current_queued_connections", static_cast<long long>(snapshot.responses_endpoint.current_queued_connections)),
+        field_number("responses_peak_queued_connections", static_cast<long long>(snapshot.responses_endpoint.peak_queued_connections)),
+        field_number("responses_current_active_workers", static_cast<long long>(snapshot.responses_endpoint.current_active_workers)),
+        field_number("responses_peak_active_workers", static_cast<long long>(snapshot.responses_endpoint.peak_active_workers)),
+        field_number("responses_connection_queue_wait_time_us", static_cast<long long>(snapshot.responses_endpoint.connection_queue_wait_time_us)),
+        field_number("responses_max_connection_queue_wait_us", static_cast<long long>(snapshot.responses_endpoint.max_connection_queue_wait_us)),
+        field_number("chat_connections_accepted", static_cast<long long>(snapshot.chat_endpoint.connections_accepted)),
+        field_number("chat_connections_rejected", static_cast<long long>(snapshot.chat_endpoint.connections_rejected)),
+        field_number("chat_connections_completed", static_cast<long long>(snapshot.chat_endpoint.connections_completed)),
+        field_number("chat_current_connections", static_cast<long long>(snapshot.chat_endpoint.current_connections)),
+        field_number("chat_peak_connections", static_cast<long long>(snapshot.chat_endpoint.peak_connections)),
+        field_number("chat_current_queued_connections", static_cast<long long>(snapshot.chat_endpoint.current_queued_connections)),
+        field_number("chat_peak_queued_connections", static_cast<long long>(snapshot.chat_endpoint.peak_queued_connections)),
+        field_number("chat_current_active_workers", static_cast<long long>(snapshot.chat_endpoint.current_active_workers)),
+        field_number("chat_peak_active_workers", static_cast<long long>(snapshot.chat_endpoint.peak_active_workers)),
+        field_number("chat_connection_queue_wait_time_us", static_cast<long long>(snapshot.chat_endpoint.connection_queue_wait_time_us)),
+        field_number("chat_max_connection_queue_wait_us", static_cast<long long>(snapshot.chat_endpoint.max_connection_queue_wait_us)),
         field_number("requests_started", static_cast<long long>(snapshot.requests_started)),
         field_number("requests_completed", static_cast<long long>(snapshot.requests_completed)),
         field_number("requests_cancelled", static_cast<long long>(snapshot.requests_cancelled)),
@@ -1074,8 +1239,7 @@ HttpResponse Server::handle_usage_request(
     }
 }
 
-HttpResponse Server::handle_local_route_error(const HttpRequest& request) const {
-    const auto route = router_.route(request.path);
+HttpResponse Server::handle_local_route_error(const HttpRequest& request, const RouteDecision& route) const {
     if (route.task == nullptr) {
         HttpResponse response;
         response.status_code = 404;
@@ -1109,72 +1273,50 @@ HttpResponse Server::handle_local_route_error(const HttpRequest& request) const 
     return response;
 }
 
-int Server::run() {
+int Server::run(const StartupCallback& startup_callback) {
+    bool startup_reported = false;
+    const auto report_startup = [&](bool succeeded, const std::string& error) {
+        if (startup_reported) {
+            return;
+        }
+        startup_reported = true;
+        if (startup_callback) {
+            startup_callback(succeeded, error);
+        }
+    };
 #ifndef _WIN32
-    std::cerr << "ccs-trans currently supports the built-in HTTP server on Windows only\n";
+    const std::string error = "ccs-trans currently supports the built-in HTTP server on Windows only";
+    report_startup(false, error);
+    std::cerr << error << "\n";
     return 1;
 #else
     try {
         WinsockRuntime winsock;
         std::string log_error;
         if (!logger_.open(log_error)) {
+            report_startup(false, log_error);
             std::cerr << log_error << "\n";
             return 1;
         }
         SetConsoleCtrlHandler(console_handler, TRUE);
 
-        addrinfo hints{};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-        hints.ai_flags = AI_PASSIVE;
-
-        addrinfo* result = nullptr;
-        const auto& listener = config_.responses_endpoint;
-        const auto port = std::to_string(listener.listen_port);
-        const int rc = getaddrinfo(listener.listen_host.c_str(), port.c_str(), &hints, &result);
-        if (rc != 0 || result == nullptr) {
-            std::cerr << "failed to resolve listen address: " << listener.listen_host << ":" << port << "\n";
-            return 1;
-        }
-
-        SOCKET listen_socket = INVALID_SOCKET;
-        for (addrinfo* ptr = result; ptr != nullptr; ptr = ptr->ai_next) {
-            listen_socket = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
-            if (listen_socket == INVALID_SOCKET) {
-                continue;
-            }
-
-            const BOOL yes = TRUE;
-            setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
-
-            if (bind(listen_socket, ptr->ai_addr, static_cast<int>(ptr->ai_addrlen)) == 0) {
-                break;
-            }
-
-            close_socket(listen_socket);
-            listen_socket = INVALID_SOCKET;
-        }
-        freeaddrinfo(result);
-
-        if (listen_socket == INVALID_SOCKET) {
-            std::cerr << "failed to bind " << listener.listen_host << ":" << listener.listen_port << "\n";
-            return 1;
-        }
-
-        if (listen(listen_socket, kBacklog) == SOCKET_ERROR) {
-            std::cerr << "failed to listen on " << listener.listen_host << ":" << listener.listen_port << "\n";
-            close_socket(listen_socket);
+        BoundListener responses_listener(config_.responses_endpoint);
+        BoundListener chat_listener(config_.chat_endpoint);
+        std::string listener_error;
+        if (!responses_listener.open(listener_error) || !chat_listener.open(listener_error)) {
+            report_startup(false, listener_error);
+            std::cerr << listener_error << "\n";
             SetConsoleCtrlHandler(console_handler, FALSE);
             return 1;
         }
 
-        const int accept_timeout_ms = 500;
-        setsockopt(listen_socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&accept_timeout_ms), sizeof(accept_timeout_ms));
-
-        std::cout << "ccs-trans listening on http://" << listener.listen_host << ":" << listener.listen_port << "\n";
+        std::cout << "ccs-trans listening on http://"
+                  << config_.responses_endpoint.listen_host << ":" << config_.responses_endpoint.listen_port
+                  << " (responses) and http://"
+                  << config_.chat_endpoint.listen_host << ":" << config_.chat_endpoint.listen_port
+                  << " (chat)\n";
         logger_.log("info", "server_start", {
-            field_string("active_listener_endpoint", endpoint_group_name(listener.kind)),
+            field_number("listener_count", 2),
             field_string("responses_listen_host", config_.responses_endpoint.listen_host),
             field_number("responses_listen_port", config_.responses_endpoint.listen_port),
             field_bool("responses_enabled", config_.responses_endpoint.enabled()),
@@ -1212,67 +1354,132 @@ int Server::run() {
 
         std::vector<std::thread> workers;
         workers.reserve(config_.worker_threads);
-        for (std::size_t i = 0; i < config_.worker_threads; ++i) {
-            workers.emplace_back([&]() {
-                while (true) {
-                    ClientJob job;
-                    {
-                        std::unique_lock<std::mutex> lock(queue_mutex);
-                        queue_cv.wait(lock, [&]() {
-                            return accepting_done || !client_queue.empty();
-                        });
-                        if (client_queue.empty()) {
-                            return;
+        try {
+            for (std::size_t i = 0; i < config_.worker_threads; ++i) {
+                workers.emplace_back([&]() {
+                    while (true) {
+                        ClientJob job;
+                        {
+                            std::unique_lock<std::mutex> lock(queue_mutex);
+                            queue_cv.wait(lock, [&]() {
+                                return accepting_done || !client_queue.empty();
+                            });
+                            if (client_queue.empty()) {
+                                return;
+                            }
+                            job = std::move(client_queue.front());
+                            client_queue.pop();
+                            const auto queue_wait = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - job.accepted_at);
+                            metrics_->worker_started(
+                                job.endpoint,
+                                client_queue.size(),
+                                static_cast<std::uint64_t>(queue_wait.count()));
                         }
-                        job = std::move(client_queue.front());
-                        client_queue.pop();
-                        metrics_->worker_started(client_queue.size());
+                        handle_client(
+                            job.client,
+                            this,
+                            cancellation_monitor,
+                            config_.max_request_body_size,
+                            std::move(job.client_ip),
+                            job.endpoint);
+                        {
+                            std::lock_guard<std::mutex> lock(queue_mutex);
+                            --open_connections;
+                            metrics_->worker_finished(job.endpoint, open_connections);
+                        }
                     }
-                    handle_client(
-                        job.client,
-                        this,
-                        cancellation_monitor,
-                        config_.max_request_body_size,
-                        std::move(job.client_ip));
-                    {
-                        std::lock_guard<std::mutex> lock(queue_mutex);
-                        --open_connections;
-                        metrics_->worker_finished(open_connections);
-                    }
-                }
-            });
-        }
-
-        while (!shutdown_requested().load(std::memory_order_relaxed)) {
-            sockaddr_storage client_addr{};
-            int client_addr_len = sizeof(client_addr);
-            SOCKET client = accept(listen_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_addr_len);
-            if (client == INVALID_SOCKET) {
-                const int error = WSAGetLastError();
-                if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) {
-                    continue;
-                }
-                continue;
+                });
             }
-            bool queued = false;
+        } catch (...) {
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
-                if (open_connections < config_.max_connections) {
-                    ++open_connections;
-                    client_queue.push(ClientJob{client, peer_ip(client_addr)});
-                    metrics_->connection_accepted(open_connections, client_queue.size());
-                    queued = true;
-                }
+                accepting_done = true;
             }
-            if (!queued) {
-                metrics_->connection_rejected();
-                reject_overloaded_client(client, this);
-                continue;
+            queue_cv.notify_all();
+            for (auto& worker : workers) {
+                worker.join();
             }
-            queue_cv.notify_one();
+            throw;
         }
 
-        close_socket(listen_socket);
+        const auto accept_loop = [&](const BoundListener& listener) {
+            while (!shutdown_requested().load(std::memory_order_relaxed)) {
+                sockaddr_storage client_addr{};
+                int client_addr_len = sizeof(client_addr);
+                SOCKET client = accept(
+                    listener.socket(),
+                    reinterpret_cast<sockaddr*>(&client_addr),
+                    &client_addr_len);
+                if (client == INVALID_SOCKET) {
+                    const int error = WSAGetLastError();
+                    if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) {
+                        continue;
+                    }
+                    if (shutdown_requested().load(std::memory_order_relaxed)) {
+                        return;
+                    }
+                    log_request_error(
+                        listener.endpoint().kind,
+                        500,
+                        "listener_error",
+                        "listener accept failed: " + std::to_string(error));
+                    shutdown_requested().store(true, std::memory_order_relaxed);
+                    return;
+                }
+                bool queued = false;
+                {
+                    std::lock_guard<std::mutex> lock(queue_mutex);
+                    if (open_connections < config_.max_connections) {
+                        ++open_connections;
+                        client_queue.push(ClientJob{
+                            client,
+                            peer_ip(client_addr),
+                            listener.endpoint().kind,
+                            std::chrono::steady_clock::now(),
+                        });
+                        metrics_->connection_accepted(
+                            listener.endpoint().kind, open_connections, client_queue.size());
+                        queued = true;
+                    }
+                }
+                if (!queued) {
+                    metrics_->connection_rejected(listener.endpoint().kind);
+                    reject_overloaded_client(client, this, listener.endpoint().kind);
+                    continue;
+                }
+                queue_cv.notify_one();
+            }
+        };
+
+        std::vector<std::thread> acceptors;
+        acceptors.reserve(2);
+        try {
+            acceptors.emplace_back(accept_loop, std::cref(responses_listener));
+            acceptors.emplace_back(accept_loop, std::cref(chat_listener));
+        } catch (...) {
+            shutdown_requested().store(true, std::memory_order_relaxed);
+            for (auto& acceptor : acceptors) {
+                acceptor.join();
+            }
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                accepting_done = true;
+            }
+            queue_cv.notify_all();
+            for (auto& worker : workers) {
+                worker.join();
+            }
+            throw;
+        }
+
+        report_startup(true, {});
+
+        for (auto& acceptor : acceptors) {
+            acceptor.join();
+        }
+        responses_listener.close();
+        chat_listener.close();
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
             accepting_done = true;
@@ -1286,13 +1493,19 @@ int Server::run() {
         reporter.stop();
         log_performance_snapshot("server_stop");
         logger_.log("info", "server_stop", {
-            field_string("listen_host", config_.responses_endpoint.listen_host),
-            field_number("listen_port", config_.responses_endpoint.listen_port),
+            field_number("listener_count", 2),
         });
         SetConsoleCtrlHandler(console_handler, FALSE);
         return 0;
     } catch (const std::exception& ex) {
+        report_startup(false, ex.what());
         std::cerr << "server failed: " << ex.what() << "\n";
+        SetConsoleCtrlHandler(console_handler, FALSE);
+        return 1;
+    } catch (...) {
+        const std::string error = "server failed with an unknown exception";
+        report_startup(false, error);
+        std::cerr << error << "\n";
         SetConsoleCtrlHandler(console_handler, FALSE);
         return 1;
     }

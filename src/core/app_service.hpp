@@ -37,6 +37,9 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable state_cv_;
     ServiceState state_ = ServiceState::Stopped;
+    bool startup_complete_ = false;
+    bool startup_succeeded_ = false;
+    std::string startup_error_;
     int exit_code_ = 1;
     std::unique_ptr<Server> server_;
     std::thread thread_;

@@ -496,6 +496,10 @@ chat endpoint: 127.0.0.1:15724
 4. 两个 listener 由同一个 `AppService` 管理，任一端口绑定失败都使启动整体失败并回收已启动 listener，避免半运行状态。
 5. 连接容量、worker 使用量和指标先保持进程级边界；日志事件增加 listener/endpoint 字段，能够区分 `responses_usage` 与 `chat_usage`。
 
+完成状态：已完成。两个 listener 在任何 accept/worker 启动前依次完成 exclusive bind/listen，第二个失败会释放第一个并使进程失败；运行期任一 listener 的不可恢复 accept 错误会停止整个服务。两个 acceptor 只负责向同一个 FIFO 队列提交带 endpoint 的 `ClientJob`，继续共享总连接上限、32 worker、logger、metrics、Proxy 和 WinHTTP session。
+
+本工作包 review 将 Windows 端口绑定从 `SO_REUSEADDR` 改为 `SO_EXCLUSIVEADDRUSE`，修正运行期 listener 错误导致半运行的风险，并把本地 405 Usage 与实际上游转发区分为带 `forwarded` 字段的 `usage_completed` summary。`AppService::start()` 增加 readiness 握手，只有 logger、两个 listener、worker 和 acceptor 全部就绪后才同步返回成功；启动失败在返回前恢复 `Stopped` 并提供具体错误。集成测试覆盖双 upstream、两组 Usage 归属、跨端口主路由 404、Usage 敏感头不入日志和第二 listener 绑定失败时的原子回滚；端点级 accepted/rejected/completed/active/queued/queue-wait 指标已进入 `performance_snapshot`。
+
 ### 10.3 清理 CLI 并冻结唯一名称
 
 1. 不兼容 `0.3.0` CLI；删除所有标为 legacy 的解析、回退、帮助文本和测试。
@@ -507,7 +511,7 @@ chat endpoint: 127.0.0.1:15724
 
 完成状态：配置模型与运行命令合约已完成。`EndpointGroupConfig` 现在是 base upstream URL、监听地址、主任务和所属 Usage 的唯一所有者，`RouteDecision` 同时携带 endpoint/task 并按请求生成 `UpstreamTarget`。CLI 只接受 `ccs-trans run`、`--help` 和 `--version`；所有运行字段使用唯一长参数，重复参数和布尔别名被拒绝，旧名称逐项返回迁移提示。profile 子命令仍按 10.4 工作包实现，不在本工作包放置空壳命令。
 
-本工作包 review 修正了同 endpoint 主路由/Usage 路由尾斜杠归一化后冲突的问题，并禁止 path 字段包含 query/fragment。单元测试覆盖完整 endpoint 参数映射、Usage 所有权、同监听地址冲突、重复参数、缺少 `run`、严格布尔值、公开 help 和全部旧名称拒绝；单 listener 协议集成与 smoke benchmark 通过。网络层暂时仍只绑定 Responses listener，双 listener 原子生命周期属于下一个独立工作包。
+本工作包 review 修正了同 endpoint 主路由/Usage 路由尾斜杠归一化后冲突的问题，并禁止 path 字段包含 query/fragment。单元测试覆盖完整 endpoint 参数映射、Usage 所有权、同监听地址冲突、重复参数、缺少 `run`、严格布尔值、公开 help 和全部旧名称拒绝；当时的单 listener 协议集成与 smoke benchmark 通过，随后 10.2 工作包已激活双 listener。
 
 ### 10.4 持久 profile 与目录布局
 

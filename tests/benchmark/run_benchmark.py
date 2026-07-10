@@ -540,6 +540,7 @@ def main():
             direct_mock = get_json(upstream_port, "/benchmark/metrics")
 
             proxy_port = free_port()
+            chat_proxy_port = free_port()
             proxy_output = TMP / f"proxy-{nonce}-{name}.txt"
             proxy_log = TMP / f"proxy-{nonce}-{name}.log"
             proxy_command = [
@@ -549,6 +550,8 @@ def main():
                 f"http://127.0.0.1:{upstream_port}",
                 "--responses-listen-port",
                 str(proxy_port),
+                "--chat-listen-port",
+                str(chat_proxy_port),
                 "--log-path",
                 str(proxy_log),
                 "--log-body",

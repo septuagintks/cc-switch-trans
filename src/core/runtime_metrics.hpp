@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/task.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +18,20 @@ enum class UpstreamTimeoutPhase {
     Total,
 };
 
+struct EndpointRuntimeMetricsSnapshot {
+    std::uint64_t connections_accepted = 0;
+    std::uint64_t connections_rejected = 0;
+    std::uint64_t connections_completed = 0;
+    std::uint64_t current_connections = 0;
+    std::uint64_t peak_connections = 0;
+    std::uint64_t current_queued_connections = 0;
+    std::uint64_t peak_queued_connections = 0;
+    std::uint64_t current_active_workers = 0;
+    std::uint64_t peak_active_workers = 0;
+    std::uint64_t connection_queue_wait_time_us = 0;
+    std::uint64_t max_connection_queue_wait_us = 0;
+};
+
 struct RuntimeMetricsSnapshot {
     std::uint64_t connections_accepted = 0;
     std::uint64_t connections_rejected = 0;
@@ -26,6 +42,10 @@ struct RuntimeMetricsSnapshot {
     std::uint64_t peak_queued_connections = 0;
     std::uint64_t current_active_workers = 0;
     std::uint64_t peak_active_workers = 0;
+    std::uint64_t connection_queue_wait_time_us = 0;
+    std::uint64_t max_connection_queue_wait_us = 0;
+    EndpointRuntimeMetricsSnapshot responses_endpoint;
+    EndpointRuntimeMetricsSnapshot chat_endpoint;
     std::uint64_t requests_started = 0;
     std::uint64_t requests_completed = 0;
     std::uint64_t requests_cancelled = 0;
@@ -79,10 +99,10 @@ struct RuntimeMetricsSnapshot {
 
 class RuntimeMetrics {
 public:
-    void connection_accepted(std::size_t current, std::size_t queued);
-    void connection_rejected();
-    void worker_started(std::size_t queued);
-    void worker_finished(std::size_t current);
+    void connection_accepted(EndpointGroupKind endpoint, std::size_t current, std::size_t queued);
+    void connection_rejected(EndpointGroupKind endpoint);
+    void worker_started(EndpointGroupKind endpoint, std::size_t queued, std::uint64_t queue_wait_us);
+    void worker_finished(EndpointGroupKind endpoint, std::size_t current);
 
     void request_started();
     void request_completed();
@@ -123,7 +143,23 @@ public:
     RuntimeMetricsSnapshot snapshot() const;
 
 private:
+    struct EndpointMetrics {
+        std::atomic<std::uint64_t> connections_accepted{0};
+        std::atomic<std::uint64_t> connections_rejected{0};
+        std::atomic<std::uint64_t> connections_completed{0};
+        std::atomic<std::uint64_t> current_connections{0};
+        std::atomic<std::uint64_t> peak_connections{0};
+        std::atomic<std::uint64_t> current_queued_connections{0};
+        std::atomic<std::uint64_t> peak_queued_connections{0};
+        std::atomic<std::uint64_t> current_active_workers{0};
+        std::atomic<std::uint64_t> peak_active_workers{0};
+        std::atomic<std::uint64_t> connection_queue_wait_time_us{0};
+        std::atomic<std::uint64_t> max_connection_queue_wait_us{0};
+    };
+
     static void update_peak(std::atomic<std::uint64_t>& peak, std::uint64_t value);
+    EndpointMetrics& endpoint_metrics(EndpointGroupKind endpoint);
+    const EndpointMetrics& endpoint_metrics(EndpointGroupKind endpoint) const;
 
     std::atomic<std::uint64_t> connections_accepted_{0};
     std::atomic<std::uint64_t> connections_rejected_{0};
@@ -134,6 +170,10 @@ private:
     std::atomic<std::uint64_t> peak_queued_connections_{0};
     std::atomic<std::uint64_t> current_active_workers_{0};
     std::atomic<std::uint64_t> peak_active_workers_{0};
+    std::atomic<std::uint64_t> connection_queue_wait_time_us_{0};
+    std::atomic<std::uint64_t> max_connection_queue_wait_us_{0};
+    EndpointMetrics responses_endpoint_metrics_;
+    EndpointMetrics chat_endpoint_metrics_;
     std::atomic<std::uint64_t> requests_started_{0};
     std::atomic<std::uint64_t> requests_completed_{0};
     std::atomic<std::uint64_t> requests_cancelled_{0};

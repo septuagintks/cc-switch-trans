@@ -94,7 +94,8 @@ def main():
 
     responses_upstream_port = 19081
     chat_upstream_port = 19082
-    proxy_port = 15740
+    responses_proxy_port = 15740
+    chat_proxy_port = 15741
 
     upstreams = [
         subprocess.Popen(
@@ -109,6 +110,43 @@ def main():
     try:
         wait_for_port(responses_upstream_port)
         wait_for_port(chat_upstream_port)
+
+        atomic_responses_port = 15742
+        atomic_chat_port = 15743
+        atomic_log_path = TMP / "integration-atomic-start.log"
+        if atomic_log_path.exists():
+            atomic_log_path.unlink()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                blocker.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            blocker.bind(("127.0.0.1", atomic_chat_port))
+            blocker.listen(1)
+            failed_proxy = subprocess.Popen(
+                [
+                    str(exe),
+                    "run",
+                    "--responses-upstream-url",
+                    f"http://127.0.0.1:{responses_upstream_port}",
+                    "--chat-upstream-url",
+                    f"http://127.0.0.1:{chat_upstream_port}",
+                    "--responses-listen-port",
+                    str(atomic_responses_port),
+                    "--chat-listen-port",
+                    str(atomic_chat_port),
+                    "--log-path",
+                    str(atomic_log_path),
+                ],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            assert_true(failed_proxy.wait(timeout=5) != 0, "second listener bind failure stops startup")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                assert_true(
+                    probe.connect_ex(("127.0.0.1", atomic_responses_port)) != 0,
+                    "first listener is released after atomic startup failure",
+                )
+
         proxy = subprocess.Popen(
             [
                 str(exe),
@@ -120,7 +158,9 @@ def main():
                 "--chat-upstream-path",
                 "/custom/chat/completions",
                 "--responses-listen-port",
-                str(proxy_port),
+                str(responses_proxy_port),
+                "--chat-listen-port",
+                str(chat_proxy_port),
                 "--log-path",
                 str(log_path),
                 "--redact-sensitive",
@@ -148,10 +188,11 @@ def main():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        wait_for_port(proxy_port)
+        wait_for_port(responses_proxy_port)
+        wait_for_port(chat_proxy_port)
 
         status, headers, data = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses/?trace=integration",
             body="abcdef",
@@ -164,7 +205,7 @@ def main():
         assert_true(payload["server_port"] == responses_upstream_port, "responses upstream selected")
 
         status, _, data = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses?trace=no-slash",
             body="noslash",
@@ -176,7 +217,7 @@ def main():
         assert_true(payload["body"] == "noslash", "responses no-slash body")
 
         status, _, data = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses",
             body="\r\n\r\n{\"ok\":true}",
@@ -186,31 +227,55 @@ def main():
         assert_true(status == 200, "responses json whitespace status")
         assert_true(payload["body"] == "{\"ok\":true}", "responses json whitespace trimmed")
 
-        status, data = raw_extra_separator_request(proxy_port, "/v1/responses", "{\"raw\":true}")
+        status, data = raw_extra_separator_request(responses_proxy_port, "/v1/responses", "{\"raw\":true}")
         payload = json.loads(data)
         assert_true(status == 200, "responses raw extra separator status")
         assert_true(payload["body"] == "{\"raw\":true}", "responses raw extra separator body")
 
-        status, _, data = request(proxy_port, "POST", "/v1/chat/completions", body="chat")
+        status, _, data = request(chat_proxy_port, "POST", "/v1/chat/completions", body="chat")
         payload = json.loads(data)
         assert_true(status == 200, "chat status")
         assert_true(payload["path"] == "/custom/chat/completions", "chat path")
         assert_true(payload["server_port"] == chat_upstream_port, "chat upstream selected")
 
         status, _, data = request(
-            proxy_port,
+            responses_proxy_port,
             "GET",
             "/v1/usage?scope=all",
-            headers={"Authorization": "Bearer usage-secret"},
+            headers={"Authorization": "Bearer responses-usage-secret"},
         )
         payload = json.loads(data)
         assert_true(status == 200, "usage status")
         assert_true(payload["path"] == "/v1/usage?scope=all", "usage path")
         assert_true(payload["remaining"] == 12.5, "usage remaining")
-        assert_true(payload["server_port"] == responses_upstream_port, "usage shared upstream selected")
+        assert_true(payload["server_port"] == responses_upstream_port, "Responses Usage upstream selected")
+
+        status, _, data = request(
+            chat_proxy_port,
+            "GET",
+            "/v1/usage?scope=chat",
+            headers={"Authorization": "Bearer chat-usage-secret"},
+        )
+        payload = json.loads(data)
+        assert_true(status == 200, "Chat Usage status")
+        assert_true(payload["server_port"] == chat_upstream_port, "Chat Usage upstream selected")
+
+        assert_true(
+            request(chat_proxy_port, "POST", "/v1/usage", body="{}")[0] == 405,
+            "Chat Usage wrong method is rejected locally",
+        )
+
+        assert_true(
+            request(responses_proxy_port, "POST", "/v1/chat/completions", body="{}")[0] == 404,
+            "Chat main route is rejected on Responses endpoint",
+        )
+        assert_true(
+            request(chat_proxy_port, "POST", "/v1/responses", body="{}")[0] == 404,
+            "Responses main route is rejected on Chat endpoint",
+        )
 
         status, _, _ = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses?response_bytes=2048",
             body="{}",
@@ -218,10 +283,10 @@ def main():
         )
         assert_true(status == 502, "buffered response size limit")
 
-        status, _, _ = request(proxy_port, "POST", "/unknown", body="x")
+        status, _, _ = request(responses_proxy_port, "POST", "/unknown", body="x")
         assert_true(status == 404, "unknown path status")
 
-        status, _, _ = request(proxy_port, "GET", "/v1/responses/")
+        status, _, _ = request(responses_proxy_port, "GET", "/v1/responses/")
         assert_true(status == 405, "method status")
 
         events_after_error = read_json_lines(log_path)
@@ -231,7 +296,7 @@ def main():
             delayed = [
                 executor.submit(
                     request,
-                    proxy_port,
+                    responses_proxy_port,
                     "POST",
                     "/v1/responses?stream=sse&chunk_count=3&chunk_interval_ms=300",
                     "{}",
@@ -241,7 +306,7 @@ def main():
             ]
             time.sleep(0.15)
             overloaded_status, _, _ = request(
-                proxy_port,
+                responses_proxy_port,
                 "POST",
                 "/v1/responses",
                 body="{}",
@@ -252,7 +317,7 @@ def main():
                 assert_true(future.result()[0] == 200, "accepted delayed request")
 
         status, _, _ = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses?delay_ms=800",
             body="{}",
@@ -260,12 +325,12 @@ def main():
         )
         assert_true(status == 504, f"response header timeout status: {status}")
 
-        fire_and_disconnect(proxy_port, "/v1/responses?delay_ms=5000")
-        fire_and_disconnect(proxy_port, "/v1/responses?delay_ms=5000")
+        fire_and_disconnect(responses_proxy_port, "/v1/responses?delay_ms=5000")
+        fire_and_disconnect(responses_proxy_port, "/v1/responses?delay_ms=5000")
         time.sleep(0.4)
         cancellation_started = time.monotonic()
         status, _, _ = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses",
             body="{}",
@@ -276,7 +341,7 @@ def main():
         assert_true(cancellation_elapsed < 2, "client cancellation completes promptly")
 
         status, headers, data = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses/?stream=sse",
             body="{}",
@@ -287,7 +352,7 @@ def main():
         assert_true(f"data: {responses_upstream_port}-chunk-0".encode() in data and b"data: [DONE]" in data, "sse body")
 
         status, _, idle_data = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses/?stream=sse&chunk_count=3&chunk_interval_ms=700",
             body="{}",
@@ -296,7 +361,7 @@ def main():
         assert_true(status == 200 and b"chunk-0" in idle_data, "stream idle timeout preserves sent prefix")
 
         status, _, total_data = request(
-            proxy_port,
+            responses_proxy_port,
             "POST",
             "/v1/responses/?stream=sse&chunk_count=10&chunk_interval_ms=250",
             body="{}",
@@ -307,7 +372,12 @@ def main():
         time.sleep(0.25)
         events = read_json_lines(log_path)
         rendered = "\n".join(json.dumps(event, separators=(",", ":")) for event in events)
-        assert_true("usage-secret" not in rendered, "usage request is not logged")
+        assert_true("responses-usage-secret" not in rendered, "Responses Usage request is not logged")
+        assert_true("chat-usage-secret" not in rendered, "Chat Usage request is not logged")
+        usage_events = [event for event in events if event.get("event") == "usage_completed"]
+        assert_true(any(event.get("endpoint") == "responses" and event.get("task") == "responses_usage" and event.get("forwarded") is True and event.get("upstream_url", "").endswith(str(responses_upstream_port)) for event in usage_events), "Responses Usage summary logged")
+        assert_true(any(event.get("endpoint") == "chat" and event.get("task") == "chat_usage" and event.get("forwarded") is True and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in usage_events), "Chat Usage summary logged")
+        assert_true(any(event.get("endpoint") == "chat" and event.get("task") == "chat_usage" and event.get("forwarded") is False and event.get("status_code") == 405 for event in usage_events), "local Usage rejection is distinguished from forwarding")
         assert_true("Bearer secret" not in rendered, "authorization redacted")
         assert_true('"Authorization":"***"' in rendered, "redacted marker exists")
         assert_true('"body":"abcdef"' in rendered, "request body logged")
@@ -325,8 +395,8 @@ def main():
         assert_true(stream_sent and "body" not in stream_sent[-1], "stream response body is not aggregated")
         assert_true(stream_sent[-1].get("streamed_body_size", 0) > 0, "streamed body size counted")
         upstream_requests = [event for event in events if event.get("event") == "upstream_request"]
-        assert_true(any(event.get("task") == "responses" and event.get("rewrite_reason") == "upstream_not_findcg" for event in upstream_requests), "Responses rewrite decision logged")
-        assert_true(any(event.get("task") == "chat_completions" and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in upstream_requests), "Chat task target logged")
+        assert_true(any(event.get("task") == "responses" and event.get("endpoint") == "responses" and event.get("rewrite_reason") == "upstream_not_findcg" for event in upstream_requests), "Responses rewrite decision logged")
+        assert_true(any(event.get("task") == "chat_completions" and event.get("endpoint") == "chat" and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in upstream_requests), "Chat task target logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 404 for event in events), "404 logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 405 for event in events), "405 logged")
         cancelled = [event for event in events if event.get("event") == "request_cancelled"]
@@ -346,6 +416,12 @@ def main():
         assert_true(latest_snapshot.get("upstream_response_header_timeouts", 0) >= 1, "header timeout counted")
         assert_true(latest_snapshot.get("upstream_stream_idle_timeouts", 0) >= 1, "stream idle timeout counted")
         assert_true(latest_snapshot.get("upstream_total_timeouts", 0) >= 1, "total timeout counted")
+        assert_true(latest_snapshot.get("responses_connections_accepted", 0) > 0, "Responses endpoint connections counted")
+        assert_true(latest_snapshot.get("chat_connections_accepted", 0) > 0, "Chat endpoint connections counted")
+        assert_true(latest_snapshot.get("responses_peak_active_workers", 0) > 0, "Responses endpoint workers counted")
+        assert_true(latest_snapshot.get("chat_peak_active_workers", 0) > 0, "Chat endpoint workers counted")
+        assert_true("responses_max_connection_queue_wait_us" in latest_snapshot, "Responses queue wait exposed")
+        assert_true("chat_max_connection_queue_wait_us" in latest_snapshot, "Chat queue wait exposed")
 
         print("integration ok")
     finally:

@@ -296,9 +296,7 @@ bool validate_config(const AppConfig& config, std::string& error) {
         || !validate_endpoint(config.chat_endpoint, "Chat endpoint", error)) {
         return false;
     }
-    if (config.responses_endpoint.enabled()
-        && config.chat_endpoint.enabled()
-        && config.responses_endpoint.listen_host == config.chat_endpoint.listen_host
+    if (config.responses_endpoint.listen_host == config.chat_endpoint.listen_host
         && config.responses_endpoint.listen_port == config.chat_endpoint.listen_port) {
         error = "Responses and Chat endpoints must not use the same listen address";
         return false;

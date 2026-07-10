@@ -6,7 +6,7 @@
 
 The current unreleased source reports version `0.3.0` and runs on Windows. It has entered the breaking phase 10 CLI: start it with `ccs-trans run`, use endpoint-prefixed options, and do not use the removed shared or legacy options. Responses and Chat Completions have independent endpoint-group configuration, and each group owns its Usage route and upstream path.
 
-The logger reliability and canonical CLI/config work packages are complete. The current intermediate network host still binds only the Responses listener and temporarily routes both main tasks through it; the next work package activates `127.0.0.1:15723` for Responses plus its Usage route and `127.0.0.1:15724` for Chat Completions plus its Usage route. Persistent profiles and logs will then live under the same per-user `.ccs-trans` root, with the default log at `.ccs-trans/logs/ccs-trans.log`. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order.
+The logger reliability, canonical CLI/config, and dual-listener work packages are complete. `127.0.0.1:15723` owns Responses plus its Usage route; `127.0.0.1:15724` owns Chat Completions plus its Usage route. Both listeners share one bounded connection limit, worker pool, logger, metrics set, and process-level transport session. Persistent profiles and logs will next move under the same per-user `.ccs-trans` root, with the default log at `.ccs-trans/logs/ccs-trans.log`. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order.
 
 Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
 
@@ -15,19 +15,21 @@ The packaged `0.2.0` executable passed a real Codex -> ccs-trans -> findcg Respo
 By default it listens on:
 
 ```text
-http://127.0.0.1:15723
+http://127.0.0.1:15723  Responses endpoint
+http://127.0.0.1:15724  Chat endpoint
 ```
 
 Supported local routes:
 
 ```text
-POST /v1/responses
-POST /v1/responses/
-POST /v1/chat/completions
-GET  /v1/usage
+15723: POST /v1/responses
+15723: POST /v1/responses/
+15723: GET  /v1/usage
+15724: POST /v1/chat/completions
+15724: GET  /v1/usage
 ```
 
-`/v1/usage` is forwarded transparently and is not written to request chain logs.
+Each `/v1/usage` is forwarded to the upstream owned by its receiving port. Usage omits headers and bodies from request-chain logs; a minimal `usage_completed` event records endpoint, task, target, forwarding status, HTTP status, and duration.
 
 ## Build
 
@@ -50,7 +52,7 @@ Responses endpoint:
 ccs-trans run --responses-upstream-url https://www.findcg.com
 ```
 
-Both endpoint groups during the current single-listener work package:
+Both endpoint groups:
 
 ```text
 ccs-trans run \
@@ -100,7 +102,7 @@ With `--redact-sensitive false` and `--log-body true`, logs can contain live Aut
 
 Each timeout has one explicit option; there is no shared timeout fallback. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
 
-The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. Phase 10 logger reliability keeps in-flight batches inside the bounded pending capacity and reports separate batch-window, backpressure, file write/flush, oldest-record-age, and writer-health metrics. The endpoint-group model and canonical CLI are now frozen; dual-listener routing is next, followed by persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS.
+The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. Phase 10 logger reliability keeps in-flight batches inside the bounded pending capacity and reports separate batch-window, backpressure, file write/flush, oldest-record-age, and writer-health metrics. Endpoint-level accepted/rejected/active/queued/queue-wait metrics expose fairness across the shared worker pool. Persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS are next.
 
 ## Verify
 
