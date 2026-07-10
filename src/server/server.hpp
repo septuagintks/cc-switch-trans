@@ -1,9 +1,9 @@
 #pragma once
 
-#include "config.hpp"
-#include "http_types.hpp"
-#include "logger.hpp"
-#include "proxy.hpp"
+#include "config/config.hpp"
+#include "core/http_types.hpp"
+#include "logging/logger.hpp"
+#include "transport/proxy.hpp"
 
 #include <functional>
 #include <string>

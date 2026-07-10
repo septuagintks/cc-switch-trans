@@ -1,6 +1,6 @@
-#include "proxy.hpp"
+#include "transport/proxy.hpp"
 
-#include "header_filter.hpp"
+#include "transport/header_filter.hpp"
 
 #include <algorithm>
 #include <cctype>

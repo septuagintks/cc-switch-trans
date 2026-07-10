@@ -7,7 +7,7 @@ import sys
 import time
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 TMP = ROOT / "tmp"
 
 
@@ -81,7 +81,7 @@ def main():
     proxy_port = 15740
 
     upstream = subprocess.Popen(
-        [sys.executable, str(ROOT / "tests" / "mock_upstream.py"), str(upstream_port)],
+        [sys.executable, str(ROOT / "tests" / "integration" / "mock_upstream.py"), str(upstream_port)],
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

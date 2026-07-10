@@ -1,6 +1,6 @@
-#include "server.hpp"
+#include "server/server.hpp"
 
-#include "request_id.hpp"
+#include "core/request_id.hpp"
 
 #include <algorithm>
 #include <atomic>

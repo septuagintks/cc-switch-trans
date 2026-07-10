@@ -1,5 +1,5 @@
-#include "config.hpp"
-#include "server.hpp"
+#include "config/config.hpp"
+#include "server/server.hpp"
 
 #include <iostream>
 

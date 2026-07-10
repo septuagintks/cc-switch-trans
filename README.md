@@ -56,11 +56,31 @@ Common options:
 Start the mock upstream:
 
 ```text
-python tests/mock_upstream.py 19080
+python tests/integration/mock_upstream.py 19080
 ```
 
 Run integration tests:
 
 ```text
-python tests/run_integration.py build/ccs-trans.exe
+python tests/integration/run_integration.py build/ccs-trans.exe
 ```
+
+## Repository Layout
+
+```text
+docs/                  Design, development plan, and repository structure
+src/config/            Configuration model and CLI parsing
+src/core/              Platform-neutral HTTP types and request IDs
+src/hosts/             Executable entry points
+src/logging/           Structured logging
+src/server/            Local HTTP server and request orchestration
+src/transport/         Header filtering and upstream transport
+tests/integration/     Mock upstream and end-to-end tests
+```
+
+`build/`, `build-release/`, `dist/`, `logs/`, and `tmp/` are generated local directories and are not source-of-truth inputs. See [docs/ProjectStructure.md](docs/ProjectStructure.md) for ownership and extension rules.
+
+Design documents:
+
+- [Design](docs/Design.md)
+- [Development plan](docs/DevelopmentPlan.md)

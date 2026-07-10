@@ -1,7 +1,7 @@
 #pragma once
 
-#include "config.hpp"
-#include "http_types.hpp"
+#include "config/config.hpp"
+#include "core/http_types.hpp"
 
 #include <stdexcept>
 #include <functional>

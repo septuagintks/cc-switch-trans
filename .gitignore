@@ -33,3 +33,8 @@ compile_commands.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Python test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
