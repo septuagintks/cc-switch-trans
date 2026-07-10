@@ -7,8 +7,8 @@
 | 文档性质       | `0.3.0` 实现基线                       |
 | 当前程序版本   | `0.3.0`                                |
 | 当前平台       | Windows x64                            |
-| 默认监听地址   | `http://127.0.0.1:15723`               |
-| 当前阶段主目标 | 持久配置与不可变运行快照                |
+| 当前默认监听   | `http://127.0.0.1:15723`               |
+| 当前阶段主目标 | 日志可靠性、双端口与持久 profile         |
 
 本文描述“要构建什么”以及必须遵守的行为和架构边界。具体构建顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，目录归属见 [ProjectStructure.md](ProjectStructure.md)。
 
@@ -30,7 +30,7 @@ POST /v1/chat/completions
 GET  /v1/usage
 ```
 
-Responses 与 Chat Completions 是两个可并行、可指向不同上游、可拥有不同改写规则的主任务。Usage 是保留的辅助透明转发入口。
+`0.3.0` 中 Responses 与 Chat Completions 是两个可并行、可指向不同上游、可拥有不同改写规则的主任务，Usage 是共享上游派生出的辅助入口。阶段 10 会把它替换成两个独立监听端点组：Responses + 对应 Usage 使用 `15723`，Chat Completions + 对应 Usage 使用 `15724`。
 
 ## 当前基线
 
@@ -188,6 +188,8 @@ struct AppConfig {
 
 ### CLI 参数
 
+以下 `0.3.0` 参数表只描述当前实现。阶段 10 是明确的破坏性升级：不继续兼容 legacy 参数、共享回退参数或别名。
+
 `0.2.0` 已新增：
 
 | 参数                        | 作用                           | 回退                        |
@@ -242,7 +244,64 @@ ccs-trans \
   --log-path ./logs/ccs-trans.log
 ```
 
+### 阶段 10 目标 CLI
+
+配置字段和命令行参数遵守一对一规则：一个参数只修改一个字段，一个字段只有一个参数名。没有短参数、同义参数、共享 fallback 或根据参数组合改变语义的隐藏模式。
+
+端点组参数固定为：
+
+| 参数                              | 唯一作用                                      |
+| --------------------------------- | --------------------------------------------- |
+| `--responses-listen-host`         | Responses 端点组监听 host                     |
+| `--responses-listen-port`         | Responses 端点组监听 port，默认 `15723`       |
+| `--responses-upstream-url`        | Responses 端点组唯一 base upstream URL        |
+| `--responses-local-path`          | Responses 本地主路由                          |
+| `--responses-upstream-path`       | Responses 上游主路由                          |
+| `--responses-usage-local-path`    | Responses 端点组本地 Usage 路由               |
+| `--responses-usage-upstream-path` | Responses 端点组上游 Usage 路由               |
+| `--chat-listen-host`              | Chat 端点组监听 host                          |
+| `--chat-listen-port`              | Chat 端点组监听 port，默认 `15724`             |
+| `--chat-upstream-url`             | Chat 端点组唯一 base upstream URL             |
+| `--chat-local-path`               | Chat Completions 本地主路由                   |
+| `--chat-upstream-path`            | Chat Completions 上游主路由                   |
+| `--chat-usage-local-path`         | Chat 端点组本地 Usage 路由                    |
+| `--chat-usage-upstream-path`      | Chat 端点组上游 Usage 路由                    |
+
+运行与 profile 命令使用单一职责形式：
+
+```text
+ccs-trans run --profile <name> [canonical overrides]
+ccs-trans profile list
+ccs-trans profile show <name>
+ccs-trans profile create <name>
+ccs-trans profile remove <name>
+ccs-trans profile use <name>
+ccs-trans profile set <name> <key> <value>
+ccs-trans profile unset <name> <key>
+```
+
+一次 `profile set` 或 `profile unset` 只处理一个键。`create` 不接受一组含义可变的初始化参数；需要的字段通过后续独立 `set` 命令写入。运行时覆盖可以并列出现，但每个参数仍只覆盖自己的唯一字段，且不会自动写回 profile。
+
+阶段 10 删除：
+
+```text
+--upstream-url
+--listen-host
+--listen-port
+--responses-path
+--chat-path
+--usage-path
+--upstream-responses-path
+--upstream-chat-path
+--upstream-usage-path
+--timeout-ms
+--max-body-size
+-h
+```
+
 ## 路由行为
+
+### `0.3.0` 当前行为
 
 | 方法和本地路径              | 任务             | 默认上游路径           | 改写                                |
 | --------------------------- | ---------------- | ---------------------- | ----------------------------------- |
@@ -258,6 +317,17 @@ ccs-trans \
 3. 主任务路由存在但任务未配置时返回明确的本地配置错误，不能误用另一个任务的上游。
 4. 未知路径返回 `404 invalid_request_error`。
 5. 已知路径使用错误方法时返回 `405` 并包含 `Allow`。
+
+### 阶段 10 双端口目标行为
+
+| 接收端点              | 方法和本地路径              | 目标                          | 任务标识                 |
+| --------------------- | --------------------------- | ----------------------------- | ------------------------ |
+| `127.0.0.1:15723`     | `POST /v1/responses[/]`     | Responses endpoint upstream   | `responses`              |
+| `127.0.0.1:15723`     | `GET /v1/usage`             | Responses endpoint upstream   | `responses_usage`        |
+| `127.0.0.1:15724`     | `POST /v1/chat/completions` | Chat endpoint upstream        | `chat_completions`       |
+| `127.0.0.1:15724`     | `GET /v1/usage`             | Chat endpoint upstream        | `chat_usage`             |
+
+端口是 Usage 归属的一部分。同一个 `/v1/usage` 路径在 `15723` 和 `15724` 上必须选择不同端点组，不能再保留全局 `TaskConfig usage` 或让一个共享 CLI 参数决定 Usage 上游。向错误端口发送另一组主路由时返回 `404`，不得跨组转发。
 
 ## findcg Responses 改写
 
@@ -419,6 +489,8 @@ rewritten_body_size
 - `--redact-sensitive false` 与 `--log-body true` 会保留凭据头和完整正文；此类日志不得进入 Git、测试 fixture 或发布包。
 - 普通事件由单 writer 批量写入，最长约 `100 ms` 刷盘一次；错误事件必须触发立即 flush。
 - 异步日志队列不能静默丢事件；队列满时对生产者施加背压。
+- 正常磁盘和未满队列下，普通事件超过批写窗口仍不可见属于缺陷；指标必须分别呈现批次等待、队列背压和文件 flush 耗时。
+- writer I/O 失败必须进入可观察的失败状态并反馈给宿主，不能让调用方误以为日志仍在工作。
 - 请求/响应 body 日志和改写诊断不能额外扩大敏感信息范围。
 
 ## 错误模型
@@ -482,9 +554,27 @@ JSON 首版使用仓库固定版本的 `nlohmann/json` DOM，只在命中 findcg
 
 长期资源不变量：所有内部队列有上限；非改写请求不承担 JSON DOM 成本；SSE 内存不随累计流长度线性增长；客户端断开后对应上游工作必须可终止。具体 benchmark、指标 schema 和优化顺序以 DevelopmentPlan 阶段 9 为准。
 
+### 阶段 10 双 listener 性能模型
+
+阶段 10 不把两个端点实现为两套完整 `Server` 资源。目标结构是两个轻量 listener 向同一个有界执行层提交带 endpoint 标识的连接，请求继续共享 logger、metrics 和进程级 WinHTTP session。WinHTTP 自身按 scheme/host/port 管理连接复用，不需要为 Responses 与 Chat 人为复制 session。
+
+```text
+responses listener :15723 --\
+                              -> bounded worker pool -> shared task pipeline/transport
+chat listener      :15724 --/                         -> shared logger/metrics
+```
+
+常规容量仍按两个端点合计 `8–16` 路 SSE 计算。由于长 SSE 占用同步 worker，worker 数必须为 16 路常规流之外保留短请求余量；候选默认值为 18，并以 `mixed-16` benchmark 验证两组 Usage 不被长流饿死。若将来要保证每个端点各 16 路，则建立 32 路容量 profile 后再决定增加线程、端点配额或迁移异步 I/O。
+
+双 listener 的公平性先通过 endpoint 维度的 accepted、active、queued、rejected 和 queue-wait 指标观察，不预先引入多级调度器。只有常规 profile 出现可复现饥饿时，才增加端点配额或独立队列。
+
+配置文件不属于请求热路径。启动/reload 完成 JSON 解析、schema 校验和 profile 合并后生成不可变 snapshot；每个请求只捕获一次 snapshot。原子保存不持有请求执行、logger 或 transport 锁，旧 snapshot/transport generation 随进行中请求自然释放。
+
+阶段 10 的性能回归以修正后的 `0.3.0` Release benchmark 为基线：同机至少三次取中位数，desktop p50/p95 附加 TTFB 暂定最多退化 15%/20%，峰值 Working Set 最多增长 15%。正确性、日志完整性、Usage 可用性和有界资源优先于这些数值；指标噪声超界时先扩大样本，不通过减少日志规避回归。
+
 ## 生命周期与后续宿主
 
-`0.2.0` 的 `AppService` 已提供 `start/stop/status/wait`，供 CLI 统一管理服务。长期接口在持久配置阶段增加 reload 和配置快照：
+`0.2.0` 的 `AppService` 已提供 `start/stop/status/wait`，供 CLI 统一管理服务。长期接口在持久配置阶段增加 reload 和配置快照，并把两个 listener 作为同一服务实例的原子启动/停止资源：
 
 ```text
 Stopped -> Starting -> Running -> Stopping -> Stopped
@@ -508,7 +598,7 @@ reload(new_snapshot)
 
 命令行覆盖默认不自动写回。配置文件使用 `schema_version`、完整校验和原子替换，不保存转发请求中的 Authorization/API key/Cookie。
 
-持久根目录固定为 Windows `%USERPROFILE%/.ccs-trans/`、macOS `~/.ccs-trans/`。代码通过系统 API 获取当前用户 home，环境变量和 `~` 只用于文档显示。该选择便于 CLI 与图形宿主共享，也意味着 Windows 配置不参与 Roaming Profile、macOS 首版按非沙盒发行；未来若采用 App Sandbox，需要提供容器目录迁移或兼容层。
+持久根目录固定为 Windows `%USERPROFILE%/.ccs-trans/`、macOS `~/.ccs-trans/`。代码通过系统 API 获取当前用户 home，环境变量和 `~` 只用于文档显示。默认布局为 `config.json`、`logs/ccs-trans.log` 和 `state/`；配置文件、日志和运行状态因此位于同一个应用数据根目录，但职责仍以子路径隔离。该选择便于 CLI 与图形宿主共享，也意味着 Windows 配置不参与 Roaming Profile、macOS 首版按非沙盒发行；未来若采用 App Sandbox，需要提供容器目录迁移或兼容层。
 
 Windows 托盘和 macOS 菜单栏使用同一组宿主命令：查询状态、启动/停止、重新加载配置、打开日志目录、打开配置、切换当前用户开机/登录自启、退出。自启勾选状态以操作系统实际注册为准，配置文件不能作为唯一事实来源。
 
@@ -624,4 +714,4 @@ CMake 继续保持 core、平台实现和 host 分层。macOS 先交付 `arm64` 
 6. 同 profile 前后对比与同步/异步 I/O 决策记录
 ```
 
-阶段 9 没有混入 tray、持久配置或 macOS transport。修正后的 8/16 路结果不支持立即重写完整异步 I/O；下一步按 DevelopmentPlan 阶段 10 实现配置文件 schema、平台用户目录、CLI 覆盖层和不可变运行快照。
+阶段 9 没有混入 tray、持久配置或 macOS transport。修正后的 8/16 路结果不支持立即重写完整异步 I/O；下一步按 DevelopmentPlan 阶段 10 依次修复日志停滞、拆分 `15723`/`15724` 端点组、删除 legacy CLI，再实现 profile schema、平台用户目录和不可变运行快照。

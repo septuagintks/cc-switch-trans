@@ -4,7 +4,9 @@
 
 ## Status
 
-The current source version is `0.3.0` and runs on Windows. Responses and Chat Completions can use independent upstream targets. The legacy `--upstream-url` remains the shared fallback and supplies the Usage upstream.
+The current source version is `0.3.0` and runs on Windows. Responses and Chat Completions can use independent upstream targets. In this current release, the legacy `--upstream-url` remains the shared fallback and supplies the Usage upstream.
+
+The next release intentionally removes legacy CLI compatibility. Its target layout uses `127.0.0.1:15723` for Responses plus its Usage route and `127.0.0.1:15724` for Chat Completions plus its Usage route. Persistent profiles and logs will live under the same per-user `.ccs-trans` root, with the default log at `.ccs-trans/logs/ccs-trans.log`. Implementation is split into independently tested work packages for logger reliability, the canonical CLI/config model, dual listeners, persistent profiles, and reload/performance regression. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order; these changes are not yet part of `0.3.0`.
 
 Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
 
@@ -90,7 +92,7 @@ With `--redact-sensitive false` and `--log-body true`, logs can contain live Aut
 
 `--timeout-ms` remains the fallback for all stage timeouts except the optional total timeout. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
 
-The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. The next development stage is persistent configuration under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS.
+The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. The next development stage starts with logger reliability and dual-listener routing, then adds persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS. A new mixed-load benchmark will keep both Usage routes responsive while 16 SSE streams are active.
 
 ## Verify
 
