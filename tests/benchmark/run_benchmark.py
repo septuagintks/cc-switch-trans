@@ -544,9 +544,10 @@ def main():
             proxy_log = TMP / f"proxy-{nonce}-{name}.log"
             proxy_command = [
                 str(exe),
-                "--upstream-url",
+                "run",
+                "--responses-upstream-url",
                 f"http://127.0.0.1:{upstream_port}",
-                "--listen-port",
+                "--responses-listen-port",
                 str(proxy_port),
                 "--log-path",
                 str(proxy_log),

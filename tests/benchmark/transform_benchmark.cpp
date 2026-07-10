@@ -38,18 +38,18 @@ int main(int argc, char** argv) {
 
     ccs::TaskConfig task{
         ccs::ApiTaskKind::Responses,
-        true,
         "POST",
         "/v1/responses/",
-        {"https://www.findcg.com", "/v1/responses/"},
+        "/v1/responses/",
         {"remove_findcg_image_gen"},
         true,
     };
+    const ccs::UpstreamTarget upstream{"https://www.findcg.com", "/v1/responses/"};
     ccs::FindcgResponsesTransform transform;
     const auto body = make_body(body_size);
 
     for (int i = 0; i < 5; ++i) {
-        (void)transform.apply(task, body);
+        (void)transform.apply(task, upstream, body);
     }
 
     std::vector<long long> durations_us;
@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     const auto benchmark_start = std::chrono::steady_clock::now();
     for (int i = 0; i < iterations; ++i) {
         const auto started = std::chrono::steady_clock::now();
-        const auto result = transform.apply(task, body);
+        const auto result = transform.apply(task, upstream, body);
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started);
         if (!result.modified || result.removed_tools.size() != 1 || !result.rewritten_body) {

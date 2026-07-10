@@ -12,35 +12,49 @@
 namespace ccs {
 
 struct AppConfig {
-    std::string listen_host = "127.0.0.1";
-    std::uint16_t listen_port = 15723;
-
-    TaskConfig responses{
-        ApiTaskKind::Responses,
-        false,
-        "POST",
-        "/v1/responses/",
-        {"", "/v1/responses/"},
-        {"remove_findcg_image_gen"},
-        true,
+    EndpointGroupConfig responses_endpoint{
+        EndpointGroupKind::Responses,
+        "127.0.0.1",
+        15723,
+        "",
+        {
+            ApiTaskKind::Responses,
+            "POST",
+            "/v1/responses/",
+            "/v1/responses/",
+            {"remove_findcg_image_gen"},
+            true,
+        },
+        {
+            ApiTaskKind::ResponsesUsage,
+            "GET",
+            "/v1/usage",
+            "/v1/usage",
+            {},
+            false,
+        },
     };
-    TaskConfig chat_completions{
-        ApiTaskKind::ChatCompletions,
-        false,
-        "POST",
-        "/v1/chat/completions",
-        {"", "/v1/chat/completions"},
-        {},
-        true,
-    };
-    TaskConfig usage{
-        ApiTaskKind::Usage,
-        false,
-        "GET",
-        "/v1/usage",
-        {"", "/v1/usage"},
-        {},
-        false,
+    EndpointGroupConfig chat_endpoint{
+        EndpointGroupKind::Chat,
+        "127.0.0.1",
+        15724,
+        "",
+        {
+            ApiTaskKind::ChatCompletions,
+            "POST",
+            "/v1/chat/completions",
+            "/v1/chat/completions",
+            {},
+            true,
+        },
+        {
+            ApiTaskKind::ChatUsage,
+            "GET",
+            "/v1/usage",
+            "/v1/usage",
+            {},
+            false,
+        },
     };
 
     std::filesystem::path log_path = "./logs/ccs-trans.log";
@@ -68,6 +82,7 @@ struct ParseResult {
 };
 
 ParseResult parse_args(int argc, char** argv);
+bool validate_config(const AppConfig& config, std::string& error);
 void print_help(std::ostream& os);
 void print_version(std::ostream& os);
 void print_config_summary(std::ostream& os, const AppConfig& config);

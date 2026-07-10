@@ -18,6 +18,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -46,26 +47,43 @@ ccs::ParseResult parse(std::initializer_list<const char*> args) {
 }
 
 void test_config_resolution() {
-    const auto defaults = parse({"--upstream-url", "https://example.com"});
+    const auto defaults = parse({"run", "--responses-upstream-url", "https://example.com"});
     require(defaults.ok, defaults.error);
     require(defaults.config.worker_threads == 32, "default worker threads");
     require(defaults.config.max_connections == 64, "default max connections");
+    require(defaults.config.responses_endpoint.listen_port == 15723, "default Responses port");
+    require(defaults.config.chat_endpoint.listen_port == 15724, "default Chat port");
+    require(defaults.config.responses_endpoint.enabled(), "Responses endpoint enabled");
+    require(!defaults.config.chat_endpoint.enabled(), "Chat endpoint disabled without its URL");
 
-    const auto legacy = parse({"--upstream-url", "https://example.com", "--worker-threads", "8", "--max-connections", "64"});
-    require(legacy.ok, legacy.error);
-    require(legacy.config.responses.enabled, "legacy Responses enabled");
-    require(legacy.config.chat_completions.enabled, "legacy Chat enabled");
-    require(legacy.config.usage.enabled, "legacy Usage enabled");
-    require(legacy.config.responses.upstream.base_url == "https://example.com", "legacy Responses URL");
-
-    const auto split = parse({
+    const auto canonical = parse({
+        "run",
+        "--responses-listen-host", "127.0.0.2",
+        "--responses-listen-port", "16001",
         "--responses-upstream-url", "https://www.findcg.com",
+        "--responses-local-path", "/local/responses",
+        "--responses-upstream-path", "/upstream/responses",
+        "--responses-usage-local-path", "/local/responses/usage",
+        "--responses-usage-upstream-path", "/upstream/responses/usage",
+        "--chat-listen-host", "127.0.0.3",
+        "--chat-listen-port", "16002",
         "--chat-upstream-url", "https://chat.example.com",
-        "--upstream-responses-path", "/legacy",
-        "--responses-upstream-path", "/v2/responses",
+        "--chat-local-path", "/local/chat",
+        "--chat-upstream-path", "/upstream/chat",
+        "--chat-usage-local-path", "/local/chat/usage",
+        "--chat-usage-upstream-path", "/upstream/chat/usage",
+        "--log-path", "custom.log",
+        "--log-level", "debug",
+        "--log-body", "false",
+        "--redact-sensitive", "true",
+        "--body-log-limit", "2048",
         "--worker-threads", "4",
         "--max-connections", "50",
+        "--max-request-body-size", "8192",
+        "--max-response-body-size", "16384",
         "--metrics-interval-ms", "250",
+        "--log-queue-capacity", "4096",
+        "--log-flush-interval-ms", "75",
         "--resolve-timeout-ms", "101",
         "--connect-timeout-ms", "102",
         "--send-timeout-ms", "103",
@@ -73,30 +91,108 @@ void test_config_resolution() {
         "--stream-idle-timeout-ms", "105",
         "--total-timeout-ms", "106",
     });
-    require(split.ok, split.error);
-    require(!split.config.usage.enabled, "Usage disabled without shared URL");
-    require(split.config.responses.upstream.path == "/v2/responses", "canonical path wins");
-    require(split.config.worker_threads == 4, "worker thread option");
-    require(split.config.max_connections == 50, "max connection option");
-    require(split.config.metrics_interval_ms == 250, "metrics interval option");
-    require(split.config.timeouts.resolve_ms == 101, "resolve timeout option");
-    require(split.config.timeouts.connect_ms == 102, "connect timeout option");
-    require(split.config.timeouts.send_ms == 103, "send timeout option");
-    require(split.config.timeouts.response_header_ms == 104, "response header timeout option");
-    require(split.config.timeouts.stream_idle_ms == 105, "stream idle timeout option");
-    require(split.config.timeouts.total_ms == 106, "total timeout option");
+    require(canonical.ok, canonical.error);
+    require(canonical.config.responses_endpoint.listen_host == "127.0.0.2", "Responses host option");
+    require(canonical.config.responses_endpoint.listen_port == 16001, "Responses port option");
+    require(canonical.config.responses_endpoint.main_task.local_path == "/local/responses", "Responses local path");
+    require(canonical.config.responses_endpoint.main_task.upstream_path == "/upstream/responses", "Responses upstream path");
+    require(canonical.config.responses_endpoint.usage_task.local_path == "/local/responses/usage", "Responses Usage local path");
+    require(canonical.config.responses_endpoint.usage_task.upstream_path == "/upstream/responses/usage", "Responses Usage upstream path");
+    require(canonical.config.chat_endpoint.listen_host == "127.0.0.3", "Chat host option");
+    require(canonical.config.chat_endpoint.listen_port == 16002, "Chat port option");
+    require(canonical.config.chat_endpoint.main_task.local_path == "/local/chat", "Chat local path");
+    require(canonical.config.chat_endpoint.main_task.upstream_path == "/upstream/chat", "Chat upstream path");
+    require(canonical.config.chat_endpoint.usage_task.local_path == "/local/chat/usage", "Chat Usage local path");
+    require(canonical.config.chat_endpoint.usage_task.upstream_path == "/upstream/chat/usage", "Chat Usage upstream path");
+    require(canonical.config.log_path == "custom.log", "log path option");
+    require(canonical.config.log_level == "debug", "log level option");
+    require(!canonical.config.log_body, "log body option");
+    require(canonical.config.redact_sensitive, "redaction option");
+    require(canonical.config.body_log_limit == 2048, "body log limit option");
+    require(canonical.config.worker_threads == 4, "worker thread option");
+    require(canonical.config.max_connections == 50, "max connection option");
+    require(canonical.config.max_request_body_size == 8192, "request body limit option");
+    require(canonical.config.max_response_body_size == 16384, "response body limit option");
+    require(canonical.config.metrics_interval_ms == 250, "metrics interval option");
+    require(canonical.config.log_queue_capacity == 4096, "log queue capacity option");
+    require(canonical.config.log_flush_interval_ms == 75, "log flush interval option");
+    require(canonical.config.timeouts.resolve_ms == 101, "resolve timeout option");
+    require(canonical.config.timeouts.connect_ms == 102, "connect timeout option");
+    require(canonical.config.timeouts.send_ms == 103, "send timeout option");
+    require(canonical.config.timeouts.response_header_ms == 104, "response header timeout option");
+    require(canonical.config.timeouts.stream_idle_ms == 105, "stream idle timeout option");
+    require(canonical.config.timeouts.total_ms == 106, "total timeout option");
 
-    const auto legacy_timeout = parse({"--upstream-url", "https://example.com", "--timeout-ms", "1234"});
-    require(legacy_timeout.ok, legacy_timeout.error);
-    require(legacy_timeout.config.timeouts.resolve_ms == 1234, "legacy resolve timeout fallback");
-    require(legacy_timeout.config.timeouts.connect_ms == 1234, "legacy connect timeout fallback");
-    require(legacy_timeout.config.timeouts.send_ms == 1234, "legacy send timeout fallback");
-    require(legacy_timeout.config.timeouts.response_header_ms == 1234, "legacy header timeout fallback");
-    require(legacy_timeout.config.timeouts.stream_idle_ms == 1234, "legacy stream timeout fallback");
-    require(legacy_timeout.config.timeouts.total_ms == 0, "legacy timeout does not impose total deadline");
+    const std::vector<std::string> removed_options = {
+        "--upstream-url",
+        "--listen-host",
+        "--listen-port",
+        "--responses-path",
+        "--chat-path",
+        "--usage-path",
+        "--upstream-responses-path",
+        "--upstream-chat-path",
+        "--upstream-usage-path",
+        "--timeout-ms",
+        "--max-body-size",
+        "--concurrency",
+        "-h",
+    };
+    for (const auto& option : removed_options) {
+        const auto removed = parse({"run", option.c_str(), "1"});
+        require(!removed.ok && removed.error.find("removed option") != std::string::npos,
+            option + " has an explicit migration error");
+    }
 
-    const auto removed = parse({"--upstream-url", "https://example.com", "--concurrency", "4"});
-    require(!removed.ok && removed.error.find("unknown option") != std::string::npos, "old concurrency rejected");
+    const auto missing_command = parse({});
+    require(!missing_command.ok && missing_command.error.find("missing command") != std::string::npos,
+        "run command is required");
+    const auto old_invocation = parse({"--responses-upstream-url", "https://example.com"});
+    require(!old_invocation.ok && old_invocation.error.find("unknown command") != std::string::npos,
+        "options cannot replace the run command");
+    const auto duplicate = parse({
+        "run",
+        "--responses-upstream-url", "https://example.com",
+        "--responses-upstream-url", "https://other.example.com",
+    });
+    require(!duplicate.ok && duplicate.error.find("duplicate option") != std::string::npos,
+        "duplicate options are rejected");
+    const auto bool_alias = parse({
+        "run", "--responses-upstream-url", "https://example.com", "--log-body", "yes",
+    });
+    require(!bool_alias.ok && bool_alias.error.find("true or false") != std::string::npos,
+        "boolean aliases are rejected");
+    const auto same_listener = parse({
+        "run",
+        "--responses-upstream-url", "https://example.com",
+        "--chat-upstream-url", "https://chat.example.com",
+        "--chat-listen-port", "15723",
+    });
+    require(!same_listener.ok && same_listener.error.find("same listen address") != std::string::npos,
+        "enabled endpoints cannot share a listen address");
+    const auto overlapping_routes = parse({
+        "run",
+        "--responses-upstream-url", "https://example.com",
+        "--responses-local-path", "/same/",
+        "--responses-usage-local-path", "/same",
+    });
+    require(!overlapping_routes.ok && overlapping_routes.error.find("must be different") != std::string::npos,
+        "same-endpoint routes cannot overlap after canonicalization");
+    const auto query_in_path = parse({
+        "run",
+        "--responses-upstream-url", "https://example.com",
+        "--responses-upstream-path", "/v1/responses?fixed=true",
+    });
+    require(!query_in_path.ok && query_in_path.error.find("query or fragment") != std::string::npos,
+        "configured paths cannot embed queries");
+
+    std::ostringstream help;
+    ccs::print_help(help);
+    const auto help_text = help.str();
+    require(help_text.find("ccs-trans run [options]") != std::string::npos, "help documents run command");
+    require(help_text.find("--responses-usage-upstream-path") != std::string::npos, "help documents canonical Usage option");
+    require(help_text.find("--upstream-url") == std::string::npos, "help omits removed shared upstream option");
+    require(help_text.find(", -h") == std::string::npos, "help omits removed short alias");
 }
 
 void test_url_and_router() {
@@ -107,27 +203,39 @@ void test_url_and_router() {
     require(ccs::is_findcg_host(parsed.host), "findcg matched");
     require(!ccs::is_findcg_host("findcg.com.example.org"), "suffix host rejected");
 
-    const auto config_result = parse({"--upstream-url", "https://example.com"});
+    const auto config_result = parse({
+        "run",
+        "--responses-upstream-url", "https://responses.example.com",
+        "--chat-upstream-url", "https://chat.example.com",
+    });
     require(config_result.ok, config_result.error);
-    ccs::TaskRouter router(config_result.config);
-    require(router.route("/v1/responses").task->kind == ccs::ApiTaskKind::Responses, "Responses no slash");
-    require(router.route("/v1/responses/").task->kind == ccs::ApiTaskKind::Responses, "Responses slash");
-    require(router.route("/unknown").task == nullptr, "unknown route");
+    ccs::TaskRouter responses_router({&config_result.config.responses_endpoint});
+    ccs::TaskRouter chat_router({&config_result.config.chat_endpoint});
+    require(responses_router.route("/v1/responses").task->kind == ccs::ApiTaskKind::Responses, "Responses no slash");
+    require(responses_router.route("/v1/responses/").task->kind == ccs::ApiTaskKind::Responses, "Responses slash");
+    const auto responses_usage = responses_router.route("/v1/usage");
+    require(responses_usage.task->kind == ccs::ApiTaskKind::ResponsesUsage, "Responses Usage ownership");
+    require(responses_usage.upstream_target().base_url == "https://responses.example.com", "Responses Usage upstream");
+    const auto chat_usage = chat_router.route("/v1/usage");
+    require(chat_usage.task->kind == ccs::ApiTaskKind::ChatUsage, "Chat Usage ownership");
+    require(chat_usage.upstream_target().base_url == "https://chat.example.com", "Chat Usage upstream");
+    require(responses_router.route("/v1/chat/completions").task == nullptr, "cross-endpoint route rejected");
+    require(responses_router.route("/unknown").task == nullptr, "unknown route");
 }
 
 void test_findcg_transform() {
     ccs::FindcgResponsesTransform transform;
     ccs::TaskConfig task{
         ccs::ApiTaskKind::Responses,
-        true,
         "POST",
         "/v1/responses/",
-        {"https://www.findcg.com", "/v1/responses/"},
+        "/v1/responses/",
         {"remove_findcg_image_gen"},
         true,
     };
+    ccs::UpstreamTarget upstream{"https://www.findcg.com", "/v1/responses/"};
     const std::string body = R"({"input":"image_gen remains text","tools":[{"type":"namespace","name":"image_gen"},{"type":"function","name":"image_gen"},{"namespace":"image_gen"},{"type":"function","name":"web_search"}],"nested":{"tools":[{"name":"image_gen"}]}})";
-    auto result = transform.apply(task, body);
+    auto result = transform.apply(task, upstream, body);
     require(result.matched, "findcg transform matched");
     require(result.modified, "findcg transform modified");
     require(result.removed_tools.size() == 3, "three image tools removed");
@@ -139,19 +247,19 @@ void test_findcg_transform() {
     require(rewritten["input"] == "image_gen remains text", "text retained");
     require(rewritten["nested"]["tools"].size() == 1, "nested tool retained");
 
-    const auto no_tools = transform.apply(task, R"({"input":"hi"})");
+    const auto no_tools = transform.apply(task, upstream, R"({"input":"hi"})");
     require(no_tools.matched && !no_tools.modified && !no_tools.rewritten_body, "no tools reuses input body");
-    const auto invalid_tools_shape = transform.apply(task, R"({"tools":"image_gen"})");
+    const auto invalid_tools_shape = transform.apply(task, upstream, R"({"tools":"image_gen"})");
     require(invalid_tools_shape.matched && !invalid_tools_shape.modified, "non-array tools remain transparent");
 
-    task.upstream.base_url = "https://example.com";
-    const auto transparent = transform.apply(task, "not json");
+    upstream.base_url = "https://example.com";
+    const auto transparent = transform.apply(task, upstream, "not json");
     require(!transparent.matched && !transparent.rewritten_body, "non-findcg avoids JSON parsing");
 
-    task.upstream.base_url = "https://findcg.com";
+    upstream.base_url = "https://findcg.com";
     bool parse_failed = false;
     try {
-        (void)transform.apply(task, "not json");
+        (void)transform.apply(task, upstream, "not json");
     } catch (const ccs::TransformError& ex) {
         parse_failed = ex.status_code() == 400;
     }

@@ -4,9 +4,9 @@
 
 ## Status
 
-The current source version is `0.3.0` and runs on Windows. Responses and Chat Completions can use independent upstream targets. In this current release, the legacy `--upstream-url` remains the shared fallback and supplies the Usage upstream.
+The current unreleased source reports version `0.3.0` and runs on Windows. It has entered the breaking phase 10 CLI: start it with `ccs-trans run`, use endpoint-prefixed options, and do not use the removed shared or legacy options. Responses and Chat Completions have independent endpoint-group configuration, and each group owns its Usage route and upstream path.
 
-The next release intentionally removes legacy CLI compatibility. Its target layout uses `127.0.0.1:15723` for Responses plus its Usage route and `127.0.0.1:15724` for Chat Completions plus its Usage route. Persistent profiles and logs will live under the same per-user `.ccs-trans` root, with the default log at `.ccs-trans/logs/ccs-trans.log`. Implementation is split into independently tested work packages for logger reliability, the canonical CLI/config model, dual listeners, persistent profiles, and reload/performance regression. Logger reliability is complete in the current unreleased worktree; the dual listener and persistent profile changes are not yet part of `0.3.0`. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order.
+The logger reliability and canonical CLI/config work packages are complete. The current intermediate network host still binds only the Responses listener and temporarily routes both main tasks through it; the next work package activates `127.0.0.1:15723` for Responses plus its Usage route and `127.0.0.1:15724` for Chat Completions plus its Usage route. Persistent profiles and logs will then live under the same per-user `.ccs-trans` root, with the default log at `.ccs-trans/logs/ccs-trans.log`. See [DevelopmentPlan.md](docs/DevelopmentPlan.md) for the migration order.
 
 Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
 
@@ -44,17 +44,16 @@ build/ccs-trans.exe
 
 ## Run
 
-Shared upstream:
+Responses endpoint:
 
 ```text
-ccs-trans --upstream-url http://127.0.0.1:19080
+ccs-trans run --responses-upstream-url https://www.findcg.com
 ```
 
-Independent upstreams:
+Both endpoint groups during the current single-listener work package:
 
 ```text
-ccs-trans \
-  --upstream-url https://www.findcg.com \
+ccs-trans run \
   --responses-upstream-url https://www.findcg.com \
   --chat-upstream-url https://chat.example.com
 ```
@@ -62,17 +61,26 @@ ccs-trans \
 Common options:
 
 ```text
---listen-host 127.0.0.1
---listen-port 15723
---upstream-url http://127.0.0.1:19080
+--responses-listen-host 127.0.0.1
+--responses-listen-port 15723
 --responses-upstream-url https://www.findcg.com
---chat-upstream-url https://chat.example.com
+--responses-local-path /v1/responses/
 --responses-upstream-path /v1/responses/
+--responses-usage-local-path /v1/usage
+--responses-usage-upstream-path /v1/usage
+--chat-listen-host 127.0.0.1
+--chat-listen-port 15724
+--chat-upstream-url https://chat.example.com
+--chat-local-path /v1/chat/completions
 --chat-upstream-path /v1/chat/completions
+--chat-usage-local-path /v1/usage
+--chat-usage-upstream-path /v1/usage
 --log-path ./logs/ccs-trans.log
 --log-body true
 --redact-sensitive false
 --body-log-limit 1048576
+--log-queue-capacity 16777216
+--log-flush-interval-ms 100
 --metrics-interval-ms 0
 --resolve-timeout-ms 300000
 --connect-timeout-ms 300000
@@ -86,13 +94,13 @@ Common options:
 --max-response-body-size 104857600
 ```
 
-`--concurrency` was removed in `0.2.0`; use `--worker-threads` and `--max-connections`.
+The parser rejects removed names with a migration hint. There are no short aliases, shared fallback options, or duplicate occurrences of the same option.
 
 With `--redact-sensitive false` and `--log-body true`, logs can contain live Authorization values, cookies, full Codex context, and response chunks. Treat them as credential-bearing files. Use synthetic data for tests and benchmarks, enable sensitive-header redaction before sharing logs, and review body content separately because header redaction does not sanitize JSON bodies.
 
-`--timeout-ms` remains the fallback for all stage timeouts except the optional total timeout. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
+Each timeout has one explicit option; there is no shared timeout fallback. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
 
-The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is moving to 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. Phase 10 logger reliability now keeps in-flight batches inside the bounded pending capacity and reports separate batch-window, backpressure, file write/flush, oldest-record-age, and writer-health metrics. The next work package freezes the canonical endpoint-group/CLI model before dual-listener routing and persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS. A new mixed-load benchmark will keep both Usage routes responsive while 16 SSE streams are active.
+The measured `0.3.0` profiles keep the synchronous worker model for the normal 8-16 SSE desktop load. The default worker count is 32 so 16 long SSE streams still leave short-request and Usage headroom. The 50-connection profile remains a stress test and queues above `--worker-threads`; it does not by itself justify an asynchronous network-stack rewrite. Phase 10 logger reliability keeps in-flight batches inside the bounded pending capacity and reports separate batch-window, backpressure, file write/flush, oldest-record-age, and writer-health metrics. The endpoint-group model and canonical CLI are now frozen; dual-listener routing is next, followed by persistent profiles under `%USERPROFILE%/.ccs-trans/` on Windows and `~/.ccs-trans/` on macOS.
 
 ## Verify
 

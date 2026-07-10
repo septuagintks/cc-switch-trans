@@ -505,6 +505,10 @@ chat endpoint: 127.0.0.1:15724
 5. `run --profile <name>` 读取指定 profile；运行时可以给出多个显式覆盖，但每个覆盖项仍只改变一个字段且默认不写回 profile。
 6. 未识别的旧参数直接返回明确错误和迁移提示，不增加隐藏兼容分支。
 
+完成状态：配置模型与运行命令合约已完成。`EndpointGroupConfig` 现在是 base upstream URL、监听地址、主任务和所属 Usage 的唯一所有者，`RouteDecision` 同时携带 endpoint/task 并按请求生成 `UpstreamTarget`。CLI 只接受 `ccs-trans run`、`--help` 和 `--version`；所有运行字段使用唯一长参数，重复参数和布尔别名被拒绝，旧名称逐项返回迁移提示。profile 子命令仍按 10.4 工作包实现，不在本工作包放置空壳命令。
+
+本工作包 review 修正了同 endpoint 主路由/Usage 路由尾斜杠归一化后冲突的问题，并禁止 path 字段包含 query/fragment。单元测试覆盖完整 endpoint 参数映射、Usage 所有权、同监听地址冲突、重复参数、缺少 `run`、严格布尔值、公开 help 和全部旧名称拒绝；单 listener 协议集成与 smoke benchmark 通过。网络层暂时仍只绑定 Responses listener，双 listener 原子生命周期属于下一个独立工作包。
+
 ### 10.4 持久 profile 与目录布局
 
 1. 引入带 `schema_version` 的配置文件，保存命名 profile 和当前默认 profile。

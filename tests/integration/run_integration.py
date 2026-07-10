@@ -112,15 +112,14 @@ def main():
         proxy = subprocess.Popen(
             [
                 str(exe),
-                "--upstream-url",
-                f"http://127.0.0.1:{responses_upstream_port}",
+                "run",
                 "--responses-upstream-url",
                 f"http://127.0.0.1:{responses_upstream_port}",
                 "--chat-upstream-url",
                 f"http://127.0.0.1:{chat_upstream_port}",
                 "--chat-upstream-path",
                 "/custom/chat/completions",
-                "--listen-port",
+                "--responses-listen-port",
                 str(proxy_port),
                 "--log-path",
                 str(log_path),

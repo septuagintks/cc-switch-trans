@@ -33,6 +33,7 @@ private:
     HttpResponse handle_local_route_error(const HttpRequest& request) const;
     HttpResponse handle_usage_request(
         const HttpRequest& request,
+        const EndpointGroupConfig& endpoint,
         const TaskConfig& task,
         const CancellationToken& cancellation) const;
     void log_performance_snapshot(const std::string& reason) const;

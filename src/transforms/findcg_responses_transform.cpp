@@ -32,7 +32,10 @@ bool should_remove(const nlohmann::json& tool) {
 
 } // namespace
 
-TransformResult FindcgResponsesTransform::apply(const TaskConfig& task, const std::string& body) const {
+TransformResult FindcgResponsesTransform::apply(
+    const TaskConfig& task,
+    const UpstreamTarget& upstream_target,
+    const std::string& body) const {
     TransformResult result;
     result.rewrite_name = "remove_findcg_image_gen";
     result.original_body_size = body.size();
@@ -45,7 +48,7 @@ TransformResult FindcgResponsesTransform::apply(const TaskConfig& task, const st
 
     ParsedUrl upstream;
     try {
-        upstream = parse_http_url(task.upstream.base_url);
+        upstream = parse_http_url(upstream_target.base_url);
     } catch (const std::exception& ex) {
         throw TransformError(500, "configuration_error", ex.what());
     }

@@ -40,7 +40,10 @@ private:
 class RequestTransform {
 public:
     virtual ~RequestTransform() = default;
-    virtual TransformResult apply(const TaskConfig& task, const std::string& body) const = 0;
+    virtual TransformResult apply(
+        const TaskConfig& task,
+        const UpstreamTarget& upstream,
+        const std::string& body) const = 0;
 };
 
 } // namespace ccs

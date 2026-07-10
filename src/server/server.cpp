@@ -231,16 +231,6 @@ void append_body_fields(std::vector<LogField>& fields, const AppConfig& config, 
     fields.push_back(field_bool("body_truncated", body.size() > config.body_log_limit));
 }
 
-bool is_responses_path(const AppConfig& config, const std::string& path) {
-    const auto task = TaskRouter(config).route(path).task;
-    return task != nullptr && task->kind == ApiTaskKind::Responses;
-}
-
-bool is_chat_path(const AppConfig& config, const std::string& path) {
-    const auto task = TaskRouter(config).route(path).task;
-    return task != nullptr && task->kind == ApiTaskKind::ChatCompletions;
-}
-
 std::string removed_tools_to_json(const std::vector<RemovedTool>& tools) {
     std::ostringstream out;
     out << "[";
@@ -684,7 +674,7 @@ void reject_overloaded_client(SOCKET client, const Server* server) {
 Server::Server(AppConfig config)
     : config_(config)
     , metrics_(std::make_shared<RuntimeMetrics>())
-    , router_(config_)
+    , router_({&config_.responses_endpoint, &config_.chat_endpoint})
     , proxy_(config_.timeouts, config_.max_response_body_size, metrics_)
     , logger_(config_, metrics_) {
 #ifdef _WIN32
@@ -724,25 +714,29 @@ bool Server::process_raw_request_to_sender(
     const auto request_id = make_request_id();
     const auto started = std::chrono::steady_clock::now();
     RequestMetricsScope metrics_scope(metrics_, cancellation);
+    std::string request_task = "unknown";
 
     try {
         auto request = parse_request(raw, client_ip);
         const auto route = router_.route(request.path);
-        if (route.task != nullptr && route.task->kind == ApiTaskKind::Usage) {
-            if (!route.task->enabled) {
+        request_task = route.task == nullptr ? "unknown" : task_name(route.task->kind);
+        if (route.task != nullptr && is_usage_task(route.task->kind)) {
+            if (!route.configured()) {
                 HttpResponse response;
                 response.status_code = 404;
                 response.reason = reason_phrase(404);
                 response.body = error_json("unsupported route", "invalid_request_error");
                 return sender(build_response(std::move(response)));
             }
-            return sender(build_response(handle_usage_request(request, *route.task, cancellation)));
+            return sender(build_response(handle_usage_request(
+                request, *route.endpoint, *route.task, cancellation)));
         }
 
         request.request_id = request_id;
         std::vector<LogField> request_fields = {
             field_string("request_id", request.request_id),
             field_string("api_type", route.task == nullptr ? "unknown" : task_name(route.task->kind)),
+            field_string("endpoint", route.endpoint == nullptr ? "unknown" : endpoint_group_name(route.endpoint->kind)),
             field_string("method", request.method),
             field_string("local_path", request.path),
             field_string("query", request.query),
@@ -752,7 +746,9 @@ bool Server::process_raw_request_to_sender(
         append_body_fields(request_fields, config_, request.body);
         logger_.log("info", "request_received", request_fields);
 
-        const bool json_proxy_request = (is_responses_path(config_, request.path) || is_chat_path(config_, request.path))
+        const bool json_proxy_request = route.task != nullptr
+            && (route.task->kind == ApiTaskKind::Responses
+                || route.task->kind == ApiTaskKind::ChatCompletions)
             && request.method == "POST"
             && has_json_content_type(request.headers);
         if (json_proxy_request) {
@@ -772,13 +768,14 @@ bool Server::process_raw_request_to_sender(
         transform_result.rewritten_body_size = request.body.size();
         transform_result.rewrite_reason = "no_transform_configured";
         const bool main_task_ready = route.task != nullptr
-            && route.task->kind != ApiTaskKind::Usage
-            && route.task->enabled
+            && !is_usage_task(route.task->kind)
+            && route.configured()
             && request.method == route.task->method;
+        const auto upstream_target = route.upstream_target();
         if (main_task_ready
             && std::find(route.task->transforms.begin(), route.task->transforms.end(), "remove_findcg_image_gen") != route.task->transforms.end()) {
             try {
-                transform_result = findcg_transform_.apply(*route.task, request.body);
+                transform_result = findcg_transform_.apply(*route.task, upstream_target, request.body);
                 if (transform_result.rewritten_body) {
                     request.body = std::move(*transform_result.rewritten_body);
                     transform_result.rewritten_body.reset();
@@ -820,9 +817,10 @@ bool Server::process_raw_request_to_sender(
             std::vector<LogField> upstream_request_fields = {
                 field_string("request_id", request.request_id),
                 field_string("task", task_name(route.task->kind)),
+                field_string("endpoint", endpoint_group_name(route.endpoint->kind)),
                 field_string("method", request.method),
-                field_string("upstream_url", route.task->upstream.base_url),
-                field_string("upstream_path", route.task->upstream.path),
+                field_string("upstream_url", upstream_target.base_url),
+                field_string("upstream_path", upstream_target.path),
                 field_string("query", request.query),
                 field_bool("rewrite_enabled", transform_result.matched),
                 field_string("rewrite_name", transform_result.rewrite_name),
@@ -839,7 +837,7 @@ bool Server::process_raw_request_to_sender(
             try {
                 response = proxy_.forward_streaming(
                     request,
-                    route.task->upstream,
+                    upstream_target,
                     [&](const HttpResponse& headers_response) {
                         streamed = true;
                         metrics_->stream_started();
@@ -957,7 +955,7 @@ bool Server::process_raw_request_to_sender(
         if (ex.type() == "client_cancelled") {
             logger_.log("info", "request_cancelled", {
                 field_string("request_id", request_id),
-                field_string("task", "usage"),
+                field_string("task", request_task),
             });
             return false;
         }
@@ -1045,6 +1043,7 @@ void Server::log_performance_snapshot(const std::string& reason) const {
 
 HttpResponse Server::handle_usage_request(
     const HttpRequest& request,
+    const EndpointGroupConfig& endpoint,
     const TaskConfig& task,
     const CancellationToken& cancellation) const {
     if (request.method != "GET") {
@@ -1057,7 +1056,7 @@ HttpResponse Server::handle_usage_request(
     }
 
     try {
-        auto response = proxy_.forward(request, task.upstream, cancellation);
+        auto response = proxy_.forward(request, endpoint.upstream_target(task), cancellation);
         if (response.reason.empty()) {
             response.reason = reason_phrase(response.status_code);
         }
@@ -1086,7 +1085,7 @@ HttpResponse Server::handle_local_route_error(const HttpRequest& request) const 
     }
 
     const auto& task = *route.task;
-    if (!task.enabled) {
+    if (!route.configured()) {
         HttpResponse response;
         response.status_code = 500;
         response.reason = reason_phrase(500);
@@ -1131,10 +1130,11 @@ int Server::run() {
         hints.ai_flags = AI_PASSIVE;
 
         addrinfo* result = nullptr;
-        const auto port = std::to_string(config_.listen_port);
-        const int rc = getaddrinfo(config_.listen_host.c_str(), port.c_str(), &hints, &result);
+        const auto& listener = config_.responses_endpoint;
+        const auto port = std::to_string(listener.listen_port);
+        const int rc = getaddrinfo(listener.listen_host.c_str(), port.c_str(), &hints, &result);
         if (rc != 0 || result == nullptr) {
-            std::cerr << "failed to resolve listen address: " << config_.listen_host << ":" << port << "\n";
+            std::cerr << "failed to resolve listen address: " << listener.listen_host << ":" << port << "\n";
             return 1;
         }
 
@@ -1158,12 +1158,12 @@ int Server::run() {
         freeaddrinfo(result);
 
         if (listen_socket == INVALID_SOCKET) {
-            std::cerr << "failed to bind " << config_.listen_host << ":" << config_.listen_port << "\n";
+            std::cerr << "failed to bind " << listener.listen_host << ":" << listener.listen_port << "\n";
             return 1;
         }
 
         if (listen(listen_socket, kBacklog) == SOCKET_ERROR) {
-            std::cerr << "failed to listen on " << config_.listen_host << ":" << config_.listen_port << "\n";
+            std::cerr << "failed to listen on " << listener.listen_host << ":" << listener.listen_port << "\n";
             close_socket(listen_socket);
             SetConsoleCtrlHandler(console_handler, FALSE);
             return 1;
@@ -1172,17 +1172,21 @@ int Server::run() {
         const int accept_timeout_ms = 500;
         setsockopt(listen_socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&accept_timeout_ms), sizeof(accept_timeout_ms));
 
-        std::cout << "ccs-trans listening on http://" << config_.listen_host << ":" << config_.listen_port << "\n";
+        std::cout << "ccs-trans listening on http://" << listener.listen_host << ":" << listener.listen_port << "\n";
         logger_.log("info", "server_start", {
-            field_string("listen_host", config_.listen_host),
-            field_number("listen_port", config_.listen_port),
-            field_bool("responses_enabled", config_.responses.enabled),
-            field_string("responses_upstream_url", config_.responses.upstream.base_url),
-            field_string("responses_upstream_path", config_.responses.upstream.path),
-            field_bool("chat_enabled", config_.chat_completions.enabled),
-            field_string("chat_upstream_url", config_.chat_completions.upstream.base_url),
-            field_string("chat_upstream_path", config_.chat_completions.upstream.path),
-            field_bool("usage_enabled", config_.usage.enabled),
+            field_string("active_listener_endpoint", endpoint_group_name(listener.kind)),
+            field_string("responses_listen_host", config_.responses_endpoint.listen_host),
+            field_number("responses_listen_port", config_.responses_endpoint.listen_port),
+            field_bool("responses_enabled", config_.responses_endpoint.enabled()),
+            field_string("responses_upstream_url", config_.responses_endpoint.upstream_url),
+            field_string("responses_upstream_path", config_.responses_endpoint.main_task.upstream_path),
+            field_string("responses_usage_upstream_path", config_.responses_endpoint.usage_task.upstream_path),
+            field_string("chat_listen_host", config_.chat_endpoint.listen_host),
+            field_number("chat_listen_port", config_.chat_endpoint.listen_port),
+            field_bool("chat_enabled", config_.chat_endpoint.enabled()),
+            field_string("chat_upstream_url", config_.chat_endpoint.upstream_url),
+            field_string("chat_upstream_path", config_.chat_endpoint.main_task.upstream_path),
+            field_string("chat_usage_upstream_path", config_.chat_endpoint.usage_task.upstream_path),
             field_string("log_path", config_.log_path.string()),
             field_number("worker_threads", static_cast<long long>(config_.worker_threads)),
             field_number("max_connections", static_cast<long long>(config_.max_connections)),
@@ -1282,8 +1286,8 @@ int Server::run() {
         reporter.stop();
         log_performance_snapshot("server_stop");
         logger_.log("info", "server_stop", {
-            field_string("listen_host", config_.listen_host),
-            field_number("listen_port", config_.listen_port),
+            field_string("listen_host", config_.responses_endpoint.listen_host),
+            field_number("listen_port", config_.responses_endpoint.listen_port),
         });
         SetConsoleCtrlHandler(console_handler, FALSE);
         return 0;

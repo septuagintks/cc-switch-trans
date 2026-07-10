@@ -1,5 +1,7 @@
 #include "core/task_router.hpp"
 
+#include <utility>
+
 namespace ccs {
 
 namespace {
@@ -17,18 +19,31 @@ bool path_matches(const std::string& actual, const TaskConfig& task) {
 
 } // namespace
 
-TaskRouter::TaskRouter(const AppConfig& config)
-    : config_(config) {}
+bool RouteDecision::configured() const {
+    return endpoint != nullptr && task != nullptr && endpoint->enabled();
+}
+
+UpstreamTarget RouteDecision::upstream_target() const {
+    if (endpoint == nullptr || task == nullptr) {
+        return {};
+    }
+    return endpoint->upstream_target(*task);
+}
+
+TaskRouter::TaskRouter(std::vector<const EndpointGroupConfig*> endpoints)
+    : endpoints_(std::move(endpoints)) {}
 
 RouteDecision TaskRouter::route(const std::string& path) const {
-    if (path_matches(path, config_.responses)) {
-        return RouteDecision{&config_.responses};
-    }
-    if (path_matches(path, config_.chat_completions)) {
-        return RouteDecision{&config_.chat_completions};
-    }
-    if (path_matches(path, config_.usage)) {
-        return RouteDecision{&config_.usage};
+    for (const auto* endpoint : endpoints_) {
+        if (endpoint == nullptr) {
+            continue;
+        }
+        if (path_matches(path, endpoint->main_task)) {
+            return RouteDecision{endpoint, &endpoint->main_task};
+        }
+        if (path_matches(path, endpoint->usage_task)) {
+            return RouteDecision{endpoint, &endpoint->usage_task};
+        }
     }
     return {};
 }

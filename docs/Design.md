@@ -248,6 +248,8 @@ ccs-trans \
 
 配置字段和命令行参数遵守一对一规则：一个参数只修改一个字段，一个字段只有一个参数名。没有短参数、同义参数、共享 fallback 或根据参数组合改变语义的隐藏模式。
 
+阶段 10 的运行入口固定为 `ccs-trans run`。同一个参数在一次调用中重复出现会被拒绝，布尔值只接受 `true`/`false`；已删除参数返回带替代名称的迁移错误。配置模型使用两个 `EndpointGroupConfig`，base upstream URL 只存储在 endpoint group，主任务与 Usage 仅保存各自的 local/upstream path。
+
 端点组参数固定为：
 
 | 参数                              | 唯一作用                                      |
@@ -266,6 +268,8 @@ ccs-trans \
 | `--chat-upstream-path`            | Chat Completions 上游主路由                   |
 | `--chat-usage-local-path`         | Chat 端点组本地 Usage 路由                    |
 | `--chat-usage-upstream-path`      | Chat 端点组上游 Usage 路由                    |
+
+其余运行字段继续使用唯一的长参数：日志队列容量和批写窗口分别为 `--log-queue-capacity`、`--log-flush-interval-ms`；各阶段 timeout、请求/响应上限、worker 和总连接上限均无共享 fallback。
 
 运行与 profile 命令使用单一职责形式：
 

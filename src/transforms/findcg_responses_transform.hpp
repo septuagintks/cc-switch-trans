@@ -6,7 +6,10 @@ namespace ccs {
 
 class FindcgResponsesTransform final : public RequestTransform {
 public:
-    TransformResult apply(const TaskConfig& task, const std::string& body) const override;
+    TransformResult apply(
+        const TaskConfig& task,
+        const UpstreamTarget& upstream,
+        const std::string& body) const override;
 };
 
 } // namespace ccs
