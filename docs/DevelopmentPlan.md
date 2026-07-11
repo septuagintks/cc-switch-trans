@@ -112,8 +112,8 @@ SHA-256 和 Base64；当前 schema 样例只读加载且不改写源字节。三
 
 构建顺序：
 
-1. 将进程级 WinHTTP session 从 `WINHTTP_ACCESS_TYPE_DEFAULT_PROXY` 改为
-   `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`。
+1. 将进程级 WinHTTP default-proxy session 改为当前用户系统代理 snapshot：direct 与
+   named proxy 选择对应 WinHTTP access mode；显式 PAC 按请求解析并固定结果。
 2. 把平台代理策略封装在 Windows transport 内，不向 AppConfig/Profile 增加 proxy
    URL、模式、账号或密码字段。
 3. 使用受控本地 HTTP proxy 和临时当前用户系统代理设置建立集成测试；测试必须在
@@ -121,7 +121,8 @@ SHA-256 和 Base64；当前 schema 样例只读加载且不改写源字节。三
 4. 验证系统选择 proxy 时请求确实经过 proxy；proxy 关闭后请求失败，且 mock upstream
    没有收到 direct 请求。
 5. 验证系统未配置 proxy 或 bypass 明确匹配时 direct 可用；这不是失败回退。
-6. 验证运行中切换系统代理后，新请求使用新结果，in-flight 请求保持原连接。
+6. 使用 registry watcher 验证运行中切换系统代理后，新请求使用新 session，in-flight
+   请求保持原 session。
 7. 验证 `407` 被分类为不支持 proxy authentication，不尝试读取或持久化凭据。
 8. 增加不含 proxy 地址/PAC/credential 的启动与错误日志字段。
 
@@ -129,11 +130,37 @@ SHA-256 和 Base64；当前 schema 样例只读加载且不改写源字节。三
 无法使用隔离账户或可靠恢复设置，应拆为显式 opt-in 的本机集成测试，普通 CTest
 只运行不改变系统状态的 transport 单元测试。
 
+专项入口固定为 `tests/integration/run_windows_system_proxy_integration.py`，没有
+`--confirm-system-proxy-mutation` 时必须拒绝运行。备份写入 ignored `tmp/`；只有全部
+注册表值恢复并通知 WinINet 设置刷新后才删除备份。
+
 Review 重点：失败后是否偷偷 direct、系统设置恢复、并发请求切换、PAC/bypass 语义、
 407、日志泄密和 WinHTTP handle 生命周期。
 
 完成标准：自动系统代理、失败不回退和运行时切换三项都有可重复证据；现有 direct、
 SSE、取消和 timeout 回归通过。
+
+阶段 11.1 已完成。生产 transport 将当前用户设置编译为 direct、named-proxy 或显式
+PAC snapshot；PAC 通过 `WinHttpGetProxyForUrl` 按请求解析并固定结果，
+auto-detect-only 不触发 WPAD。registry watcher 在变化时发布 session snapshot；
+`407` 返回 `proxy_authentication_unsupported`；`server_start` 与
+`upstream_request` 记录 `upstream_proxy_mode=windows_system`。普通 CTest 不修改
+系统设置，opt-in 专项测试完成以下验证并恢复全部当前用户注册表值：
+
+1. proxy A 接收第一次请求，直连 origin 计数保持 0；
+2. A 上阻塞的 in-flight 请求保持 A；同一进程切换到 B 后，新请求由 B 接收；
+3. 关闭已选 B 后本地返回 502，直连 origin 计数仍为 0；
+4. 系统明确切换 direct 后，origin 才收到第一次请求；
+5. auto-detect-only 不执行 WPAD 并直接命中 origin，手动 proxy bypass 同样命中 origin；
+6. 显式 PAC 分别验证 proxy 与 direct；
+7. PAC 返回 `PROXY dead; DIRECT` 时请求失败且不回退 direct；
+8. proxy 返回 `407` 时分类为 `proxy_authentication_unsupported`；
+9. 缺少确认参数时专项测试在任何注册表读取/写入前拒绝运行。
+
+性能曾否决两个实现：全量 `AUTOMATIC_PROXY` 因默认 WPAD 增加约 4-6 ms；每请求读取
+系统配置也超过常规门槛。最终 watcher + shared snapshot 三轮中位数为
+`desktop-8 8.600 ms`、`mixed-16 8.435 ms` 附加 TTFB，均不高于阶段 11.0 基线，
+且请求失败、logger failure 和 backpressure 均为 0。
 
 ### 11.2 建立新配置文档与领域类型
 

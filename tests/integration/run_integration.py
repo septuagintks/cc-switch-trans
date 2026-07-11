@@ -248,6 +248,15 @@ def main():
             "transparent body exact bytes",
         )
 
+        status, _, _ = request(
+            responses_proxy_port,
+            "POST",
+            "/v1/responses?status=407",
+            body=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert_true(status == 502, "proxy authentication is rejected")
+
         status, _, data = request(
             responses_proxy_port,
             "POST",
@@ -427,10 +436,28 @@ def main():
         assert_true(stream_sent and "body" not in stream_sent[-1], "stream response body is not aggregated")
         assert_true(stream_sent[-1].get("streamed_body_size", 0) > 0, "streamed body size counted")
         upstream_requests = [event for event in events if event.get("event") == "upstream_request"]
+        server_starts = [event for event in events if event.get("event") == "server_start"]
+        assert_true(
+            server_starts and server_starts[-1].get("upstream_proxy_mode") == "windows_system",
+            "server start logs Windows system proxy mode",
+        )
+        assert_true(
+            all(event.get("upstream_proxy_mode") == "windows_system" for event in upstream_requests),
+            "upstream requests log Windows system proxy mode",
+        )
         assert_true(any(event.get("task") == "responses" and event.get("endpoint") == "responses" and event.get("rewrite_reason") == "upstream_not_findcg" for event in upstream_requests), "Responses rewrite decision logged")
         assert_true(any(event.get("task") == "chat_completions" and event.get("endpoint") == "chat" and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in upstream_requests), "Chat task target logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 404 for event in events), "404 logged")
         assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 405 for event in events), "405 logged")
+        assert_true(
+            any(
+                event.get("event") == "request_error"
+                and event.get("type") == "proxy_authentication_unsupported"
+                and event.get("status_code") == 502
+                for event in events
+            ),
+            "proxy authentication error classified",
+        )
         cancelled = [event for event in events if event.get("event") == "request_cancelled"]
         assert_true(len(cancelled) >= 2, "client cancellation logged")
         timeout_types = {

@@ -67,6 +67,7 @@ cc-switch-trans/
       mock_upstream.py
       reload_integration.cpp
       run_integration.py
+      run_windows_system_proxy_integration.py
     benchmark/
       README.md
       mock_upstream.py
@@ -92,7 +93,7 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 | `src/logging` | JSON Lines、批写、flush、背压、writer health | 保持独立，仅调整标签 |
 | `src/server` | 双 listener、worker、路由编排、reload | 改为单 listener + RouteTable |
 | `src/transforms` | findcg Responses 特定规则 | 改为通用 RuleRegistry/Pipeline |
-| `src/transport` | headers、WinHTTP、streaming、cancel、timeout | 后续拆平台实现 |
+| `src/transport` | headers、WinHTTP system proxy、streaming、cancel、timeout | 后续拆平台实现 |
 | `tests/unit` | 配置、路由、URL、日志和 transform | 按新领域模块拆 fixture |
 | `tests/integration` | 双上游、协议、reload generation | 扩展多 profile/Messages/rules |
 | `tests/benchmark` | 8/16/50 路和 transform 微基准 | 扩展 profile/rule 维度 |
@@ -205,8 +206,9 @@ packaging/macos/
 不得复制 config parser、RouteTable、RuleRegistry、logger 或 transport 初始化。
 
 平台 transport 的代理边界固定为：Windows 11 21H2 使用 WinHTTP 自动跟随当前用户
-系统代理且代理失败不回退 direct；macOS 链接系统 libcurl，只继承启动进程环境，
-不读取或修改 macOS 系统代理。代理地址和凭据不进入公共 config/profile 类型。
+手动系统代理、bypass 与显式 PAC，代理失败不回退 direct；auto-detect-only 不执行
+WPAD。macOS 链接系统 libcurl，只继承启动进程环境，不读取或修改 macOS 系统代理。
+代理地址和凭据不进入公共 config/profile 类型。
 
 ## CMake 目标演进
 
@@ -275,6 +277,7 @@ tests/integration/
   mock_upstream.py
   proxy_integration.py
   reload_integration.cpp
+  run_windows_system_proxy_integration.py
   tray_lifecycle_tests.cpp        # Windows 阶段再增加
 
 tests/benchmark/

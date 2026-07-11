@@ -8,7 +8,10 @@
 #include <cctype>
 #include <functional>
 #include <limits>
+#include <mutex>
+#include <shared_mutex>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 #ifdef _WIN32
@@ -459,6 +462,208 @@ UpstreamTimeoutPhase send_timeout_phase(RequestPhase phase) {
     return UpstreamTimeoutPhase::Send;
 }
 
+struct SystemProxySettings {
+    bool auto_detect = false;
+    std::wstring auto_config_url;
+    std::wstring proxy;
+    std::wstring bypass;
+
+    bool operator==(const SystemProxySettings& other) const {
+        return auto_detect == other.auto_detect
+            && auto_config_url == other.auto_config_url
+            && proxy == other.proxy
+            && bypass == other.bypass;
+    }
+
+    bool operator!=(const SystemProxySettings& other) const {
+        return !(*this == other);
+    }
+};
+
+SystemProxySettings query_system_proxy_settings() {
+    struct RawConfig {
+        ~RawConfig() {
+            if (value.lpszAutoConfigUrl != nullptr) {
+                GlobalFree(value.lpszAutoConfigUrl);
+            }
+            if (value.lpszProxy != nullptr) {
+                GlobalFree(value.lpszProxy);
+            }
+            if (value.lpszProxyBypass != nullptr) {
+                GlobalFree(value.lpszProxyBypass);
+            }
+        }
+
+        WINHTTP_CURRENT_USER_IE_PROXY_CONFIG value{};
+    } raw;
+    if (!WinHttpGetIEProxyConfigForCurrentUser(&raw.value)) {
+        throw ProxyError(
+            502,
+            "system_proxy_configuration_error",
+            winhttp_error_message("failed to read current-user system proxy"));
+    }
+
+    const auto copy = [](const wchar_t* value) {
+        return value == nullptr ? std::wstring{} : std::wstring(value);
+    };
+    SystemProxySettings result{
+        raw.value.fAutoDetect != FALSE,
+        copy(raw.value.lpszAutoConfigUrl),
+        copy(raw.value.lpszProxy),
+        copy(raw.value.lpszProxyBypass),
+    };
+    return result;
+}
+
+struct WinHttpSession {
+    WinHttpSession(WinHttpHandle handle, std::wstring auto_config_url)
+        : handle(std::move(handle))
+        , auto_config_url(std::move(auto_config_url)) {}
+
+    WinHttpHandle handle;
+    std::wstring auto_config_url;
+};
+
+struct SessionPublication {
+    std::shared_ptr<WinHttpSession> session;
+    std::string error;
+};
+
+std::shared_ptr<WinHttpSession> open_system_proxy_session(
+    const SystemProxySettings& settings,
+    const TimeoutConfig& timeouts,
+    const std::shared_ptr<RuntimeMetrics>& metrics) {
+    DWORD access_type = WINHTTP_ACCESS_TYPE_NO_PROXY;
+    const wchar_t* proxy_name = WINHTTP_NO_PROXY_NAME;
+    const wchar_t* proxy_bypass = WINHTTP_NO_PROXY_BYPASS;
+    if (!settings.proxy.empty() && settings.auto_config_url.empty()) {
+        access_type = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+        proxy_name = settings.proxy.c_str();
+        proxy_bypass = settings.bypass.empty()
+            ? WINHTTP_NO_PROXY_BYPASS
+            : settings.bypass.c_str();
+    }
+
+    WinHttpHandle handle(WinHttpOpen(
+        L"ccs-trans/0.4.0",
+        access_type,
+        proxy_name,
+        proxy_bypass,
+        0));
+    if (!handle) {
+        throw ProxyError(502, "upstream_error", winhttp_error_message("failed to open WinHTTP session"));
+    }
+    if (!apply_timeouts(handle.get(), timeouts, timeouts.response_header_ms)) {
+        throw ProxyError(502, "upstream_error", winhttp_error_message("failed to configure WinHTTP session timeouts"));
+    }
+    DWORD disabled_proxy_auth_schemes = WINHTTP_AUTH_SCHEME_BASIC
+        | WINHTTP_AUTH_SCHEME_NTLM
+        | WINHTTP_AUTH_SCHEME_PASSPORT
+        | WINHTTP_AUTH_SCHEME_DIGEST
+        | WINHTTP_AUTH_SCHEME_NEGOTIATE;
+    if (!WinHttpSetOption(
+            handle.get(),
+            WINHTTP_OPTION_DISABLE_PROXY_AUTH_SCHEMES,
+            &disabled_proxy_auth_schemes,
+            sizeof(disabled_proxy_auth_schemes))) {
+        throw ProxyError(
+            502,
+            "system_proxy_configuration_error",
+            winhttp_error_message("failed to disable system proxy authentication"));
+    }
+    if (metrics) {
+        const auto callback = WinHttpSetStatusCallback(
+            handle.get(),
+            winhttp_status_callback,
+            WINHTTP_CALLBACK_FLAG_RESOLVE_NAME
+                | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER
+                | WINHTTP_CALLBACK_FLAG_CLOSE_CONNECTION,
+            0);
+        if (callback == WINHTTP_INVALID_STATUS_CALLBACK) {
+            throw ProxyError(502, "upstream_error", winhttp_error_message("failed to configure WinHTTP metrics callback"));
+        }
+    }
+    return std::make_shared<WinHttpSession>(std::move(handle), settings.auto_config_url);
+}
+
+std::wstring absolute_request_url(const ParsedUrl& upstream, const std::string& path) {
+    std::string url = upstream.secure ? "https://" : "http://";
+    const bool ipv6 = upstream.host.find(':') != std::string::npos;
+    if (ipv6) {
+        url.push_back('[');
+    }
+    url += upstream.host;
+    if (ipv6) {
+        url.push_back(']');
+    }
+    const bool default_port = (upstream.secure && upstream.port == 443)
+        || (!upstream.secure && upstream.port == 80);
+    if (!default_port) {
+        url += ":" + std::to_string(upstream.port);
+    }
+    url += path;
+    return widen(url);
+}
+
+void apply_explicit_pac_proxy(
+    const WinHttpSession& session,
+    HINTERNET request,
+    const ParsedUrl& upstream,
+    const std::string& path) {
+    if (session.auto_config_url.empty()) {
+        return;
+    }
+
+    struct RawProxyInfo {
+        ~RawProxyInfo() {
+            if (value.lpszProxy != nullptr) {
+                GlobalFree(value.lpszProxy);
+            }
+            if (value.lpszProxyBypass != nullptr) {
+                GlobalFree(value.lpszProxyBypass);
+            }
+        }
+
+        WINHTTP_PROXY_INFO value{};
+    } result;
+    WINHTTP_AUTOPROXY_OPTIONS options{};
+    options.dwFlags = WINHTTP_AUTOPROXY_CONFIG_URL;
+    options.lpszAutoConfigUrl = session.auto_config_url.c_str();
+    options.fAutoLogonIfChallenged = FALSE;
+    const auto request_url = absolute_request_url(upstream, path);
+    if (!WinHttpGetProxyForUrl(
+            session.handle.get(),
+            request_url.c_str(),
+            &options,
+            &result.value)) {
+        throw ProxyError(
+            502,
+            "system_proxy_resolution_error",
+            winhttp_error_message("failed to resolve explicit system PAC"));
+    }
+    if (result.value.dwAccessType == WINHTTP_ACCESS_TYPE_NO_PROXY) {
+        return;
+    }
+    if (result.value.dwAccessType != WINHTTP_ACCESS_TYPE_NAMED_PROXY
+        || result.value.lpszProxy == nullptr
+        || *result.value.lpszProxy == L'\0') {
+        throw ProxyError(
+            502,
+            "system_proxy_resolution_error",
+            "explicit system PAC returned an unsupported proxy result");
+    }
+    if (!WinHttpSetOption(
+            request,
+            WINHTTP_OPTION_PROXY,
+            &result.value,
+            sizeof(result.value))) {
+        throw ProxyError(
+            502,
+            "system_proxy_configuration_error",
+            winhttp_error_message("failed to apply explicit system PAC result"));
+    }
+}
+
 #endif
 
 } // namespace
@@ -466,37 +671,175 @@ UpstreamTimeoutPhase send_timeout_phase(RequestPhase phase) {
 struct Proxy::Impl {
 #ifdef _WIN32
     Impl(const TimeoutConfig& timeouts, const std::shared_ptr<RuntimeMetrics>& metrics)
-        : session(WinHttpOpen(
-              L"ccs-trans/0.4.0",
-              WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-              WINHTTP_NO_PROXY_NAME,
-              WINHTTP_NO_PROXY_BYPASS,
-              0)) {
-        if (!session) {
-            throw ProxyError(502, "upstream_error", winhttp_error_message("failed to open WinHTTP session"));
+        : timeouts(timeouts)
+        , metrics(metrics)
+        , settings(query_system_proxy_settings())
+        , publication(SessionPublication{
+              open_system_proxy_session(settings, timeouts, metrics),
+              {},
+          }) {
+        const auto key_status = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            0,
+            KEY_NOTIFY,
+            &internet_settings_key);
+        if (key_status != ERROR_SUCCESS) {
+            throw ProxyError(
+                502,
+                "system_proxy_configuration_error",
+                "failed to monitor current-user system proxy (Windows error "
+                    + std::to_string(key_status) + ")");
         }
-        if (!apply_timeouts(session.get(), timeouts, timeouts.response_header_ms)) {
-            throw ProxyError(502, "upstream_error", winhttp_error_message("failed to configure WinHTTP session timeouts"));
+        stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        change_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (stop_event == nullptr || change_event == nullptr) {
+            const auto error = GetLastError();
+            close_watcher_handles();
+            throw ProxyError(
+                502,
+                "system_proxy_configuration_error",
+                "failed to create system proxy monitor events (Windows error "
+                    + std::to_string(error) + ")");
         }
-        if (metrics) {
-            const auto callback = WinHttpSetStatusCallback(
-                session.get(),
-                winhttp_status_callback,
-                WINHTTP_CALLBACK_FLAG_RESOLVE_NAME
-                    | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER
-                    | WINHTTP_CALLBACK_FLAG_CLOSE_CONNECTION,
-                0);
-            if (callback == WINHTTP_INVALID_STATUS_CALLBACK) {
-                throw ProxyError(502, "upstream_error", winhttp_error_message("failed to configure WinHTTP metrics callback"));
+        try {
+            watcher = std::thread([this]() { watcher_entry(); });
+        } catch (...) {
+            close_watcher_handles();
+            throw;
+        }
+    }
+
+    ~Impl() {
+        if (stop_event != nullptr) {
+            SetEvent(stop_event);
+        }
+        if (watcher.joinable()) {
+            watcher.join();
+        }
+        close_watcher_handles();
+    }
+
+    std::shared_ptr<WinHttpSession> session_for_request() {
+        std::shared_lock<std::shared_mutex> lock(publication_mutex);
+        if (!publication.error.empty()) {
+            throw ProxyError(502, "system_proxy_configuration_error", publication.error);
+        }
+        return publication.session;
+    }
+
+    void publish_error(std::string error) {
+        std::unique_lock<std::shared_mutex> lock(publication_mutex);
+        publication.error = std::move(error);
+    }
+
+    void refresh_session() {
+        try {
+            const auto latest = query_system_proxy_settings();
+            if (latest == settings) {
+                std::unique_lock<std::shared_mutex> lock(publication_mutex);
+                publication.error.clear();
+                return;
+            }
+            auto next = open_system_proxy_session(latest, timeouts, metrics);
+            settings = latest;
+            std::unique_lock<std::shared_mutex> lock(publication_mutex);
+            publication.session = std::move(next);
+            publication.error.clear();
+        } catch (const std::exception& ex) {
+            publish_error(std::string("failed to refresh current-user system proxy: ") + ex.what());
+        }
+    }
+
+    void watcher_entry() noexcept {
+        try {
+            watcher_loop();
+        } catch (const std::exception& ex) {
+            try {
+                publish_error(std::string("system proxy monitor failed: ") + ex.what());
+            } catch (...) {
+            }
+        } catch (...) {
+            try {
+                publish_error("system proxy monitor failed with an unknown error");
+            } catch (...) {
             }
         }
     }
 
-    WinHttpHandle session;
+    void watcher_loop() {
+        const auto arm_notification = [this]() {
+            return RegNotifyChangeKeyValue(
+                internet_settings_key,
+                TRUE,
+                REG_NOTIFY_CHANGE_LAST_SET,
+                change_event,
+                TRUE);
+        };
+        auto status = arm_notification();
+        while (true) {
+            if (status != ERROR_SUCCESS) {
+                publish_error("system proxy monitor failed (Windows error "
+                    + std::to_string(status) + ")");
+                return;
+            }
+            HANDLE events[] = {stop_event, change_event};
+            const auto wait_result = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+            if (wait_result == WAIT_OBJECT_0) {
+                return;
+            }
+            if (wait_result != WAIT_OBJECT_0 + 1) {
+                publish_error("system proxy monitor wait failed (Windows error "
+                    + std::to_string(GetLastError()) + ")");
+                return;
+            }
+            status = arm_notification();
+            if (status != ERROR_SUCCESS) {
+                publish_error("system proxy monitor failed (Windows error "
+                    + std::to_string(status) + ")");
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            refresh_session();
+        }
+    }
+
+    void close_watcher_handles() noexcept {
+        if (change_event != nullptr) {
+            CloseHandle(change_event);
+            change_event = nullptr;
+        }
+        if (stop_event != nullptr) {
+            CloseHandle(stop_event);
+            stop_event = nullptr;
+        }
+        if (internet_settings_key != nullptr) {
+            RegCloseKey(internet_settings_key);
+            internet_settings_key = nullptr;
+        }
+    }
+
+    TimeoutConfig timeouts;
+    std::shared_ptr<RuntimeMetrics> metrics;
+    SystemProxySettings settings;
+    SessionPublication publication;
+    std::shared_mutex publication_mutex;
+    HKEY internet_settings_key = nullptr;
+    HANDLE stop_event = nullptr;
+    HANDLE change_event = nullptr;
+    std::thread watcher;
 #else
     Impl(const TimeoutConfig&, const std::shared_ptr<RuntimeMetrics>&) {}
 #endif
 };
+
+const char* upstream_proxy_mode() {
+#ifdef _WIN32
+    return "windows_system";
+#else
+    return "unsupported";
+#endif
+}
 
 ProxyError::ProxyError(int status_code, std::string type, std::string message)
     : std::runtime_error(std::move(message))
@@ -559,9 +902,10 @@ HttpResponse Proxy::forward_streaming(
         throw ProxyError(500, "configuration_error", ex.what());
     }
     const auto path = join_url_path(upstream.base_path, target.path, request.query);
+    const auto session = impl_->session_for_request();
 
     WinHttpHandle connection(WinHttpConnect(
-        impl_->session.get(),
+        session->handle.get(),
         widen(upstream.host).c_str(),
         static_cast<INTERNET_PORT>(upstream.port),
         0));
@@ -599,6 +943,7 @@ HttpResponse Proxy::forward_streaming(
             throw ProxyError(502, "upstream_error", winhttp_error_message("failed to configure WinHTTP request metrics"));
         }
     }
+    apply_explicit_pac_proxy(*session, upstream_request->get(), upstream, path);
     auto cancellation_registration = cancellation.on_cancel([upstream_request, metrics = metrics_]() {
         if (upstream_request->close() && metrics) {
             metrics->upstream_request_cancelled();
@@ -717,6 +1062,12 @@ HttpResponse Proxy::forward_streaming(
         throw ProxyError(504, "upstream_total_timeout", "upstream request total timeout exceeded");
     }
     response.status_code = query_status_code(upstream_request->get());
+    if (response.status_code == 407) {
+        throw ProxyError(
+            502,
+            "proxy_authentication_unsupported",
+            "system proxy requires authentication, which ccs-trans does not support");
+    }
     response.headers = parse_raw_headers(query_raw_headers(upstream_request->get()));
     const bool streaming = is_event_stream(response.headers);
     request_context->phase.store(

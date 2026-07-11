@@ -39,6 +39,12 @@ class Handler(BaseHTTPRequestHandler):
         body_bytes = self.rfile.read(length)
         body = body_bytes.decode("utf-8", errors="replace")
         self._maybe_delay()
+        if query.get("status", [""])[0] == "407":
+            self.send_response(407)
+            self.send_header("Proxy-Authenticate", "Basic realm=synthetic")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if query.get("stream", [""])[0] == "sse":
             server_port = self.server.server_address[1]
             chunk_count = max(1, int(query.get("chunk_count", ["3"])[0]))

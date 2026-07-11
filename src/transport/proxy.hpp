@@ -14,6 +14,8 @@
 
 namespace ccs {
 
+const char* upstream_proxy_mode();
+
 class ProxyError : public std::runtime_error {
 public:
     ProxyError(int status_code, std::string type, std::string message);

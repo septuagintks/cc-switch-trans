@@ -201,6 +201,15 @@ ctest --test-dir build --output-on-failure
 python tests/integration/run_integration.py build/ccs-trans.exe
 ```
 
+The Windows system-proxy integration changes the current-user proxy briefly and
+is therefore opt-in. It backs up and restores every touched registry value:
+
+```text
+python tests/integration/run_windows_system_proxy_integration.py \
+  --exe build/ccs-trans.exe \
+  --confirm-system-proxy-mutation
+```
+
 Synthetic load and transform benchmarks are documented in
 [tests/benchmark/README.md](tests/benchmark/README.md). Generated results remain
 under the ignored `benchmark-results/` directory.
@@ -239,12 +248,15 @@ macOS menu bar application with login-item control. The canonical 512 px PNG is
 `assets/icons/ccs-trans-512.png`; Windows will derive a multi-resolution ICO
 with ImageMagick, while the macOS menu bar will use PNG assets.
 
-The first network work package will switch the current WinHTTP default-proxy
-session to Windows automatic system-proxy resolution. Once Windows selects a
-proxy, connection failure will not retry directly, and explicit proxy
-credentials will not be supported. The macOS transport will link the system
-libcurl and use only proxy environment inherited from the launching terminal;
-it will not read or modify macOS system proxy settings.
+The Windows transport follows current-user manual proxy, bypass, and explicit
+PAC settings with WinHTTP. A registry watcher publishes a new session for new
+requests when settings change; in-flight requests retain their existing
+session. Proxy connection failure does not retry directly, and proxy
+authentication is rejected rather than prompting for or storing credentials.
+WPAD-only auto-detection is intentionally disabled to avoid unsolicited network
+discovery and unstable latency when no proxy is configured. The macOS transport
+will link the system libcurl and use only proxy environment inherited from the
+launching terminal; it will not read or modify macOS system proxy settings.
 
 See [docs/Design.md](docs/Design.md),
 [docs/Reconstruction.md](docs/Reconstruction.md),

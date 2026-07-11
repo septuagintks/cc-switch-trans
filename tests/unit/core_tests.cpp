@@ -261,6 +261,14 @@ void test_url_and_router() {
     require(responses_router.route("/unknown").task == nullptr, "unknown route");
 }
 
+void test_upstream_proxy_policy() {
+#ifdef _WIN32
+    require(std::string(ccs::upstream_proxy_mode()) == "windows_system", "Windows uses system proxy mode");
+#else
+    require(std::string(ccs::upstream_proxy_mode()) == "unsupported", "non-Windows transport is not implemented");
+#endif
+}
+
 std::string read_file(const std::filesystem::path& path);
 
 std::filesystem::path fixture_path(const std::filesystem::path& relative) {
@@ -914,6 +922,7 @@ int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"config resolution", test_config_resolution},
         {"URL and router", test_url_and_router},
+        {"upstream proxy policy", test_upstream_proxy_policy},
         {"findcg transform", test_findcg_transform},
         {"logger flush contract", test_logger_flush_contract},
         {"logger backpressure contract", test_logger_backpressure_contract},
