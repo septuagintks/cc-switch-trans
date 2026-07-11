@@ -308,6 +308,23 @@ RouteEntry
 5. 配置阶段发现 route collision 时拒绝整个 snapshot，不使用声明顺序决定胜负。
 6. route 只持有 immutable/shared 数据，不引用可被配置编辑原地修改的对象。
 
+canonical path 语义固定为：
+
+- path 大小写敏感，根路径除外的一个尾斜杠会被移除；
+- query 在 HTTP parse 阶段单独保存，不进入 RouteKey，转发时原样附加到 upstream；
+- 重复 `/`、raw/encoded dot segment、encoded `/` 或 `\\`、反斜杠、raw/encoded 控制字符、
+  query/fragment 和无效 percent escape 被拒绝；
+- percent hex 统一大写，ASCII unreserved 字符会解码，因此 `%66oo` 与 `foo` 会在
+  编译阶段产生 collision；其他 encoded octet 保持 percent 形式；
+- 配置与请求 lookup 调用同一个 `canonicalize_http_path`，每次请求只生成一次
+  canonical string；内部索引为 `path -> method -> RouteEntry` 两级 hash；
+- 同 canonical path 的不同 method 可以共存；method 不匹配返回 405 和稳定排序的
+  Allow 集合，path 不存在返回 404，非法 path 单独分类。
+
+阶段 11.4 的 compiler 暂按已批准的当前协议共同约束生成主请求 `POST`、Usage `GET`。
+阶段 11.5 接入 ProtocolRegistry 后，主 method 必须来自 protocol descriptor；这不是
+请求运行时的协议分支。
+
 ## Protocol Handler
 
 初始 registry 固定支持：

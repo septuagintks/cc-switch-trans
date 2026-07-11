@@ -157,6 +157,12 @@ v2 `config/profile/rule/run` 命令 parser 与管理命令 executor 也已独立
 在 11.7 同一提交切换。当前可执行文件在此之前继续完整使用旧生产 CLI，不形成一个
 写新 schema、读旧 schema 的危险中间态。
 
+v2 `RuntimeCompiler`、`RuntimeSnapshot` 与 `RouteTable` 已完成但同样尚未接入生产
+server。compiler 只复制 enabled profile，或为 `run --profile` 单独编译一个完整草稿；
+route 持有 immutable `RuntimeProfile`、独立 upstream target 和 enabled rule 定义副本。
+RouteTable 使用 canonical path 的外层 hash 与 method 的内层 hash，lookup 不扫描
+profile。编译失败不替换调用方已有 snapshot。
+
 当前 schema 中一个 profile 表示整套 `AppConfig` 覆盖并可被选为 active profile。
 重构后的 Profile 改为“一条可同时启用的代理链”，两种含义不能混用。v2 loader
 明确拒绝旧结构并保留原文件，不建立双模型 fallback；在 11.7 server 切换前，两套

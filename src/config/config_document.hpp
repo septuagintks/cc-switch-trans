@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <string>
@@ -111,5 +112,10 @@ bool is_valid_protocol_id(const std::string& value);
 bool is_valid_rule_id(const std::string& value);
 bool is_valid_rule_type(const std::string& value);
 bool is_valid_rule_option_name(const std::string& value);
+bool resolve_application_log_path(
+    const ApplicationSettings& application,
+    const std::filesystem::path& application_root,
+    std::filesystem::path& log_path,
+    std::string& error);
 
 } // namespace ccs

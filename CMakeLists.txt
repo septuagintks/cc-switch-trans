@@ -11,6 +11,7 @@ add_library(ccs-trans-core STATIC
     src/config/config_document.cpp
     src/config/config_store.cpp
     src/config/profile_store.cpp
+    src/config/runtime_compiler.cpp
     src/core/app_service.cpp
     src/core/cancellation.cpp
     src/core/request_id.cpp
@@ -20,6 +21,7 @@ add_library(ccs-trans-core STATIC
     src/core/transform.cpp
     src/core/url.cpp
     src/logging/logger.cpp
+    src/routing/route_table.cpp
     src/server/server.cpp
     src/transport/header_filter.cpp
     src/transport/proxy.cpp
@@ -64,6 +66,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(ccs-trans-config-cli-tests PRIVATE ccs-trans-core)
     add_test(NAME ccs-trans-config-cli-tests COMMAND ccs-trans-config-cli-tests)
+
+    add_executable(ccs-trans-route-table-tests
+        tests/unit/route_table_tests.cpp
+    )
+    target_link_libraries(ccs-trans-route-table-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-route-table-tests COMMAND ccs-trans-route-table-tests)
 
     if(WIN32)
         add_executable(ccs-trans-reload-integration

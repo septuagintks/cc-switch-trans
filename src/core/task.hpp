@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/http_types.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -16,11 +18,6 @@ enum class ApiTaskKind {
     ResponsesUsage,
     ChatCompletions,
     ChatUsage,
-};
-
-struct UpstreamTarget {
-    std::string base_url;
-    std::string path;
 };
 
 struct TaskConfig {

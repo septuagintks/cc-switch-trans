@@ -35,6 +35,7 @@ cc-switch-trans/
       config_document.hpp/.cpp
       config_store.hpp/.cpp
       profile_store.hpp/.cpp
+      runtime_compiler.hpp/.cpp
     core/
       app_service.hpp/.cpp
       cancellation.hpp/.cpp
@@ -50,6 +51,11 @@ cc-switch-trans/
       cli_main.cpp
     logging/
       logger.hpp/.cpp
+    routing/
+      profile.hpp
+      route_table.hpp/.cpp
+    runtime/
+      runtime_snapshot.hpp
     server/
       server.hpp/.cpp
     transforms/
@@ -69,6 +75,7 @@ cc-switch-trans/
       config_cli_tests.cpp
       config_document_tests.cpp
       core_tests.cpp
+      route_table_tests.cpp
     integration/
       mock_upstream.py
       reload_integration.cpp
@@ -93,10 +100,12 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 
 | 目录 | 当前职责 | 已知重构点 |
 | --- | --- | --- |
-| `src/config` | v2 CLI/document/store、旧生产 CLI/AppConfig/ProfileStore、用户路径 | 11.7 一次切换 host/runtime |
+| `src/config` | v2 CLI/document/store/compiler、旧生产 CLI/AppConfig/ProfileStore、用户路径 | 11.7 一次切换 host/runtime |
 | `src/core` | AppService、任务枚举、router 基础、取消、指标、transform 接口 | app/routing/runtime 职责混合 |
 | `src/hosts` | CLI 入口 | 将增加 Windows tray 和 macOS menu bar |
 | `src/logging` | JSON Lines、批写、flush、背压、writer health | 保持独立，仅调整标签 |
+| `src/routing` | immutable RuntimeProfile、两级 hash RouteTable、404/405 lookup | 11.5 接 protocol descriptor |
+| `src/runtime` | v2 RuntimeSnapshot generation 数据模型 | 11.6 接 compiled pipeline |
 | `src/server` | 双 listener、worker、路由编排、reload | 改为单 listener + RouteTable |
 | `src/transforms` | findcg Responses 特定规则 | 改为通用 RuleRegistry/Pipeline |
 | `src/transport` | headers、WinHTTP system proxy、streaming、cancel、timeout | 后续拆平台实现 |

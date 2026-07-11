@@ -3,7 +3,6 @@
 #include "core/cancellation.hpp"
 #include "core/http_types.hpp"
 #include "core/runtime_metrics.hpp"
-#include "core/task.hpp"
 #include "core/timeouts.hpp"
 
 #include <cstddef>

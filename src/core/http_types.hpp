@@ -27,4 +27,9 @@ struct HttpResponse {
     std::string body;
 };
 
+struct UpstreamTarget {
+    std::string base_url;
+    std::string path;
+};
+
 } // namespace ccs

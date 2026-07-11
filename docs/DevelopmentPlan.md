@@ -285,6 +285,18 @@ snapshot 所有权和 reload 并发。
 完成标准：纯内存测试可同时路由多个 Responses/Chat/Messages profile 和各自 Usage，
 不需要 endpoint/task enum。
 
+阶段 11.4 已完成。`RuntimeCompiler` 将 enabled profiles 或一次性选中的完整草稿编译为
+`shared_ptr<const RuntimeSnapshot>`；每个 route 持有 immutable profile、protocol、
+route kind、upstream 与仅含 enabled rules 的 pipeline 定义副本。`RouteTable` 使用
+`canonical path -> method` 两级 hash，不线性扫描 profile，也不在 lookup 额外构造
+复合 key。
+
+独立 CTest 覆盖 Responses/Chat/Messages 与各自 Usage、404/405/invalid path、尾斜杠、
+percent canonicalization、同 path 不同 method、跨 profile collision、选中 disabled
+草稿、绝对/相对日志路径、失败不替换 snapshot、源文档修改后的所有权和并发只读
+lookup。生产 server 未切换；主请求 `POST`/Usage `GET` 将在 11.5 改由 protocol
+descriptor 提供。
+
 ### 11.5 建立 ProtocolRegistry
 
 目的：把协议知识从 `Server` 和固定 task 类型中拿走。

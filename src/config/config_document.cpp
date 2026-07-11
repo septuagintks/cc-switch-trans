@@ -29,7 +29,6 @@ constexpr std::uint32_t kMaxConnections = 65535;
 constexpr std::uint64_t kMaxBufferedBodySize = 1024ULL * 1024 * 1024;
 constexpr std::uint64_t kMaxLogBufferSize = 1024ULL * 1024 * 1024;
 constexpr std::uint32_t kMaxFlushIntervalMs = 60000;
-constexpr std::size_t kMaxRoutePathBytes = 2048;
 constexpr std::size_t kMaxUrlBytes = 8192;
 constexpr std::size_t kMaxRuleOptionDepth = 32;
 constexpr std::size_t kMaxRuleOptionNodes = 4096;
@@ -535,59 +534,13 @@ bool validate_route_path(
     bool local,
     const std::string& label,
     std::string& error) {
-    if (value.empty() || value.front() != '/') {
-        error = label + " must start with /";
+    std::string canonical;
+    std::string path_error;
+    if (!canonicalize_http_path(value, canonical, path_error)) {
+        error = label + ": " + path_error;
         return false;
     }
-    if (value.size() > kMaxRoutePathBytes) {
-        error = label + " exceeds the maximum path length";
-        return false;
-    }
-    if (contains_control(value)
-        || value.find('?') != std::string::npos
-        || value.find('#') != std::string::npos
-        || value.find('\\') != std::string::npos) {
-        error = label + " must not contain control characters, query, fragment, or backslash";
-        return false;
-    }
-    if (value.find("//") != std::string::npos) {
-        error = label + " must not contain duplicate separators";
-        return false;
-    }
-    std::size_t start = 1;
-    while (start <= value.size()) {
-        const auto end = value.find('/', start);
-        const auto segment = value.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        if (segment == "." || segment == "..") {
-            error = label + " must not contain dot segments";
-            return false;
-        }
-        for (std::size_t i = 0; i < segment.size(); ++i) {
-            if (segment[i] != '%') {
-                continue;
-            }
-            if (i + 2 >= segment.size()
-                || std::isxdigit(static_cast<unsigned char>(segment[i + 1])) == 0
-                || std::isxdigit(static_cast<unsigned char>(segment[i + 2])) == 0) {
-                error = label + " contains an invalid percent escape";
-                return false;
-            }
-            std::string escape = segment.substr(i + 1, 2);
-            std::transform(escape.begin(), escape.end(), escape.begin(), [](unsigned char ch) {
-                return static_cast<char>(std::tolower(ch));
-            });
-            if (escape == "2e" || escape == "2f" || escape == "5c") {
-                error = label + " must not encode dot or path separators";
-                return false;
-            }
-            i += 2;
-        }
-        if (end == std::string::npos) {
-            break;
-        }
-        start = end + 1;
-    }
-    if (local && (value == "/_ccs-trans" || value.rfind("/_ccs-trans/", 0) == 0)) {
+    if (local && (canonical == "/_ccs-trans" || canonical.rfind("/_ccs-trans/", 0) == 0)) {
         error = label + " uses the reserved /_ccs-trans management namespace";
         return false;
     }
@@ -816,6 +769,38 @@ bool is_valid_rule_option_name(const std::string& value) {
         && value != "enabled"
         && value != "type"
         && valid_rule_option_name_impl(value);
+}
+
+bool resolve_application_log_path(
+    const ApplicationSettings& application,
+    const std::filesystem::path& application_root,
+    std::filesystem::path& log_path,
+    std::string& error) {
+    error.clear();
+    std::filesystem::path parsed;
+    if (!path_from_utf8(application.logging.path, parsed, error)) {
+        return false;
+    }
+    parsed = parsed.lexically_normal();
+    if (parsed.is_absolute()) {
+        log_path = std::move(parsed);
+        return true;
+    }
+    if (parsed.has_root_path()
+        || parsed.empty()
+        || *parsed.begin() == "..") {
+        error = "relative logging.path must stay within the application root";
+        return false;
+    }
+    const auto root = application_root.lexically_normal();
+    const auto resolved = (root / parsed).lexically_normal();
+    const auto relative = resolved.lexically_relative(root);
+    if (relative.empty() || relative == "." || *relative.begin() == "..") {
+        error = "relative logging.path must stay within the application root";
+        return false;
+    }
+    log_path = resolved;
+    return true;
 }
 
 bool validate_profile_definition(
