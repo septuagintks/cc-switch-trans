@@ -144,14 +144,17 @@ AppConfig
 Windows 通过账户目录 API 解析用户主目录，不接受环境变量替换配置根。相对日志
 路径必须留在 `.ccs-trans` 内；绝对路径可显式指向其他位置。
 
-`config.json` 使用 `ccs-trans.config/v1` typed schema。保存过程写入同目录临时
-文件并原子替换，避免中途退出留下半份 JSON。未知字段、错误类型和非法路径会在
-服务启动前被拒绝。Authorization、Cookie、API key 和其他凭据不属于 profile
-schema，只随每次 HTTP 请求转发。
+当前生产 `run` 仍读取 `ccs-trans.config/v1`，但 v2 editable domain 与独立
+`ConfigStore` 已实现，尚未接入当前 server。v2 store 严格拒绝未知字段、错误 JSON
+类型、旧 schema、非法路径和越界数量；保存持有跨进程 write lock，检查加载时源字节
+未变化，写入临时文件并回读 round-trip 后再原子替换。任何失败都不覆盖目标文件。
+Authorization、Cookie、API key 和其他凭据不属于 profile schema，只随每次 HTTP
+请求转发。
 
 当前 schema 中一个 profile 表示整套 `AppConfig` 覆盖并可被选为 active profile。
-重构后的 Profile 改为“一条可同时启用的代理链”，两种含义不能混用。目标 schema
-会明确切换版本、拒绝旧结构并保留原文件，不建立双模型 fallback；详细决策见
+重构后的 Profile 改为“一条可同时启用的代理链”，两种含义不能混用。v2 loader
+明确拒绝旧结构并保留原文件，不建立双模型 fallback；在 11.7 server 切换前，两套
+内部类型只作为开发期隔离存在，不会让一个 `run` 同时接受两种 schema。详细决策见
 [Reconstruction.md](Reconstruction.md)。
 
 运行配置合并顺序：

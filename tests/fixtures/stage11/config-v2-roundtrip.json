@@ -1,0 +1,54 @@
+{
+  "schema_version": "ccs-trans.config/v2",
+  "listener": {
+    "host": "127.0.0.1",
+    "port": 15723
+  },
+  "runtime": {
+    "worker_threads": 32,
+    "max_connections": 64,
+    "max_request_body_size": 104857600,
+    "max_response_body_size": 104857600,
+    "metrics_interval_ms": 0
+  },
+  "timeouts": {
+    "resolve_ms": 300000,
+    "connect_ms": 300000,
+    "send_ms": 300000,
+    "response_header_ms": 300000,
+    "stream_idle_ms": 300000,
+    "total_ms": 0
+  },
+  "logging": {
+    "path": "logs/ccs-trans.log",
+    "level": "info",
+    "body": true,
+    "redact_sensitive": false,
+    "body_limit": 1048576,
+    "queue_capacity": 16777216,
+    "flush_interval_ms": 100
+  },
+  "profiles": {
+    "findcg": {
+      "enabled": true,
+      "protocol": "responses",
+      "local": {
+        "request_path": "/findcg/v1/responses",
+        "usage_path": "/findcg/v1/usage"
+      },
+      "upstream": {
+        "base_url": "https://www.findcg.com",
+        "request_path": "/v1/responses",
+        "usage_path": "/v1/usage"
+      },
+      "rules": [
+        {
+          "id": "remove-image-gen",
+          "enabled": true,
+          "type": "remove_tool",
+          "tool": "image_gen"
+        }
+      ]
+    }
+  }
+}

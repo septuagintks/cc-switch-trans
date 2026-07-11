@@ -212,6 +212,27 @@ JSON 的类型约束。
 10. 初始上限固定为：配置文档 4 MiB、128 个 profile、256 条 route、每 profile
     64 条 rule。修改上限必须同时 review 内存、reload 时间和 metrics cardinality。
 
+当前保留管理命名空间为 `/_ccs-trans` 及其子路径。数值上限固定为：
+
+- `worker_threads` 1-1024，`max_connections` 为 worker 数到 65535；
+- request/response body、日志 body 与日志 queue 单项最大 1 GiB；
+- stage timeout 使用正 `int` 范围，`total_ms` 和 `metrics_interval_ms` 可为 0；
+- `flush_interval_ms` 为 1-60000。
+
+这些是配置输入上限，不是推荐运行值。默认仍是 32 workers、64 connections、
+100 MiB request/response limit、16 MiB log queue 和 100 ms flush。
+
+disabled profile 允许缺少 protocol/local/upstream，并允许 Usage 两端分两条命令逐步
+补齐；其已存在字段仍立即执行类型、ID、URL 和 path 局部校验。enabled profile 必须
+完整，且 Usage local/upstream 必须同时存在。rule option 作为 typed JSON 值保存；
+option 名、JSON 深度和节点数在 document 层有界，具体 type 的 option 白名单和协议
+适用性由阶段 11.6 的 `RuleRegistry` 校验。
+
+`ConfigStore` 使用 `state/config.lock` 做跨进程写互斥，并比较加载时源字节，拒绝陈旧
+writer。候选文档通过校验后写临时文件，回读、重新 parse 和 canonical round-trip，
+最后用 Windows `MoveFileEx(...REPLACE_EXISTING | WRITE_THROUGH)` 或同文件系统 rename
+替换。旧 v1、超限或解析失败后 store 保持 unpublished，不能调用 save 覆盖原文件。
+
 ### cc-switch 路径用法
 
 如果 cc-switch 会在 endpoint 后追加 `/v1/responses` 和 `/v1/usage`，可把 Provider

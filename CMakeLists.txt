@@ -7,6 +7,8 @@ include(CTest)
 add_library(ccs-trans-core STATIC
     src/config/app_paths.cpp
     src/config/config.cpp
+    src/config/config_document.cpp
+    src/config/config_store.cpp
     src/config/profile_store.cpp
     src/core/app_service.cpp
     src/core/cancellation.cpp
@@ -24,8 +26,7 @@ add_library(ccs-trans-core STATIC
 )
 
 target_compile_features(ccs-trans-core PUBLIC cxx_std_17)
-target_include_directories(ccs-trans-core PUBLIC src)
-target_include_directories(ccs-trans-core PRIVATE third_party)
+target_include_directories(ccs-trans-core PUBLIC src third_party)
 
 if(WIN32)
     target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp shell32 ole32)
@@ -47,6 +48,15 @@ if(BUILD_TESTING)
         CCS_TRANS_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
     )
     add_test(NAME ccs-trans-core-tests COMMAND ccs-trans-core-tests)
+
+    add_executable(ccs-trans-config-document-tests
+        tests/unit/config_document_tests.cpp
+    )
+    target_link_libraries(ccs-trans-config-document-tests PRIVATE ccs-trans-core)
+    target_compile_definitions(ccs-trans-config-document-tests PRIVATE
+        CCS_TRANS_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    )
+    add_test(NAME ccs-trans-config-document-tests COMMAND ccs-trans-config-document-tests)
 
     if(WIN32)
         add_executable(ccs-trans-reload-integration

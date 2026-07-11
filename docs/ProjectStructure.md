@@ -31,6 +31,8 @@ cc-switch-trans/
     config/
       app_paths.hpp/.cpp
       config.hpp/.cpp
+      config_document.hpp/.cpp
+      config_store.hpp/.cpp
       profile_store.hpp/.cpp
     core/
       app_service.hpp/.cpp
@@ -59,9 +61,11 @@ cc-switch-trans/
     fixtures/
       stage11/
         config-v1-read-only.json
+        config-v2-roundtrip.json
         findcg-transform-cases.json
         transparent-request-body.json
     unit/
+      config_document_tests.cpp
       core_tests.cpp
     integration/
       mock_upstream.py
@@ -87,7 +91,7 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 
 | 目录 | 当前职责 | 已知重构点 |
 | --- | --- | --- |
-| `src/config` | CLI、用户路径、整套 AppConfig profile、snapshot | profile 语义将改为代理链 |
+| `src/config` | v2 editable document/store、旧 CLI/AppConfig/ProfileStore、用户路径 | 11.3 起逐步移除旧模型 |
 | `src/core` | AppService、任务枚举、router 基础、取消、指标、transform 接口 | app/routing/runtime 职责混合 |
 | `src/hosts` | CLI 入口 | 将增加 Windows tray 和 macOS menu bar |
 | `src/logging` | JSON Lines、批写、flush、背压、writer health | 保持独立，仅调整标签 |
@@ -161,8 +165,8 @@ src/
 | 当前文件/职责 | 目标位置 | 迁移触发点 |
 | --- | --- | --- |
 | `core/app_service.*` | `app/app_service.*` | 新 RuntimeSnapshot 接入 AppService |
-| `config/profile_store.*` | `config/config_store.*` | v2 schema 与新 CLI 落地 |
-| `config/config.*` | `config/config_document.*` + `runtime_compiler.*` | editable/runtime 模型分开 |
+| `config/profile_store.*` | 删除；`config/config_store.*` 已接替持久化职责 | 新 CLI 接入后移除旧 v1 store |
+| `config/config.*` | 保留 CLI 解析后删除；领域类型已进入 `config_document.*` | `runtime_compiler.*` 接入后删除旧 AppConfig |
 | `core/task*` | `routing/profile.hpp` + `route_table.*` | 固定 endpoint/task enum 被移除 |
 | `core/transform.*` | `rules/rule.*` | RuleRegistry 接入 |
 | `transforms/findcg_*` | `rules/remove_tool_rule.*` | findcg 行为改为 profile rule |
@@ -287,6 +291,7 @@ tests/benchmark/
 tests/fixtures/
   stage11/
     config-v1-read-only.json
+    config-v2-roundtrip.json
     findcg-transform-cases.json
     transparent-request-body.json
 ```
