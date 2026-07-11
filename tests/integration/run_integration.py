@@ -1,4 +1,6 @@
 import concurrent.futures
+import base64
+import hashlib
 import http.client
 import json
 import pathlib
@@ -223,6 +225,28 @@ def main():
         assert_true(status == 200, "responses no-slash status")
         assert_true(payload["path"] == "/v1/responses/?trace=no-slash", "responses no-slash upstream path")
         assert_true(payload["body"] == "noslash", "responses no-slash body")
+
+        transparent_body = (
+            ROOT / "tests" / "fixtures" / "stage11" / "transparent-request-body.json"
+        ).read_bytes()
+        status, _, data = request(
+            responses_proxy_port,
+            "POST",
+            "/v1/responses?trace=exact-bytes",
+            body=transparent_body,
+            headers={"Content-Type": "application/json"},
+        )
+        payload = json.loads(data)
+        assert_true(status == 200, "transparent byte fixture status")
+        assert_true(payload["body_size"] == len(transparent_body), "transparent body byte size")
+        assert_true(
+            payload["body_sha256"] == hashlib.sha256(transparent_body).hexdigest().upper(),
+            "transparent body SHA-256",
+        )
+        assert_true(
+            payload["body_base64"] == base64.b64encode(transparent_body).decode("ascii"),
+            "transparent body exact bytes",
+        )
 
         status, _, data = request(
             responses_proxy_port,

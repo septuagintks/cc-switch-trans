@@ -1,0 +1,82 @@
+{
+  "schema_version": "ccs-trans.fixture/findcg-transform/v1",
+  "cases": [
+    {
+      "name": "remove-root-image-gen-tools",
+      "upstream_url": "https://www.findcg.com",
+      "body": "{\"input\":\"image_gen remains text\",\"tools\":[{\"type\":\"namespace\",\"name\":\"image_gen\"},{\"type\":\"function\",\"name\":\"image_gen\"},{\"namespace\":\"image_gen\"},{\"type\":\"function\",\"name\":\"web_search\"}],\"nested\":{\"tools\":[{\"name\":\"image_gen\"}]}}",
+      "expected": {
+        "matched": true,
+        "modified": true,
+        "rewrite_reason": "findcg_responses",
+        "removed_tools_count": 3,
+        "body": {
+          "input": "image_gen remains text",
+          "tools": [
+            {
+              "type": "function",
+              "name": "web_search"
+            }
+          ],
+          "nested": {
+            "tools": [
+              {
+                "name": "image_gen"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "target-tool-absent",
+      "upstream_url": "https://findcg.com",
+      "body": "{\n  \"input\": \"hi\", \"tools\": [{\"type\":\"function\",\"name\":\"web_search\"}]\n}\n",
+      "expected": {
+        "matched": true,
+        "modified": false,
+        "rewrite_reason": "findcg_responses",
+        "removed_tools_count": 0
+      }
+    },
+    {
+      "name": "tools-field-absent",
+      "upstream_url": "https://findcg.com",
+      "body": "{\"input\":\"hi\"}",
+      "expected": {
+        "matched": true,
+        "modified": false,
+        "rewrite_reason": "findcg_responses",
+        "removed_tools_count": 0
+      }
+    },
+    {
+      "name": "tools-field-not-array",
+      "upstream_url": "https://findcg.com",
+      "body": "{\"tools\":\"image_gen\"}",
+      "expected": {
+        "matched": true,
+        "modified": false,
+        "rewrite_reason": "findcg_responses",
+        "removed_tools_count": 0
+      }
+    },
+    {
+      "name": "non-findcg-invalid-json-remains-transparent",
+      "upstream_url": "https://provider.invalid",
+      "body": "not json",
+      "expected": {
+        "matched": false,
+        "modified": false,
+        "rewrite_reason": "upstream_not_findcg",
+        "removed_tools_count": 0
+      }
+    },
+    {
+      "name": "findcg-invalid-json-fails-closed",
+      "upstream_url": "https://findcg.com",
+      "body": "not json",
+      "expected_error_status": 400
+    }
+  ]
+}

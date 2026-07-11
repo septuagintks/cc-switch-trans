@@ -56,6 +56,11 @@ cc-switch-trans/
       proxy.hpp/.cpp
 
   tests/
+    fixtures/
+      stage11/
+        config-v1-read-only.json
+        findcg-transform-cases.json
+        transparent-request-body.json
     unit/
       core_tests.cpp
     integration/
@@ -91,6 +96,7 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 | `tests/unit` | 配置、路由、URL、日志和 transform | 按新领域模块拆 fixture |
 | `tests/integration` | 双上游、协议、reload generation | 扩展多 profile/Messages/rules |
 | `tests/benchmark` | 8/16/50 路和 transform 微基准 | 扩展 profile/rule 维度 |
+| `tests/fixtures` | 纯合成、可跨测试层复用的协议/config 输入 | v2 schema 与新 rule cases |
 
 ## 阶段 11 目标目录
 
@@ -198,6 +204,10 @@ packaging/macos/
 平台目录只包含平台实现。tray/menu controller 通过同一应用命令接口调用核心服务，
 不得复制 config parser、RouteTable、RuleRegistry、logger 或 transport 初始化。
 
+平台 transport 的代理边界固定为：Windows 11 21H2 使用 WinHTTP 自动跟随当前用户
+系统代理且代理失败不回退 direct；macOS 链接系统 libcurl，只继承启动进程环境，
+不读取或修改 macOS 系统代理。代理地址和凭据不进入公共 config/profile 类型。
+
 ## CMake 目标演进
 
 当前目标：
@@ -270,6 +280,12 @@ tests/integration/
 tests/benchmark/
   run_benchmark.py
   transform_benchmark.cpp
+
+tests/fixtures/
+  stage11/
+    config-v1-read-only.json
+    findcg-transform-cases.json
+    transparent-request-body.json
 ```
 
 在现有单个 `core_tests.cpp` 影响 review 或编译定位前不机械拆文件。开始拆分时每个

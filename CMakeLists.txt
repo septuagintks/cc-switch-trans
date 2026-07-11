@@ -43,6 +43,9 @@ if(BUILD_TESTING)
     )
     target_link_libraries(ccs-trans-core-tests PRIVATE ccs-trans-core)
     target_include_directories(ccs-trans-core-tests PRIVATE third_party)
+    target_compile_definitions(ccs-trans-core-tests PRIVATE
+        CCS_TRANS_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    )
     add_test(NAME ccs-trans-core-tests COMMAND ccs-trans-core-tests)
 
     if(WIN32)

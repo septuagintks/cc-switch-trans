@@ -261,6 +261,15 @@ void test_url_and_router() {
     require(responses_router.route("/unknown").task == nullptr, "unknown route");
 }
 
+std::string read_file(const std::filesystem::path& path);
+
+std::filesystem::path fixture_path(const std::filesystem::path& relative) {
+#ifndef CCS_TRANS_TEST_FIXTURE_DIR
+#error "CCS_TRANS_TEST_FIXTURE_DIR must be defined for core tests"
+#endif
+    return std::filesystem::path(CCS_TRANS_TEST_FIXTURE_DIR) / relative;
+}
+
 void test_findcg_transform() {
     ccs::FindcgResponsesTransform transform;
     ccs::TaskConfig task{
@@ -271,37 +280,54 @@ void test_findcg_transform() {
         {"remove_findcg_image_gen"},
         true,
     };
-    ccs::UpstreamTarget upstream{"https://www.findcg.com", "/v1/responses/"};
-    const std::string body = R"({"input":"image_gen remains text","tools":[{"type":"namespace","name":"image_gen"},{"type":"function","name":"image_gen"},{"namespace":"image_gen"},{"type":"function","name":"web_search"}],"nested":{"tools":[{"name":"image_gen"}]}})";
-    auto result = transform.apply(task, upstream, body);
-    require(result.matched, "findcg transform matched");
-    require(result.modified, "findcg transform modified");
-    require(result.removed_tools.size() == 3, "three image tools removed");
-    require(result.rewritten_body.has_value(), "rewritten body exists");
 
-    const auto rewritten = nlohmann::json::parse(*result.rewritten_body);
-    require(rewritten["tools"].size() == 1, "other root tool retained");
-    require(rewritten["tools"][0]["name"] == "web_search", "web search retained");
-    require(rewritten["input"] == "image_gen remains text", "text retained");
-    require(rewritten["nested"]["tools"].size() == 1, "nested tool retained");
+    const auto fixture = nlohmann::json::parse(read_file(
+        fixture_path("stage11/findcg-transform-cases.json")));
+    require(
+        fixture["schema_version"] == "ccs-trans.fixture/findcg-transform/v1",
+        "findcg fixture schema");
+    require(fixture["cases"].is_array() && !fixture["cases"].empty(), "findcg fixture cases");
 
-    const auto no_tools = transform.apply(task, upstream, R"({"input":"hi"})");
-    require(no_tools.matched && !no_tools.modified && !no_tools.rewritten_body, "no tools reuses input body");
-    const auto invalid_tools_shape = transform.apply(task, upstream, R"({"tools":"image_gen"})");
-    require(invalid_tools_shape.matched && !invalid_tools_shape.modified, "non-array tools remain transparent");
-
-    upstream.base_url = "https://example.com";
-    const auto transparent = transform.apply(task, upstream, "not json");
-    require(!transparent.matched && !transparent.rewritten_body, "non-findcg avoids JSON parsing");
-
-    upstream.base_url = "https://findcg.com";
-    bool parse_failed = false;
-    try {
-        (void)transform.apply(task, upstream, "not json");
-    } catch (const ccs::TransformError& ex) {
-        parse_failed = ex.status_code() == 400;
+    for (const auto& test_case : fixture["cases"]) {
+        const auto name = test_case.at("name").get<std::string>();
+        const auto body = test_case.at("body").get<std::string>();
+        ccs::UpstreamTarget upstream{
+            test_case.at("upstream_url").get<std::string>(),
+            "/v1/responses/",
+        };
+        const bool expects_error = test_case.contains("expected_error_status");
+        try {
+            const auto result = transform.apply(task, upstream, body);
+            require(!expects_error, name + ": expected TransformError");
+            const auto& expected = test_case.at("expected");
+            require(result.matched == expected.at("matched").get<bool>(), name + ": matched");
+            require(result.modified == expected.at("modified").get<bool>(), name + ": modified");
+            require(
+                result.rewrite_reason == expected.at("rewrite_reason").get<std::string>(),
+                name + ": rewrite reason");
+            require(
+                result.removed_tools.size() == expected.at("removed_tools_count").get<std::size_t>(),
+                name + ": removed tool count");
+            require(result.original_body_size == body.size(), name + ": original body size");
+            if (!result.modified) {
+                require(!result.rewritten_body, name + ": transparent body has no replacement");
+                require(result.rewritten_body_size == body.size(), name + ": transparent body size");
+            } else {
+                require(result.rewritten_body.has_value(), name + ": rewritten body exists");
+                require(
+                    result.rewritten_body_size == result.rewritten_body->size(),
+                    name + ": rewritten body size");
+                require(
+                    nlohmann::json::parse(*result.rewritten_body) == expected.at("body"),
+                    name + ": rewritten body semantics");
+            }
+        } catch (const ccs::TransformError& ex) {
+            require(expects_error, name + ": unexpected TransformError");
+            require(
+                ex.status_code() == test_case.at("expected_error_status").get<int>(),
+                name + ": TransformError status");
+        }
     }
-    require(parse_failed, "invalid findcg JSON fails closed");
 }
 
 std::string read_file(const std::filesystem::path& path) {
@@ -661,6 +687,48 @@ void test_profile_store() {
     std::filesystem::remove_all(root, ec);
 }
 
+void test_stage11_config_fixture() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path()
+        / ("ccs-trans-stage11-config-fixture-" + std::to_string(nonce));
+    const auto paths = ccs::make_app_paths(root);
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root);
+    std::filesystem::copy_file(
+        fixture_path("stage11/config-v1-read-only.json"),
+        paths.config_file,
+        std::filesystem::copy_options::overwrite_existing);
+
+    const auto before = read_file(paths.config_file);
+    ccs::ProfileStore store(paths);
+    std::string error;
+    require(store.load(error), error);
+    require(read_file(paths.config_file) == before, "loading baseline config does not rewrite fixture bytes");
+    require(
+        store.active_profile() && *store.active_profile() == "synthetic-baseline",
+        "baseline fixture active profile");
+
+    const auto run = parse({"run"});
+    require(run.ok, run.error);
+    ccs::ConfigSnapshot snapshot;
+    std::string selected;
+    require(store.resolve_run(run, snapshot, selected, error), error);
+    require(selected == "synthetic-baseline", "baseline fixture profile selected");
+    require(
+        snapshot->responses_endpoint.upstream_url == "https://responses.baseline.invalid",
+        "baseline fixture Responses upstream");
+    require(
+        snapshot->chat_endpoint.upstream_url == "https://chat.baseline.invalid",
+        "baseline fixture Chat upstream");
+    require(snapshot->worker_threads == 16 && snapshot->max_connections == 32,
+        "baseline fixture capacity");
+    require(!snapshot->log_body && snapshot->redact_sensitive,
+        "baseline fixture logging policy");
+
+    std::filesystem::remove_all(root, ec);
+}
+
 void test_runtime_metrics() {
     ccs::RuntimeMetrics metrics;
     metrics.connection_accepted(ccs::EndpointGroupKind::Responses, 1, 1);
@@ -852,6 +920,7 @@ int main() {
         {"logger failure contract", test_logger_failure_contract},
         {"logger open failure contract", test_logger_open_failure_contract},
         {"profile store", test_profile_store},
+        {"stage 11 config fixture", test_stage11_config_fixture},
         {"runtime metrics", test_runtime_metrics},
         {"app service startup failure", test_app_service_startup_failure},
         {"server reload classification", test_server_reload_classification},

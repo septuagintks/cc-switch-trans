@@ -1,4 +1,6 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import base64
+import hashlib
 import json
 import sys
 import time
@@ -34,7 +36,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         query = parse_qs(urlparse(self.path).query)
         length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length).decode("utf-8", errors="replace")
+        body_bytes = self.rfile.read(length)
+        body = body_bytes.decode("utf-8", errors="replace")
         self._maybe_delay()
         if query.get("stream", [""])[0] == "sse":
             server_port = self.server.server_address[1]
@@ -71,6 +74,9 @@ class Handler(BaseHTTPRequestHandler):
             "server_port": self.server.server_address[1],
             "headers": dict(self.headers.items()),
             "body": body,
+            "body_size": len(body_bytes),
+            "body_sha256": hashlib.sha256(body_bytes).hexdigest().upper(),
+            "body_base64": base64.b64encode(body_bytes).decode("ascii"),
         }
         self._send_json(payload)
 

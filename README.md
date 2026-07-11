@@ -36,6 +36,9 @@ metrics set, and process-level WinHTTP session.
 
 Requirements: CMake 3.20 or newer, Ninja, and a C++17 compiler.
 
+The supported Windows baseline is Windows 11 21H2 x64. Windows 10 and earlier
+versions are not compatibility targets.
+
 ```text
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
@@ -235,6 +238,13 @@ double-click background startup and a real current-user startup toggle, then a
 macOS menu bar application with login-item control. The canonical 512 px PNG is
 `assets/icons/ccs-trans-512.png`; Windows will derive a multi-resolution ICO
 with ImageMagick, while the macOS menu bar will use PNG assets.
+
+The first network work package will switch the current WinHTTP default-proxy
+session to Windows automatic system-proxy resolution. Once Windows selects a
+proxy, connection failure will not retry directly, and explicit proxy
+credentials will not be supported. The macOS transport will link the system
+libcurl and use only proxy environment inherited from the launching terminal;
+it will not read or modify macOS system proxy settings.
 
 See [docs/Design.md](docs/Design.md),
 [docs/Reconstruction.md](docs/Reconstruction.md),

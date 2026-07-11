@@ -1,0 +1,5 @@
+{
+  "z": 1,
+  "a": [true, null, {"tool": "image_gen remains plain text"}],
+  "spacing": "preserve these exact bytes"
+}
