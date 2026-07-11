@@ -770,10 +770,10 @@ public:
         : id(generation_id)
         , snapshot(std::move(runtime_snapshot))
         , runtime(require_runtime_snapshot(snapshot))
-        , proxy(
+        , transport(make_upstream_transport(
               runtime.application.timeouts,
               static_cast<std::size_t>(runtime.application.runtime.max_response_body_size),
-              metrics)
+              metrics))
         , logger(std::move(shared_logger)) {
         if (!logger) {
             throw std::invalid_argument("request generation must have a logger");
@@ -783,7 +783,7 @@ public:
     std::uint64_t id;
     RuntimeSnapshotPtr snapshot;
     const RuntimeSnapshot& runtime;
-    Proxy proxy;
+    std::unique_ptr<UpstreamTransport> transport;
     std::shared_ptr<Logger> logger;
 };
 
@@ -1127,7 +1127,7 @@ bool Server::process_with_generation(
             field_string("upstream_url", route.upstream.base_url),
             field_string("upstream_path", route.upstream.path),
             field_string("query", request.query),
-            field_string("upstream_proxy_mode", upstream_proxy_mode()),
+            field_string("upstream_proxy_mode", generation->transport->proxy_mode()),
             field_bool("rewrite_modified", pipeline_result.modified),
             field_number("rule_count", static_cast<long long>(pipeline_result.traces.size())),
             field_number("json_parse_count", static_cast<long long>(pipeline_result.parse_count)),
@@ -1140,7 +1140,7 @@ bool Server::process_with_generation(
         generation->logger->log("info", "upstream_request", upstream_request_fields);
 
         try {
-            response = generation->proxy.forward_streaming(
+            response = generation->transport->forward_streaming(
                 request,
                 route.upstream,
                 [&](const HttpResponse& headers_response) {
@@ -1368,7 +1368,8 @@ std::pair<HttpResponse, bool> Server::handle_usage_request(
     const RouteEntry& route,
     const CancellationToken& cancellation) const {
     try {
-        auto response = generation->proxy.forward(request, route.upstream, cancellation);
+        auto response = generation->transport->forward(
+            request, route.upstream, cancellation);
         if (response.reason.empty()) {
             response.reason = reason_phrase(response.status_code);
         }
@@ -1475,7 +1476,7 @@ int Server::run(const StartupCallback& startup_callback) {
             field_number("profile_count", static_cast<long long>(profile_count)),
             field_number("route_count", static_cast<long long>(route_count)),
             field_string("log_path", log_path.string()),
-            field_string("upstream_proxy_mode", upstream_proxy_mode()),
+            field_string("upstream_proxy_mode", startup_generation->transport->proxy_mode()),
             field_number("worker_threads", application.runtime.worker_threads),
             field_number("max_connections", application.runtime.max_connections),
             field_number("metrics_interval_ms", application.runtime.metrics_interval_ms),

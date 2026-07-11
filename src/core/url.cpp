@@ -219,9 +219,4 @@ std::string join_url_path(const std::string& base_path, const std::string& route
     return path;
 }
 
-bool is_findcg_host(const std::string& host) {
-    const auto normalized = lower_copy(host);
-    return normalized == "findcg.com" || normalized == "www.findcg.com";
-}
-
 } // namespace ccs

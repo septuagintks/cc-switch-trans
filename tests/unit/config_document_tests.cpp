@@ -90,7 +90,6 @@ void test_round_trip_and_defaults() {
     require(ccs::serialize_config_document(document, serialized, error), error);
     const auto serialized_json = nlohmann::json::parse(serialized);
     require(serialized_json["schema_version"] == "ccs-trans.config/v2", "v2 schema serialized");
-    require(!serialized_json.contains("active_profile"), "legacy active profile is absent");
 
     ccs::ConfigDocument reparsed;
     require(ccs::parse_config_document(serialized, reparsed, error), error);
@@ -385,24 +384,25 @@ void test_config_store_atomicity_and_revision() {
     std::filesystem::remove_all(root, ec);
 }
 
-void test_legacy_and_oversized_files_are_preserved() {
-    const auto root = unique_test_root("config-v2-legacy");
+void test_unsupported_and_oversized_files_are_preserved() {
+    const auto root = unique_test_root("config-v2-unsupported");
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
     const auto paths = ccs::make_app_paths(root);
     std::filesystem::create_directories(root);
-    const auto legacy = read_file(fixture_path("stage11/config-v1-read-only.json"));
-    write_file(paths.config_file, legacy);
+    const std::string unsupported = R"({"schema_version":"unsupported","profiles":{}})";
+    write_file(paths.config_file, unsupported);
 
     ccs::ConfigStore store(paths);
     std::string error;
     require(!store.load(error) && error.find("expected ccs-trans.config/v2") != std::string::npos,
-        "legacy schema rejected explicitly");
-    require(!store.loaded(), "failed legacy load does not publish a document");
+        "unsupported schema rejected explicitly");
+    require(!store.loaded(), "failed unsupported load does not publish a document");
     require(!store.save(ccs::make_default_config_document(), error)
             && error.find("loaded successfully") != std::string::npos,
-        "failed load cannot overwrite legacy config");
-    require(read_file(paths.config_file) == legacy, "legacy config bytes remain unchanged");
+        "failed load cannot overwrite unsupported config");
+    require(read_file(paths.config_file) == unsupported,
+        "unsupported config bytes remain unchanged");
 
     std::string oversized(ccs::kMaxConfigDocumentBytes + 1, 'x');
     write_file(paths.config_file, oversized);
@@ -423,7 +423,7 @@ int main() {
         {"identifiers paths and URLs", test_identifiers_paths_and_urls},
         {"limits", test_limits},
         {"config store atomicity and revision", test_config_store_atomicity_and_revision},
-        {"legacy and oversized preservation", test_legacy_and_oversized_files_are_preserved},
+        {"unsupported and oversized preservation", test_unsupported_and_oversized_files_are_preserved},
     };
     try {
         for (const auto& [name, test] : tests) {

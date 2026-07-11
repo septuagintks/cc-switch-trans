@@ -676,15 +676,6 @@ def stop_process(process, graceful=False):
         process._benchmark_stdout_file.close()
 
 
-def run_transform_benchmark(path):
-    if path is None or not path.exists():
-        return {"available": False}
-    output = subprocess.check_output([str(path), "200", str(100 * 1024)], cwd=ROOT, text=True)
-    result = json.loads(output)
-    result["available"] = True
-    return result
-
-
 def latest_performance_snapshot(path):
     if not path.exists():
         return None
@@ -707,19 +698,12 @@ def main():
     parser.add_argument("--max-connections", type=int, default=64)
     parser.add_argument("--build-type", default="Release")
     parser.add_argument("--source-ref", default="HEAD")
-    parser.add_argument("--transform-benchmark", type=pathlib.Path)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     args = parser.parse_args()
 
     exe = args.exe.resolve()
     if not exe.exists():
         raise RuntimeError(f"missing executable: {exe}")
-    transform_exe = args.transform_benchmark
-    if transform_exe is None:
-        suffix = ".exe" if os.name == "nt" else ""
-        transform_exe = exe.parent / f"ccs-trans-transform-benchmark{suffix}"
-    else:
-        transform_exe = transform_exe.resolve()
     supports_runtime_metrics = "runtime.metrics-interval-ms" in executable_help(exe)
 
     TMP.mkdir(parents=True, exist_ok=True)
@@ -866,7 +850,6 @@ def main():
                 "total_timeout_ms": 0,
             },
             "profiles": profile_results,
-            "transform_microbenchmark": run_transform_benchmark(transform_exe),
         }
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

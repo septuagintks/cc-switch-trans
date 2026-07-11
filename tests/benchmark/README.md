@@ -10,8 +10,7 @@ cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release --clean-first
 ```
 
-This builds `ccs-trans.exe`, the legacy transform microbenchmark, and the
-compiled rule-pipeline microbenchmark.
+This builds `ccs-trans.exe` and the compiled rule-pipeline microbenchmark.
 
 Run the rule matrix with its default 1 KiB, 100 KiB, and 1 MiB bodies:
 
@@ -89,6 +88,6 @@ configured Profile paths; raw results remain under ignored
 
 Rule-pipeline work must also compare empty, 1, 8, and 32-rule pipelines. Empty
 pipelines must avoid JSON parsing; non-empty pipelines must parse at most once
-and serialize at most once regardless of rule count. Messages traffic is added
-as a separate profile only after its protocol handler passes the same ordinary
-response, SSE, cancellation, and Usage assertions.
+and serialize at most once regardless of rule count. Messages has passed the
+ordinary response, SSE, cancellation, and Usage integration matrix; the fixed
+cross-version benchmark comparison remains the Responses/Chat mixed workload.

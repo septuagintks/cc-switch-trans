@@ -19,6 +19,14 @@ cmake --build build
 
 The Windows executable is `build/ccs-trans.exe`.
 
+Create the fixed-whitelist Windows package from a Release build:
+
+```text
+powershell -ExecutionPolicy Bypass -File tools/package_windows.ps1
+```
+
+The package is written under ignored `dist/` and includes a SHA-256 manifest.
+
 ## Configuration Root
 
 ```text
@@ -130,9 +138,8 @@ Run-only overrides are deliberately limited:
 ccs-trans run [--profile <name>] [--log-level <level>] [--log-path <path>]
 ```
 
-Every command changes one field or performs one action. There are no short,
-legacy, or synonymous options. Run `ccs-trans --help` for the canonical key
-list.
+Every command changes one field or performs one action. There are no short or
+synonymous options. Run `ccs-trans --help` for the canonical key list.
 
 ## Rules
 
@@ -241,20 +248,20 @@ under ignored `benchmark-results/`.
 ```text
 assets/icons/          Canonical cross-platform icon source
 docs/                  Design and development documentation
+src/app/               Shared service lifecycle and reload rollback
 src/config/            v2 CLI, document store, validation, runtime compiler
-src/core/              Service lifecycle, cancellation, and global metrics
+src/core/              HTTP data, cancellation, URL, timeout, and global metrics
 src/hosts/             Executable entry points
 src/logging/           Structured asynchronous logging
 src/protocols/         Responses, Chat, and Messages handlers/registry
 src/routing/           Immutable Profiles and exact RouteTable
 src/rules/             Rule factories, registry, and compiled pipelines
 src/server/            Single listener, worker queue, request orchestration
-src/transport/         Header filtering and WinHTTP forwarding
+src/transport/         Cross-platform interface, header policy, Windows WinHTTP
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-The next implementation work removes the now-unused v1/task/transform sources
-and completes the phase 11 regression/package review. Windows tray support
-follows that cleanup; macOS transport, menu bar hosting, login item support,
-and packaging remain planned. See
+The next implementation work starts Windows tray hosting, background launch,
+the click menu, and per-user startup registration. macOS system-libcurl
+transport, menu bar hosting, login item support, and packaging follow. See
 [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

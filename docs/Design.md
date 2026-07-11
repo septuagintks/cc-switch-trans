@@ -24,7 +24,7 @@
 3. 执行该 Profile 的有序请求 Rule pipeline；
 4. 把请求转发到 Profile 自己的 upstream；
 5. 原样返回普通响应或增量转发 SSE；
-6. 记录可由 `request_id` 串联的结构化日志。
+6. 记录可由 `request_id` 与 `generation_id` 串联的结构化日志。
 
 它不负责 Provider 选择、API key 保存、模型故障转移或 Agent 行为。这些职责属于
 cc-switch、Codex 或其他上层客户端。
@@ -50,7 +50,7 @@ Codex / cc-switch / other client
  Profile -> ProtocolHandler -> CompiledPipeline
               |
               v
-       Proxy / WinHTTP -> upstream
+ UpstreamTransport / WinHTTP -> upstream
               |
               +---- incremental SSE callbacks
               +---- structured Logger
@@ -64,19 +64,20 @@ Codex / cc-switch / other client
 ```text
 CLI host -> ConfigStore + RuntimeCompiler -> AppService
 AppService -> Server
-Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + Proxy
-Proxy -> HTTP types + cancellation + platform network APIs
+Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + UpstreamTransport
+UpstreamTransport -> HTTP types + cancellation + platform implementation
 ```
 
 | 模块 | 当前职责 | 禁止承担 |
 | --- | --- | --- |
 | `src/hosts` | v2 CLI、退出码、服务启停 | 路由、规则或 WinHTTP 逻辑 |
+| `src/app` | start/reload/rollback/stop/wait 生命周期 | 解析协议或平台 UI |
 | `src/config` | schema、CLI、原子持久化、runtime 编译 | 请求期扫描 Profile |
 | `src/routing` | immutable Profile、两级 hash RouteTable | 解析规则 option |
 | `src/protocols` | 协议能力、专用布局、本地错误 envelope | socket/worker 生命周期 |
 | `src/rules` | factory、编译、共享 DOM pipeline | 上游选择或响应改写 |
 | `src/server` | 单 listener、容量、worker、请求编排 | findcg/provider host 特判 |
-| `src/transport` | headers、WinHTTP、SSE、取消、timeout | 修改 JSON 请求 |
+| `src/transport` | upstream 接口、headers、WinHTTP、SSE、取消、timeout | 修改 JSON 请求 |
 | `src/logging` | JSON Lines、批写、flush、背压 | 决定业务规则 |
 
 `ccs-trans-core` 是未来 CLI、Windows tray 和 macOS menu bar 宿主的共享服务核心。
@@ -96,7 +97,7 @@ Proxy -> HTTP types + cancellation + platform network APIs
 ```
 
 Windows 从 `USERPROFILE` 读取用户目录，macOS 使用账户 home。配置 schema 固定为
-`ccs-trans.config/v2`；旧 schema、未知字段、重复 JSON key、错误类型和越界值会被
+`ccs-trans.config/v2`；非 v2 schema、未知字段、重复 JSON key、错误类型和越界值会被
 拒绝，不做 fallback。
 
 ```text
@@ -122,8 +123,7 @@ ConfigStore 保存时持有跨进程 lock，比较加载时源字节，写同目
 canonical round-trip，再原子替换目标。失败不会覆盖原配置。
 
 CLI 一条命令只修改一个字段或执行一个动作。应用字段、Profile 字段和 Rule option
-分别由 `config set`、`profile set`、`rule set` 修改。没有短参数、别名、旧参数或
-`profile use`。
+分别由 `config set`、`profile set`、`rule set` 修改。没有短参数或同义别名。
 
 ## Runtime 编译
 
@@ -222,7 +222,7 @@ accept
   -> release capacity
 ```
 
-RequestGeneration 持有 RuntimeSnapshot、Proxy 和 Logger。请求进入编排后一直持有同一
+RequestGeneration 持有 RuntimeSnapshot、UpstreamTransport 和 Logger。请求进入编排后一直持有同一
 generation；reload 后的新请求读取新 generation，in-flight 请求继续使用旧 Profile、
 pipeline、upstream 和限制。
 
@@ -294,5 +294,4 @@ benchmark 输出或临时目录。
 当前边界：
 
 - listener 与 upstream transport 仍只有 Windows 实现；
-- v1 config/task/router/findcg transform 源码已退出生产路径，阶段 11.9 删除；
 - tray、开机自启、双击后台运行和 macOS menu bar 尚未实现。

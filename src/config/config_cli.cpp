@@ -152,10 +152,6 @@ bool parse_profile_command(int argc, char** argv, ConfigCliParseResult& result) 
         return false;
     }
     const std::string subcommand = argv[2];
-    if (subcommand == "use") {
-        result.error = "profile use was removed; use profile enable/disable or run --profile";
-        return false;
-    }
     if (subcommand == "list" && argc == 3) {
         result.command.kind = ConfigCliCommandKind::ProfileList;
         return true;

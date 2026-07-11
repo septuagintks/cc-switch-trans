@@ -2,7 +2,7 @@
 #include "config/config_cli.hpp"
 #include "config/config_store.hpp"
 #include "config/runtime_compiler.hpp"
-#include "core/app_service.hpp"
+#include "app/app_service.hpp"
 
 #include <iostream>
 #include <utility>

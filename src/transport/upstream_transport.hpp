@@ -13,8 +13,6 @@
 
 namespace ccs {
 
-const char* upstream_proxy_mode();
-
 class ProxyError : public std::runtime_error {
 public:
     ProxyError(int status_code, std::string type, std::string message);
@@ -27,38 +25,29 @@ private:
     std::string type_;
 };
 
-class Proxy {
+class UpstreamTransport {
 public:
     using HeaderCallback = std::function<bool(const HttpResponse&)>;
     using ChunkCallback = std::function<bool(const std::string&)>;
 
-    Proxy(
-        TimeoutConfig timeouts,
-        std::size_t max_response_body_size,
-        std::shared_ptr<RuntimeMetrics> metrics = {});
-    ~Proxy();
+    virtual ~UpstreamTransport() = default;
 
-    Proxy(const Proxy&) = delete;
-    Proxy& operator=(const Proxy&) = delete;
-
-    HttpResponse forward(
+    virtual const char* proxy_mode() const noexcept = 0;
+    virtual HttpResponse forward(
         const HttpRequest& request,
         const UpstreamTarget& target,
-        const CancellationToken& cancellation = {}) const;
-    HttpResponse forward_streaming(
+        const CancellationToken& cancellation = {}) const = 0;
+    virtual HttpResponse forward_streaming(
         const HttpRequest& request,
         const UpstreamTarget& target,
         const HeaderCallback& on_headers,
         const ChunkCallback& on_chunk,
-        const CancellationToken& cancellation = {}) const;
-
-private:
-    struct Impl;
-
-    TimeoutConfig timeouts_;
-    std::size_t max_response_body_size_;
-    std::shared_ptr<RuntimeMetrics> metrics_;
-    std::unique_ptr<Impl> impl_;
+        const CancellationToken& cancellation = {}) const = 0;
 };
+
+std::unique_ptr<UpstreamTransport> make_upstream_transport(
+    TimeoutConfig timeouts,
+    std::size_t max_response_body_size,
+    std::shared_ptr<RuntimeMetrics> metrics = {});
 
 } // namespace ccs

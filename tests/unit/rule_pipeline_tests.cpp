@@ -468,9 +468,9 @@ void test_remove_tool_protocol_layouts() {
         "removing every match leaves an explicit empty tools array");
 }
 
-void test_findcg_fixture_equivalence() {
+void test_remove_tool_fixture() {
     const auto fixture_path = std::filesystem::path(CCS_TRANS_TEST_FIXTURE_DIR)
-        / "stage11/findcg-transform-cases.json";
+        / "stage11/remove-tool-cases.json";
     const auto fixture = nlohmann::json::parse(read_file(fixture_path));
     const auto pipeline = compile({
         rule("remove-image-gen", "remove_tool", {{"tool", "image_gen"}}),
@@ -478,9 +478,6 @@ void test_findcg_fixture_equivalence() {
 
     for (const auto& test_case : fixture.at("cases")) {
         const auto name = test_case.at("name").get<std::string>();
-        if (name == "non-findcg-invalid-json-remains-transparent") {
-            continue;
-        }
         const auto result = pipeline->apply(test_case.at("body").get<std::string>());
         if (test_case.contains("expected_error_status")) {
             require(!result.ok
@@ -494,8 +491,8 @@ void test_findcg_fixture_equivalence() {
                 && result.modified == expected.at("modified").get<bool>()
                 && result.traces.size() == 1
                 && result.traces[0].summary.affected_count
-                    == expected.at("removed_tools_count").get<std::size_t>(),
-            "fixture transform behavior: " + name);
+                    == expected.at("affected_count").get<std::size_t>(),
+            "fixture remove_tool behavior: " + name);
         if (result.modified) {
             require(result.rewritten_body
                     && nlohmann::json::parse(*result.rewritten_body) == expected.at("body"),
@@ -516,7 +513,7 @@ int main() {
         {"pipeline parse order and rollback", test_pipeline_parse_order_and_rollback},
         {"JSON Pointer semantics", test_json_pointer_semantics},
         {"remove_tool protocol layouts", test_remove_tool_protocol_layouts},
-        {"findcg fixture equivalence", test_findcg_fixture_equivalence},
+        {"remove_tool fixture", test_remove_tool_fixture},
     };
     try {
         for (const auto& [name, test] : tests) {

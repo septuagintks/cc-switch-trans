@@ -19,6 +19,5 @@ bool canonicalize_http_path(
     std::string& canonical_path,
     std::string& error);
 std::string join_url_path(const std::string& base_path, const std::string& route_path, const std::string& query);
-bool is_findcg_host(const std::string& host);
 
 } // namespace ccs

@@ -1,4 +1,4 @@
-#include "transport/proxy.hpp"
+#include "transport/windows/winhttp_transport.hpp"
 
 #include "core/url.hpp"
 #include "transport/header_filter.hpp"
@@ -14,18 +14,19 @@
 #include <thread>
 #include <utility>
 
-#ifdef _WIN32
+#ifndef _WIN32
+#error "WinHttpTransport is a Windows-only source file"
+#endif
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
-#endif
 
 namespace ccs {
 
 namespace {
 
 std::wstring widen(const std::string& value) {
-#ifdef _WIN32
     if (value.empty()) {
         return {};
     }
@@ -36,13 +37,9 @@ std::wstring widen(const std::string& value) {
     std::wstring result(static_cast<std::size_t>(required), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), required);
     return result;
-#else
-    return std::wstring(value.begin(), value.end());
-#endif
 }
 
 std::string narrow(const std::wstring& value) {
-#ifdef _WIN32
     if (value.empty()) {
         return {};
     }
@@ -53,9 +50,6 @@ std::string narrow(const std::wstring& value) {
     std::string result(static_cast<std::size_t>(required), '\0');
     WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), required, nullptr, nullptr);
     return result;
-#else
-    return std::string(value.begin(), value.end());
-#endif
 }
 
 std::string trim(std::string value) {
@@ -119,16 +113,10 @@ bool is_event_stream(const Headers& headers) {
 }
 
 std::string winhttp_error_message(const std::string& prefix) {
-#ifdef _WIN32
     std::ostringstream out;
     out << prefix << " (winhttp error " << GetLastError() << ")";
     return out.str();
-#else
-    return prefix;
-#endif
 }
-
-#ifdef _WIN32
 
 class WinHttpHandle {
 public:
@@ -664,12 +652,9 @@ void apply_explicit_pac_proxy(
     }
 }
 
-#endif
-
 } // namespace
 
-struct Proxy::Impl {
-#ifdef _WIN32
+struct WinHttpTransport::Impl {
     Impl(const TimeoutConfig& timeouts, const std::shared_ptr<RuntimeMetrics>& metrics)
         : timeouts(timeouts)
         , metrics(metrics)
@@ -828,33 +813,13 @@ struct Proxy::Impl {
     HANDLE stop_event = nullptr;
     HANDLE change_event = nullptr;
     std::thread watcher;
-#else
-    Impl(const TimeoutConfig&, const std::shared_ptr<RuntimeMetrics>&) {}
-#endif
 };
 
-const char* upstream_proxy_mode() {
-#ifdef _WIN32
+const char* WinHttpTransport::proxy_mode() const noexcept {
     return "windows_system";
-#else
-    return "unsupported";
-#endif
 }
 
-ProxyError::ProxyError(int status_code, std::string type, std::string message)
-    : std::runtime_error(std::move(message))
-    , status_code_(status_code)
-    , type_(std::move(type)) {}
-
-int ProxyError::status_code() const {
-    return status_code_;
-}
-
-const std::string& ProxyError::type() const {
-    return type_;
-}
-
-Proxy::Proxy(
+WinHttpTransport::WinHttpTransport(
     TimeoutConfig timeouts,
     std::size_t max_response_body_size,
     std::shared_ptr<RuntimeMetrics> metrics)
@@ -863,29 +828,21 @@ Proxy::Proxy(
     , metrics_(std::move(metrics))
     , impl_(std::make_unique<Impl>(timeouts_, metrics_)) {}
 
-Proxy::~Proxy() = default;
+WinHttpTransport::~WinHttpTransport() = default;
 
-HttpResponse Proxy::forward(
+HttpResponse WinHttpTransport::forward(
     const HttpRequest& request,
     const UpstreamTarget& target,
     const CancellationToken& cancellation) const {
     return forward_streaming(request, target, {}, {}, cancellation);
 }
 
-HttpResponse Proxy::forward_streaming(
+HttpResponse WinHttpTransport::forward_streaming(
     const HttpRequest& request,
     const UpstreamTarget& target,
     const HeaderCallback& on_headers,
     const ChunkCallback& on_chunk,
     const CancellationToken& cancellation) const {
-#ifndef _WIN32
-    (void)request;
-    (void)target;
-    (void)on_headers;
-    (void)on_chunk;
-    (void)cancellation;
-    throw ProxyError(502, "upstream_error", "upstream forwarding is implemented with WinHTTP on Windows");
-#else
     if (metrics_) {
         metrics_->upstream_request_started();
     }
@@ -1101,7 +1058,6 @@ HttpResponse Proxy::forward_streaming(
         metrics_->upstream_request_completed();
     }
     return response;
-#endif
 }
 
 } // namespace ccs

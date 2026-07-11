@@ -127,13 +127,13 @@ void test_parser_contract() {
         {},
         {"config", "show", "extra"},
         {"config", "set", "unknown.key", "x"},
-        {"profile", "use", "findcg"},
+        {"profile", "select", "findcg"},
         {"profile", "set", "findcg", "enabled", "true"},
         {"profile", "create", "../escape"},
         {"rule", "add", "findcg", "rule", "Bad-Type"},
         {"rule", "set", "findcg", "rule", "enabled", "true"},
         {"rule", "move", "findcg", "rule", "0"},
-        {"run", "--responses-upstream-url", "https://example.com"},
+        {"run", "--unknown", "value"},
         {"run", "--profile", "a", "--profile", "b"},
         {"run", "--log-level", "verbose"},
         {"-h"},
@@ -142,12 +142,10 @@ void test_parser_contract() {
         require(!parse(arguments).ok, "invalid command rejected");
     }
 
-    const auto removed = parse({"profile", "use", "findcg"});
-    require(removed.error.find("was removed") != std::string::npos, "profile use has explicit removal error");
     require(ccs::is_config_cli_management_command("config"), "config command classified");
     require(ccs::is_config_cli_management_command("profile"), "profile command classified");
     require(ccs::is_config_cli_management_command("rule"), "rule command classified");
-    require(!ccs::is_config_cli_management_command("run"), "run remains host command during cutover");
+    require(!ccs::is_config_cli_management_command("run"), "run remains a host command");
 }
 
 void test_help_contract() {
@@ -158,8 +156,6 @@ void test_help_contract() {
     require(text.find("ccs-trans profile enable <profile>") != std::string::npos, "profile help");
     require(text.find("ccs-trans rule move <profile> <rule> <1-based-position>") != std::string::npos,
         "rule move help");
-    require(text.find("profile use") == std::string::npos, "removed profile use omitted");
-    require(text.find("--responses-upstream-url") == std::string::npos, "legacy run option omitted");
     require(text.find(", -h") == std::string::npos, "short help alias omitted");
     require(text.find("listener.port") != std::string::npos, "application key documented");
     require(text.find("local.request-path") != std::string::npos, "profile key documented");
@@ -286,8 +282,6 @@ void test_management_workflow() {
     output = execute(store, {"rule", "show", "findcg", "remove-image"});
     require(nlohmann::json::parse(output) == disk["profiles"]["findcg"]["rules"][0],
         "rule show matches disk rule");
-    require(!disk.contains("active_profile"), "new CLI never writes active_profile");
-
     ccs::ConfigStore reloaded(paths);
     require(reloaded.load(error), error);
     require(reloaded.document().profiles.size() == 2, "workflow persisted two profiles");

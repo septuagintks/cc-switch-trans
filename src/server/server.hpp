@@ -6,7 +6,7 @@
 #include "logging/logger.hpp"
 #include "routing/route_table.hpp"
 #include "runtime/runtime_snapshot.hpp"
-#include "transport/proxy.hpp"
+#include "transport/upstream_transport.hpp"
 
 #include <atomic>
 #include <functional>
