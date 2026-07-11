@@ -114,19 +114,19 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 
 | 目录 | 当前职责 | 已知重构点 |
 | --- | --- | --- |
-| `src/config` | 生产 v2 CLI/document/store/compiler、用户路径；旧 AppConfig/ProfileStore 已无生产引用 | 11.9 删除 v1 源码 |
+| `src/config` | 生产 v2 CLI/document/store/compiler、用户路径；CLI 保存前编译 enabled Profiles；旧 AppConfig/ProfileStore 已无生产引用 | 11.9 删除 v1 源码 |
 | `src/core` | RuntimeSnapshot AppService、取消、全局指标；旧 task/router/transform 已无生产引用 | 11.9 删除旧模型并移动 AppService |
 | `src/hosts` | CLI 入口 | 将增加 Windows tray 和 macOS menu bar |
-| `src/logging` | 独立 LoggerConfig、JSON Lines、批写、flush、背压、writer health | 11.8 收口 generation/writer failure |
+| `src/logging` | 独立 LoggerConfig、JSON Lines、批写、显式 drain、背压、多 writer health | 保持 durability 合约 |
 | `src/protocols` | 生产 Responses/Chat/Messages descriptor、registry、local error envelope | 保持协议边界 |
 | `src/routing` | 生产 immutable RuntimeProfile + compiled pipeline、两级 hash RouteTable | 保持请求期 O(1) lookup |
-| `src/rules` | 生产 RuleRegistry、共享 DOM pipeline、generic JSON Pointer 与三协议 remove_tool | 11.8 收口 reload trace |
-| `src/runtime` | 生产 RuntimeSnapshot、protocol/rule registry generation | 11.8 增加 generation 观测 |
-| `src/server` | 单 listener、全局 FIFO worker、RouteTable/pipeline 编排、reload | 11.8 收口 reload/logger failure |
+| `src/rules` | 生产 RuleRegistry、共享 DOM pipeline、generic JSON Pointer 与三协议 remove_tool | 保持有界 rule trace |
+| `src/runtime` | 生产 RuntimeSnapshot、protocol/rule registry generation | 保持 immutable 所有权 |
+| `src/server` | 单 listener、全局 FIFO worker、RouteTable/pipeline、generation reload、logger failure 停止 | 11.9 只清旧依赖 |
 | `src/transforms` | 已无生产引用的旧 findcg Responses 类 | 11.9 删除 |
 | `src/transport` | headers、WinHTTP system proxy、streaming、cancel、timeout | 后续拆平台实现 |
 | `tests/unit` | v2 配置/host、路由、protocol/rule、JSON Pointer、日志及待删旧模型 | 11.9 删除旧测试 |
-| `tests/integration` | 单端口多 Profile/协议/Usage/rules、reload generation、Windows proxy | 11.8 扩展 reload/rule rollback |
+| `tests/integration` | 单端口多 Profile/协议/Usage/rules、reload route/rule/logger generation、Windows proxy | 11.9 最终回归 |
 | `tests/benchmark` | 单 listener 8/16/50 路、旧 transform 与 0/1/8/32-rule 微基准 | 11.9 删除旧 transform 基准 |
 | `tests/fixtures` | 纯合成、可跨测试层复用的协议/config 输入 | v2 schema 与新 rule cases |
 

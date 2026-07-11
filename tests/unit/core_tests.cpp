@@ -463,9 +463,13 @@ void test_logger_flush_contract() {
         const auto immediate = read_file(path);
         require(immediate.find("queued_before_error") != std::string::npos, "error flushes queued records");
         require(immediate.find("flush_now") != std::string::npos, "error record is durable on return");
-        require(logger.log("info", "drain_on_destroy", {}), "shutdown record is accepted");
+        require(logger.log("info", "explicit_drain", {}), "shutdown record is accepted");
+        require(logger.drain(error), "explicit logger drain succeeds: " + error);
+        require(read_file(path).find("explicit_drain") != std::string::npos,
+            "explicit drain makes queued records durable");
         const auto snapshot = metrics->snapshot();
         require(snapshot.log_records_enqueued == 4, "logger enqueue metrics");
+        require(snapshot.log_records_written == 4, "drain waits for durable records");
         require(snapshot.peak_log_queue_records >= 1, "logger queue high water metric");
         require(snapshot.log_file_write_time_us <= snapshot.log_write_time_us, "write duration is classified");
         require(snapshot.log_file_flush_time_us <= snapshot.log_write_time_us, "flush duration is classified");
@@ -473,8 +477,52 @@ void test_logger_flush_contract() {
     }
 
     const auto final = read_file(path);
-    require(final.find("drain_on_destroy") != std::string::npos, "destructor drains normal records");
+    require(final.find("explicit_drain") != std::string::npos, "drained record remains on disk");
     std::filesystem::remove(path, ec);
+}
+
+void test_multiple_logger_metrics() {
+    ccs::LoggerConfig config;
+    config.flush_interval_ms = 1;
+    auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    auto first_state = std::make_shared<ControlledSinkState>();
+    auto second_state = std::make_shared<ControlledSinkState>();
+    {
+        ccs::Logger first(
+            config, metrics, std::make_unique<ControlledLogSink>(first_state));
+        std::string error;
+        require(first.open(error), error);
+        require(metrics->snapshot().log_writers_active == 1, "first writer is active");
+        {
+            ccs::Logger second(
+                config, metrics, std::make_unique<ControlledLogSink>(second_state));
+            require(second.open(error), error);
+            const auto overlap = metrics->snapshot();
+            require(overlap.log_writers_active == 2, "overlapping generations count both writers");
+            require(overlap.log_writer_healthy == 1, "overlapping writers are healthy");
+            {
+                std::lock_guard<std::mutex> lock(second_state->mutex);
+                second_state->fail_flush = true;
+            }
+            require(!second.log("error", "injected_generation_failure", {}),
+                "failing generation reports lost durability");
+            const auto one_failed = metrics->snapshot();
+            require(one_failed.log_writers_active == 1,
+                "a failed generation leaves the healthy writer active");
+            require(one_failed.log_writer_healthy == 1,
+                "one failed generation does not hide another healthy writer");
+            require(one_failed.log_writer_failures == 1,
+                "overlapping writer failure remains observable");
+        }
+        const auto one_remaining = metrics->snapshot();
+        require(one_remaining.log_writers_active == 1,
+            "retiring an old generation keeps the current writer active");
+        require(one_remaining.log_writer_healthy == 1,
+            "retiring an old generation does not clear writer health");
+    }
+    const auto stopped = metrics->snapshot();
+    require(stopped.log_writers_active == 0, "all retired writers leave no active count");
+    require(stopped.log_writer_healthy == 0, "writer health clears when no writer remains");
 }
 
 void test_logger_backpressure_contract() {
@@ -585,6 +633,37 @@ void test_logger_open_failure_contract() {
     require(metrics->snapshot().log_writer_failures == 1, "open failure metric increments");
     std::error_code ec;
     std::filesystem::remove(parent_file, ec);
+}
+
+void test_server_stops_on_logger_failure() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto port = static_cast<std::uint16_t>(40000 + nonce % 10000);
+    const auto log_path = std::filesystem::temp_directory_path()
+        / ("ccs-trans-server-logger-failure-" + std::to_string(nonce) + ".log");
+    auto document = runtime_document(port, log_path);
+    document.application.logging.flush_interval_ms = 1;
+    auto sink_state = std::make_shared<ControlledSinkState>();
+    sink_state->fail_flush = true;
+    ccs::Server server(
+        compile_runtime(document),
+        [sink_state]() {
+            return std::make_unique<ControlledLogSink>(sink_state);
+        });
+
+    bool startup_reported = false;
+    bool startup_succeeded = true;
+    std::string startup_error;
+    const int exit_code = server.run(
+        [&](bool succeeded, const std::string& error) {
+            startup_reported = true;
+            startup_succeeded = succeeded;
+            startup_error = error;
+        });
+    require(exit_code != 0, "logger writer failure stops the server with a non-zero exit");
+    require(startup_reported && !startup_succeeded,
+        "startup does not report success before its first log is durable");
+    require(startup_error == "injected flush failure",
+        "startup reports the logger durability failure");
 }
 
 void test_profile_store() {
@@ -847,6 +926,22 @@ void test_server_reload_classification() {
             == ccs::ReloadResult::RestartRequired,
         "worker topology reload requires restart");
 
+    auto writer_document = hot_document;
+    ++writer_document.application.logging.flush_interval_ms;
+    error.clear();
+    require(
+        server.reload(compile_runtime(writer_document), error)
+            == ccs::ReloadResult::RestartRequired,
+        "same-path writer topology reload requires restart");
+
+    auto request_policy_document = hot_document;
+    --request_policy_document.application.runtime.max_response_body_size;
+    error.clear();
+    require(
+        server.reload(compile_runtime(request_policy_document), error)
+            == ccs::ReloadResult::Applied,
+        "generation-owned response policy reload is applied in place");
+
     error.clear();
     require(
         server.reload({}, error) == ccs::ReloadResult::Failed && !error.empty(),
@@ -1002,9 +1097,11 @@ int main() {
         {"upstream proxy policy", test_upstream_proxy_policy},
         {"findcg transform", test_findcg_transform},
         {"logger flush contract", test_logger_flush_contract},
+        {"multiple logger metrics", test_multiple_logger_metrics},
         {"logger backpressure contract", test_logger_backpressure_contract},
         {"logger failure contract", test_logger_failure_contract},
         {"logger open failure contract", test_logger_open_failure_contract},
+        {"server stops on logger failure", test_server_stops_on_logger_failure},
         {"profile store", test_profile_store},
         {"stage 11 config fixture", test_stage11_config_fixture},
         {"runtime metrics", test_runtime_metrics},

@@ -77,6 +77,7 @@ public:
     bool open(std::string& error);
     bool log(std::string level, std::string event, std::initializer_list<LogField> fields) const;
     bool log(std::string level, std::string event, const std::vector<LogField>& fields) const;
+    bool drain(std::string& error) const;
     LogWriterStatus status() const;
 
 private:
@@ -107,6 +108,7 @@ private:
     mutable bool stopping_ = false;
     mutable LogWriterState state_ = LogWriterState::Closed;
     mutable std::string writer_error_;
+    bool metrics_writer_active_ = false;
     std::thread writer_;
 };
 

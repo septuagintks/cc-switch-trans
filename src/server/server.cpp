@@ -43,6 +43,11 @@ const RuntimeSnapshot& require_runtime_snapshot(const RuntimeSnapshotPtr& snapsh
     return *snapshot;
 }
 
+std::uint64_t next_generation_id() {
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 LoggerConfig make_logger_config(const RuntimeSnapshot& snapshot) {
     return LoggerConfig{
         snapshot.log_path,
@@ -685,17 +690,19 @@ std::string peer_ip(sockaddr_storage& storage) {
     return host;
 }
 
+template <typename ProcessRequest>
 void handle_client(
     SOCKET client,
     const Server* server,
     ClientCancellationMonitor& cancellation_monitor,
     std::size_t max_body_size,
-    std::string client_ip) {
+    std::string client_ip,
+    ProcessRequest&& process_request) {
     try {
         const auto raw = recv_request(client, max_body_size);
         CancellationSource cancellation_source;
         SocketWatch watch(cancellation_monitor, client, cancellation_source);
-        server->process_raw_request_to_sender(
+        process_request(
             raw,
             client_ip,
             [&](const std::string& data) {
@@ -756,10 +763,12 @@ void reject_overloaded_client(SOCKET client, const Server* server) {
 class Server::RequestGeneration {
 public:
     RequestGeneration(
+        std::uint64_t generation_id,
         RuntimeSnapshotPtr runtime_snapshot,
         const std::shared_ptr<RuntimeMetrics>& metrics,
-        std::shared_ptr<Logger> shared_logger = {})
-        : snapshot(std::move(runtime_snapshot))
+        std::shared_ptr<Logger> shared_logger)
+        : id(generation_id)
+        , snapshot(std::move(runtime_snapshot))
         , runtime(require_runtime_snapshot(snapshot))
         , proxy(
               runtime.application.timeouts,
@@ -767,19 +776,49 @@ public:
               metrics)
         , logger(std::move(shared_logger)) {
         if (!logger) {
-            logger = std::make_shared<Logger>(make_logger_config(runtime), metrics);
+            throw std::invalid_argument("request generation must have a logger");
         }
     }
 
+    std::uint64_t id;
     RuntimeSnapshotPtr snapshot;
     const RuntimeSnapshot& runtime;
     Proxy proxy;
     std::shared_ptr<Logger> logger;
 };
 
-Server::Server(RuntimeSnapshotPtr snapshot)
+Server::Server(RuntimeSnapshotPtr snapshot, LogSinkFactory log_sink_factory)
     : metrics_(std::make_shared<RuntimeMetrics>())
-    , generation_(std::make_shared<RequestGeneration>(std::move(snapshot), metrics_)) {}
+    , log_sink_factory_(std::move(log_sink_factory)) {
+    const auto& runtime = require_runtime_snapshot(snapshot);
+    generation_ = std::make_shared<RequestGeneration>(
+        next_generation_id(), std::move(snapshot), metrics_, make_logger(runtime));
+}
+
+Server::~Server() {
+    request_stop();
+    std::unique_lock<std::shared_mutex> lock(generation_mutex_);
+    generation_.reset();
+}
+
+std::shared_ptr<Logger> Server::make_logger(const RuntimeSnapshot& snapshot) {
+    auto sink = log_sink_factory_ ? log_sink_factory_() : nullptr;
+    return std::make_shared<Logger>(
+        make_logger_config(snapshot),
+        metrics_,
+        std::move(sink),
+        [this](const std::string& error) { handle_logger_failure(error); });
+}
+
+void Server::handle_logger_failure(const std::string& error) noexcept {
+    bool expected = false;
+    const bool first_failure = fatal_error_.compare_exchange_strong(
+        expected, true, std::memory_order_acq_rel);
+    if (first_failure) {
+        std::cerr << "log writer failed: " << error << "\n";
+    }
+    request_stop();
+}
 
 std::shared_ptr<Server::RequestGeneration> Server::current_generation() const {
     std::shared_lock<std::shared_mutex> lock(generation_mutex_);
@@ -793,6 +832,7 @@ void Server::log_request_error(
     const auto generation = current_generation();
     generation->logger->log("error", "request_error", {
         field_string("request_id", make_request_id()),
+        field_number("generation_id", static_cast<long long>(generation->id)),
         field_string("message", message),
         field_string("type", type),
         field_number("status_code", status_code),
@@ -800,9 +840,7 @@ void Server::log_request_error(
 }
 
 void Server::request_stop() {
-#ifdef _WIN32
     stop_requested_.store(true, std::memory_order_release);
-#endif
 }
 
 ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
@@ -833,6 +871,7 @@ ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
         && old_application.logging.flush_interval_ms == new_application.logging.flush_interval_ms;
     if (listener_changed || execution_changed || (same_log_path && !same_log_writer_settings)) {
         current->logger->log("info", "config_reload", {
+            field_number("generation_id", static_cast<long long>(current->id)),
             field_string("mode", "graceful_restart_required"),
             field_bool("listener_changed", listener_changed),
             field_bool("execution_changed", execution_changed),
@@ -844,22 +883,32 @@ ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
 
     std::shared_ptr<Logger> logger = current->logger;
     if (!same_log_path) {
-        logger = std::make_shared<Logger>(make_logger_config(*snapshot), metrics_);
-        std::string log_error;
-        if (!logger->open(log_error)) {
-            error = log_error;
+        try {
+            logger = make_logger(*snapshot);
+            std::string log_error;
+            if (!logger->open(log_error)) {
+                error = log_error;
+                return ReloadResult::Failed;
+            }
+        } catch (const std::exception& ex) {
+            error = "failed to create candidate log writer: " + std::string(ex.what());
+            return ReloadResult::Failed;
+        } catch (...) {
+            error = "failed to create candidate log writer";
             return ReloadResult::Failed;
         }
     }
 
     try {
         auto next = std::make_shared<RequestGeneration>(
-            std::move(snapshot), metrics_, std::move(logger));
+            next_generation_id(), std::move(snapshot), metrics_, std::move(logger));
         {
             std::unique_lock<std::shared_mutex> generation_lock(generation_mutex_);
             generation_ = next;
         }
         next->logger->log("info", "config_reload", {
+            field_number("generation_id", static_cast<long long>(next->id)),
+            field_number("previous_generation_id", static_cast<long long>(current->id)),
             field_string("mode", "generation_swap"),
             field_number("profile_count", static_cast<long long>(next->runtime.profiles.size())),
             field_number("route_count", static_cast<long long>(next->runtime.routes.size())),
@@ -918,6 +967,7 @@ bool Server::process_with_generation(
                 std::chrono::steady_clock::now() - started);
             generation->logger->log("error", "request_error", {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("method", request.method),
                 field_string("local_path", request.path),
                 field_string("message", lookup.status == RouteLookupStatus::MethodNotAllowed
@@ -931,6 +981,7 @@ bool Server::process_with_generation(
             });
             generation->logger->log("info", "response_sent", {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
@@ -947,15 +998,17 @@ bool Server::process_with_generation(
         route_kind = route_kind_name(route.kind);
         protocol_handler = route.profile->handler;
         if (route.kind == RouteKind::Usage) {
-            auto response = handle_usage_request(generation, request, route, cancellation);
+            auto [response, forwarded] = handle_usage_request(
+                generation, request, route, cancellation);
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - started);
             generation->logger->log("info", "usage_completed", {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
-                field_bool("forwarded", true),
+                field_bool("forwarded", forwarded),
                 field_string("upstream_url", route.upstream.base_url),
                 field_string("upstream_path", route.upstream.path),
                 field_number("status_code", response.status_code),
@@ -966,6 +1019,7 @@ bool Server::process_with_generation(
 
         std::vector<LogField> request_fields = {
             field_string("request_id", request.request_id),
+            field_number("generation_id", static_cast<long long>(generation->id)),
             field_string("profile_id", profile_id),
             field_string("protocol", protocol_id),
             field_string("route_kind", route_kind),
@@ -995,6 +1049,7 @@ bool Server::process_with_generation(
         for (const auto& trace : pipeline_result.traces) {
             generation->logger->log("info", "request_rule", {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
@@ -1022,6 +1077,7 @@ bool Server::process_with_generation(
                 : fallback;
             generation->logger->log("error", "request_error", {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
@@ -1040,6 +1096,7 @@ bool Server::process_with_generation(
                 std::chrono::steady_clock::now() - started);
             std::vector<LogField> sent_fields = {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
@@ -1062,6 +1119,7 @@ bool Server::process_with_generation(
 
         std::vector<LogField> upstream_request_fields = {
             field_string("request_id", request.request_id),
+            field_number("generation_id", static_cast<long long>(generation->id)),
             field_string("profile_id", profile_id),
             field_string("protocol", protocol_id),
             field_string("route_kind", route_kind),
@@ -1090,6 +1148,7 @@ bool Server::process_with_generation(
                     metrics_->stream_started();
                     generation->logger->log("info", "upstream_response", {
                         field_string("request_id", request.request_id),
+                        field_number("generation_id", static_cast<long long>(generation->id)),
                         field_string("profile_id", profile_id),
                         field_string("protocol", protocol_id),
                         field_string("route_kind", route_kind),
@@ -1104,6 +1163,7 @@ bool Server::process_with_generation(
                 [&](const std::string& chunk) {
                     std::vector<LogField> chunk_fields = {
                         field_string("request_id", request.request_id),
+                        field_number("generation_id", static_cast<long long>(generation->id)),
                         field_string("profile_id", profile_id),
                         field_string("protocol", protocol_id),
                         field_string("route_kind", route_kind),
@@ -1127,6 +1187,7 @@ bool Server::process_with_generation(
                     std::chrono::steady_clock::now() - started);
                 generation->logger->log("info", "request_cancelled", {
                     field_string("request_id", request.request_id),
+                    field_number("generation_id", static_cast<long long>(generation->id)),
                     field_string("profile_id", profile_id),
                     field_string("protocol", protocol_id),
                     field_string("route_kind", route_kind),
@@ -1137,6 +1198,7 @@ bool Server::process_with_generation(
             metrics_->upstream_request_failed();
             generation->logger->log("error", "request_error", {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
@@ -1157,6 +1219,7 @@ bool Server::process_with_generation(
             }
             std::vector<LogField> upstream_response_fields = {
                 field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
@@ -1173,6 +1236,7 @@ bool Server::process_with_generation(
             std::chrono::steady_clock::now() - started);
         std::vector<LogField> sent_fields = {
             field_string("request_id", request.request_id),
+            field_number("generation_id", static_cast<long long>(generation->id)),
             field_string("profile_id", profile_id),
             field_string("protocol", protocol_id),
             field_string("route_kind", route_kind),
@@ -1196,6 +1260,7 @@ bool Server::process_with_generation(
         if (ex.type() == "client_cancelled") {
             generation->logger->log("info", "request_cancelled", {
                 field_string("request_id", request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
@@ -1206,6 +1271,7 @@ bool Server::process_with_generation(
     } catch (const std::exception& ex) {
         generation->logger->log("error", "request_error", {
             field_string("request_id", request_id),
+            field_number("generation_id", static_cast<long long>(generation->id)),
             field_string("profile_id", profile_id),
             field_string("protocol", protocol_id),
             field_string("route_kind", route_kind),
@@ -1230,6 +1296,7 @@ void Server::log_performance_snapshot(const std::string& reason) const {
     const auto snapshot = metrics_->snapshot();
     const auto generation = current_generation();
     generation->logger->log("info", "performance_snapshot", {
+        field_number("generation_id", static_cast<long long>(generation->id)),
         field_string("reason", reason),
         field_number("connections_accepted", static_cast<long long>(snapshot.connections_accepted)),
         field_number("connections_rejected", static_cast<long long>(snapshot.connections_rejected)),
@@ -1288,13 +1355,14 @@ void Server::log_performance_snapshot(const std::string& reason) const {
         field_number("oldest_log_record_age_us", static_cast<long long>(snapshot.oldest_log_record_age_us)),
         field_number("max_log_record_age_us", static_cast<long long>(snapshot.max_log_record_age_us)),
         field_number("log_writer_failures", static_cast<long long>(snapshot.log_writer_failures)),
+        field_number("log_writers_active", static_cast<long long>(snapshot.log_writers_active)),
         field_bool("log_writer_healthy", snapshot.log_writer_healthy != 0),
         field_number("max_log_batch_records", static_cast<long long>(snapshot.max_log_batch_records)),
         field_number("max_log_batch_bytes", static_cast<long long>(snapshot.max_log_batch_bytes)),
     });
 }
 
-HttpResponse Server::handle_usage_request(
+std::pair<HttpResponse, bool> Server::handle_usage_request(
     const std::shared_ptr<RequestGeneration>& generation,
     const HttpRequest& request,
     const RouteEntry& route,
@@ -1304,7 +1372,7 @@ HttpResponse Server::handle_usage_request(
         if (response.reason.empty()) {
             response.reason = reason_phrase(response.status_code);
         }
-        return response;
+        return {std::move(response), true};
     } catch (const ProxyError& ex) {
         if (ex.type() == "client_cancelled") {
             throw;
@@ -1312,6 +1380,7 @@ HttpResponse Server::handle_usage_request(
         metrics_->upstream_request_failed();
         generation->logger->log("error", "request_error", {
             field_string("request_id", request.request_id),
+            field_number("generation_id", static_cast<long long>(generation->id)),
             field_string("profile_id", route.profile->id),
             field_string("protocol", std::string(route.profile->handler->id())),
             field_string("route_kind", route_kind_name(route.kind)),
@@ -1319,8 +1388,11 @@ HttpResponse Server::handle_usage_request(
             field_string("type", ex.type()),
             field_number("status_code", ex.status_code()),
         });
-        return route.profile->handler->local_error(
-            ex.status_code(), ex.type(), ex.what());
+        return {
+            route.profile->handler->local_error(
+                ex.status_code(), ex.type(), ex.what()),
+            false,
+        };
     }
 }
 
@@ -1367,6 +1439,7 @@ int Server::run(const StartupCallback& startup_callback) {
 #else
     try {
         stop_requested_.store(false, std::memory_order_release);
+        fatal_error_.store(false, std::memory_order_release);
         console_shutdown_requested().store(false, std::memory_order_release);
         auto startup_generation = current_generation();
         const auto startup_snapshot = startup_generation->snapshot;
@@ -1394,7 +1467,8 @@ int Server::run(const StartupCallback& startup_callback) {
 
         std::cout << "ccs-trans listening on http://"
                   << application.listener.host << ":" << application.listener.port << "\n";
-        startup_generation->logger->log("info", "server_start", {
+        const bool startup_logged = startup_generation->logger->log("info", "server_start", {
+            field_number("generation_id", static_cast<long long>(startup_generation->id)),
             field_number("listener_count", 1),
             field_string("listen_host", application.listener.host),
             field_number("listen_port", application.listener.port),
@@ -1412,6 +1486,16 @@ int Server::run(const StartupCallback& startup_callback) {
             field_number("stream_idle_timeout_ms", application.timeouts.stream_idle_ms),
             field_number("total_timeout_ms", application.timeouts.total_ms),
         });
+        std::string startup_log_error;
+        if (!startup_logged || !startup_generation->logger->drain(startup_log_error)) {
+            if (startup_log_error.empty()) {
+                startup_log_error = "failed to write server_start log event";
+            }
+            report_startup(false, startup_log_error);
+            std::cerr << startup_log_error << "\n";
+            SetConsoleCtrlHandler(console_handler, FALSE);
+            return 1;
+        }
         startup_generation.reset();
 
         PeriodicReporter reporter(
@@ -1451,13 +1535,22 @@ int Server::run(const StartupCallback& startup_callback) {
                         static_cast<std::uint64_t>(queue_wait.count()));
                 }
                 try {
+                    const auto request_generation = current_generation();
                     handle_client(
                         job.client,
                         this,
                         cancellation_monitor,
-                        static_cast<std::size_t>(current_generation()
+                        static_cast<std::size_t>(request_generation
                                 ->runtime.application.runtime.max_request_body_size),
-                        std::move(job.client_ip));
+                        std::move(job.client_ip),
+                        [this, request_generation](
+                            const std::string& raw,
+                            const std::string& client_ip,
+                            const std::function<bool(const std::string&)>& sender,
+                            const CancellationToken& cancellation) {
+                            return process_with_generation(
+                                request_generation, raw, client_ip, sender, cancellation);
+                        });
                 } catch (...) {
                     close_socket(job.client);
                     try {
@@ -1588,7 +1681,9 @@ int Server::run(const StartupCallback& startup_callback) {
                     return;
                 }
                 if (worker_scale_failed) {
-                    current_generation()->logger->log("error", "worker_scale_failed", {
+                    const auto current = current_generation();
+                    current->logger->log("error", "worker_scale_failed", {
+                        field_number("generation_id", static_cast<long long>(current->id)),
                         field_number("current_worker_threads", static_cast<long long>(worker_count_after_scale)),
                         field_number("worker_thread_limit", static_cast<long long>(worker_limit)),
                     });
@@ -1648,11 +1743,17 @@ int Server::run(const StartupCallback& startup_callback) {
         }
         reporter.stop();
         log_performance_snapshot("server_stop");
-        current_generation()->logger->log("info", "server_stop", {
+        const auto stopping_generation = current_generation();
+        stopping_generation->logger->log("info", "server_stop", {
+            field_number("generation_id", static_cast<long long>(stopping_generation->id)),
             field_number("listener_count", 1),
         });
+        std::string drain_error;
+        if (!stopping_generation->logger->drain(drain_error)) {
+            handle_logger_failure(drain_error);
+        }
         SetConsoleCtrlHandler(console_handler, FALSE);
-        return 0;
+        return fatal_error_.load(std::memory_order_acquire) ? 1 : 0;
     } catch (const std::exception& ex) {
         report_startup(false, ex.what());
         std::cerr << "server failed: " << ex.what() << "\n";

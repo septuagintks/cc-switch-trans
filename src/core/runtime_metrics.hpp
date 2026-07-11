@@ -74,6 +74,7 @@ struct RuntimeMetricsSnapshot {
     std::uint64_t oldest_log_record_age_us = 0;
     std::uint64_t max_log_record_age_us = 0;
     std::uint64_t log_writer_failures = 0;
+    std::uint64_t log_writers_active = 0;
     std::uint64_t log_writer_healthy = 0;
     std::uint64_t max_log_batch_records = 0;
     std::uint64_t max_log_batch_bytes = 0;
@@ -119,7 +120,7 @@ public:
         std::size_t pending_bytes,
         std::uint64_t oldest_pending_ns);
     void log_writer_started();
-    void log_writer_failed();
+    void log_writer_failed(bool was_active);
     void log_writer_stopped();
 
     RuntimeMetricsSnapshot snapshot() const;
@@ -184,7 +185,7 @@ private:
     std::atomic<std::uint64_t> oldest_log_record_enqueued_ns_{0};
     std::atomic<std::uint64_t> max_log_record_age_us_{0};
     std::atomic<std::uint64_t> log_writer_failures_{0};
-    std::atomic<std::uint64_t> log_writer_healthy_{0};
+    std::atomic<std::uint64_t> log_writers_active_{0};
     std::atomic<std::uint64_t> max_log_batch_records_{0};
     std::atomic<std::uint64_t> max_log_batch_bytes_{0};
 };

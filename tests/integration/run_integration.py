@@ -477,6 +477,40 @@ def main():
         usage_events = [event for event in events if event.get("event") == "usage_completed"]
         for profile_id in ("responses", "chat", "messages"):
             assert_true(any(event.get("profile_id") == profile_id and event.get("forwarded") is True for event in usage_events), f"{profile_id} Usage summary")
+        assert_true(
+            any(event.get("profile_id") == "messages-dead" and event.get("forwarded") is False for event in usage_events),
+            "failed Usage forwarding is not reported as successful",
+        )
+        assert_true(
+            all(
+                key not in event
+                for event in usage_events
+                for key in ("headers", "query", "body", "client_ip")
+            ),
+            "Usage summaries omit request-sensitive fields",
+        )
+
+        generation_events = [
+            event
+            for event in events
+            if event.get("event")
+            in {
+                "request_received",
+                "request_rule",
+                "upstream_request",
+                "upstream_response",
+                "stream_chunk",
+                "usage_completed",
+                "response_sent",
+                "request_cancelled",
+                "request_error",
+            }
+        ]
+        assert_true(
+            generation_events
+            and all(isinstance(event.get("generation_id"), int) and event["generation_id"] > 0 for event in generation_events),
+            "request-chain logs carry a runtime generation id",
+        )
 
         rule_events = [event for event in events if event.get("event") == "request_rule"]
         assert_true(
@@ -526,8 +560,10 @@ def main():
         assert_true(latest.get("connections_accepted", 0) > 0, "global connections counted")
         assert_true(latest.get("peak_active_workers", 0) > 0, "global workers counted")
         assert_true("max_connection_queue_wait_us" in latest, "global queue wait exposed")
+        assert_true(latest.get("log_writers_active", 0) >= 1, "active logger generations exposed")
         server_starts = [event for event in events if event.get("event") == "server_start"]
         assert_true(server_starts and server_starts[-1].get("listener_count") == 1, "single listener logged")
+        assert_true(server_starts[-1].get("generation_id", 0) > 0, "server start logs its runtime generation")
 
         print("integration ok")
     finally:

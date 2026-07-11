@@ -241,6 +241,16 @@ void test_management_workflow() {
     require(shown.size() == 2, "two same-protocol profiles configured");
     require(shown[0]["enabled"] == true && shown[1]["enabled"] == true, "both profiles enabled");
 
+    const auto before_route_collision = read_file(paths.config_file);
+    require(execute_fails(
+                store,
+                {"profile", "set", "backup", "local.request-path", "/findcg/v1/responses"},
+                error)
+            && error.find("route collision") != std::string::npos,
+        "CLI rejects a canonical route collision before save");
+    require(read_file(paths.config_file) == before_route_collision,
+        "failed route collision leaves config bytes unchanged");
+
     const auto before_invalid_unset = read_file(paths.config_file);
     require(execute_fails(store, {"profile", "unset", "findcg", "local.request-path"}, error)
             && error.find("enabled but missing") != std::string::npos,

@@ -172,6 +172,12 @@ Unmodified requests retain their exact original bytes.
 - The shared worker pool prewarms 8 threads and grows to the configured maximum,
   which defaults to 32.
 
+Runtime reloads publish one immutable generation at a time. Profile routes,
+upstreams, ordered Rules, request limits, timeouts, body-logging policy, and a
+new log path can change for new requests without altering in-flight requests.
+Listener, worker, metrics-reporter, and same-path log-writer topology changes
+use a graceful restart with rollback to the previous snapshot if startup fails.
+
 Aggregate 8-16 SSE connections are the normal desktop load. Fifty connections
 are a bounded stress profile, not the normal operating target.
 
@@ -195,7 +201,13 @@ read macOS system proxy settings.
 Logs are JSON Lines. Normal events batch for about 100 ms by default; errors
 flush immediately. The queue is bounded and applies backpressure rather than
 silently dropping records. Request, upstream, response, SSE chunk, Usage, and
-Rule events can be joined by `request_id`, Profile, protocol, and route kind.
+Rule events can be joined by `request_id`, `generation_id`, Profile, protocol,
+and route kind. Generation-swap events link the previous and new ids.
+
+Overlapping old/new log paths are tracked as separate active writers, so a
+retiring writer cannot mark the current one unhealthy. Shutdown drains the
+current writer before a successful exit. A writer durability failure stops the
+server and produces a non-zero process exit.
 
 Usage logs omit request headers, query, and body. Rule logs contain bounded
 paths/counts, never configured replacement values or a second full body.
@@ -241,7 +253,8 @@ src/transport/         Header filtering and WinHTTP forwarding
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-The next implementation work closes reload-generation observability and removes
-the now-unused v1/task/transform sources. Windows tray support follows that
-cleanup; macOS transport, menu bar hosting, login item support, and packaging
-remain planned. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
+The next implementation work removes the now-unused v1/task/transform sources
+and completes the phase 11 regression/package review. Windows tray support
+follows that cleanup; macOS transport, menu bar hosting, login item support,
+and packaging remain planned. See
+[docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

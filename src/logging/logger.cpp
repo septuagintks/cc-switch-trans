@@ -197,7 +197,7 @@ bool Logger::open(std::string& error) {
         state_ = LogWriterState::Failed;
         writer_error_ = error;
         if (metrics_) {
-            metrics_->log_writer_failed();
+            metrics_->log_writer_failed(false);
         }
         return false;
     };
@@ -235,6 +235,7 @@ bool Logger::open(std::string& error) {
     }
     state_ = LogWriterState::Running;
     if (metrics_) {
+        metrics_writer_active_ = true;
         metrics_->log_writer_started();
     }
     return true;
@@ -298,6 +299,33 @@ bool Logger::log(std::string level, std::string event, const std::vector<LogFiel
         return flushed_sequence_ >= sequence;
     }
     return true;
+}
+
+bool Logger::drain(std::string& error) const {
+    error.clear();
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (state_ != LogWriterState::Running || stopping_) {
+        error = writer_error_.empty() ? "log writer is not running" : writer_error_;
+        return false;
+    }
+    const auto target_sequence = next_sequence_ - 1;
+    if (target_sequence == 0 || flushed_sequence_ >= target_sequence) {
+        return true;
+    }
+    if (!queue_.empty()) {
+        queue_.back().immediate_flush = true;
+    }
+    queue_cv_.notify_one();
+    flushed_cv_.wait(lock, [&]() {
+        return flushed_sequence_ >= target_sequence
+            || state_ != LogWriterState::Running
+            || stopping_;
+    });
+    if (flushed_sequence_ >= target_sequence) {
+        return true;
+    }
+    error = writer_error_.empty() ? "log writer stopped before draining" : writer_error_;
+    return false;
 }
 
 LogWriterStatus Logger::status() const {
@@ -409,13 +437,16 @@ void Logger::writer_loop() {
         space_cv_.notify_all();
     }
 
+    bool was_active = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_ == LogWriterState::Running) {
             state_ = LogWriterState::Stopped;
         }
+        was_active = metrics_writer_active_;
+        metrics_writer_active_ = false;
     }
-    if (metrics_) {
+    if (metrics_ && was_active) {
         metrics_->log_writer_stopped();
     }
     flushed_cv_.notify_all();
@@ -423,13 +454,16 @@ void Logger::writer_loop() {
 }
 
 void Logger::report_writer_failure(std::string error) {
+    bool was_active = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         state_ = LogWriterState::Failed;
         writer_error_ = error;
+        was_active = metrics_writer_active_;
+        metrics_writer_active_ = false;
     }
     if (metrics_) {
-        metrics_->log_writer_failed();
+        metrics_->log_writer_failed(was_active);
     }
     try {
         if (failure_handler_) {

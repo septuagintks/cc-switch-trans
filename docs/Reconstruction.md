@@ -496,9 +496,11 @@ parse ConfigDocument
   -> publish shared_ptr<const RuntimeSnapshot>
 ```
 
-新请求只读取一次 snapshot。reload 原子交换 generation；in-flight 请求继续持有旧
-route、pipeline 和 upstream。listener 或 worker 拓扑变化沿用受控 restart 和失败
-回滚。profile、route、upstream 和 rule 变化应能对新请求热切换。
+worker 开始读取 HTTP 请求前只获取一次 generation。reload 原子交换 generation；
+in-flight 请求继续持有旧 route、pipeline、upstream、限制和日志策略。listener、worker、
+metrics reporter 或同路径 writer 拓扑变化使用受控 restart 和失败回滚；profile、route、
+upstream、rule、timeout、body limit、body logging 与日志路径可对新请求热切换。每个
+RequestGeneration 有进程内单调 id，swap 日志链接前后 id。
 
 配置编辑对象、JSON DOM 和 runtime snapshot 必须分开，不能为了 CLI set 在运行中
 原地修改已发布对象。

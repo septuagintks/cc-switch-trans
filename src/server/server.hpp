@@ -14,6 +14,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <utility>
 
 namespace ccs {
 
@@ -26,8 +27,10 @@ enum class ReloadResult {
 class Server {
 public:
     using StartupCallback = std::function<void(bool, const std::string&)>;
+    using LogSinkFactory = std::function<std::unique_ptr<LogSink>()>;
 
-    explicit Server(RuntimeSnapshotPtr snapshot);
+    explicit Server(RuntimeSnapshotPtr snapshot, LogSinkFactory log_sink_factory = {});
+    ~Server();
 
     int run(const StartupCallback& startup_callback = {});
     void request_stop();
@@ -56,17 +59,21 @@ private:
         const std::function<bool(const std::string&)>& sender,
         const CancellationToken& cancellation) const;
     HttpResponse handle_local_route_error(const RouteLookup& route) const;
-    HttpResponse handle_usage_request(
+    std::pair<HttpResponse, bool> handle_usage_request(
         const std::shared_ptr<RequestGeneration>& generation,
         const HttpRequest& request,
         const RouteEntry& route,
         const CancellationToken& cancellation) const;
+    std::shared_ptr<Logger> make_logger(const RuntimeSnapshot& snapshot);
+    void handle_logger_failure(const std::string& error) noexcept;
     void log_performance_snapshot(const std::string& reason) const;
 
     std::shared_ptr<RuntimeMetrics> metrics_;
+    LogSinkFactory log_sink_factory_;
     mutable std::shared_ptr<RequestGeneration> generation_;
     mutable std::shared_mutex generation_mutex_;
     mutable std::mutex reload_mutex_;
+    std::atomic_bool fatal_error_{false};
     std::atomic_bool stop_requested_{false};
 };
 

@@ -1,5 +1,6 @@
 #include "config/config_cli.hpp"
 
+#include "config/runtime_compiler.hpp"
 #include "protocols/protocol_registry.hpp"
 #include "rules/rule_registry.hpp"
 
@@ -607,6 +608,7 @@ bool render_rule(
 
 bool validate_cli_runtime_semantics(
     const ConfigDocument& document,
+    const std::filesystem::path& application_root,
     std::string& error) {
     const auto protocols = builtin_protocol_registry();
     const auto rules = builtin_rule_registry();
@@ -640,6 +642,23 @@ bool validate_cli_runtime_semantics(
             return false;
         }
     }
+
+    std::filesystem::path resolved_log_path;
+    if (!resolve_application_log_path(
+            document.application, application_root, resolved_log_path, error)) {
+        return false;
+    }
+    const bool has_enabled_profiles = std::any_of(
+        document.profiles.begin(), document.profiles.end(), [](const auto& entry) {
+            return entry.second.enabled;
+        });
+    if (has_enabled_profiles) {
+        RuntimeCompiler compiler(application_root);
+        RuntimeSnapshotPtr snapshot;
+        if (!compiler.compile(document, {}, snapshot, error)) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -649,7 +668,7 @@ bool save_candidate(
     std::string rendered,
     std::string& output,
     std::string& error) {
-    if (!validate_cli_runtime_semantics(candidate, error)) {
+    if (!validate_cli_runtime_semantics(candidate, store.paths().root, error)) {
         return false;
     }
     if (!store.save(candidate, error)) {

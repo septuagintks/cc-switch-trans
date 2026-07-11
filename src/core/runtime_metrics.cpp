@@ -189,16 +189,18 @@ void RuntimeMetrics::log_batch_written(
 }
 
 void RuntimeMetrics::log_writer_started() {
-    log_writer_healthy_.store(1, std::memory_order_relaxed);
+    log_writers_active_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void RuntimeMetrics::log_writer_failed() {
-    log_writer_healthy_.store(0, std::memory_order_relaxed);
+void RuntimeMetrics::log_writer_failed(bool was_active) {
+    if (was_active) {
+        log_writers_active_.fetch_sub(1, std::memory_order_relaxed);
+    }
     log_writer_failures_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void RuntimeMetrics::log_writer_stopped() {
-    log_writer_healthy_.store(0, std::memory_order_relaxed);
+    log_writers_active_.fetch_sub(1, std::memory_order_relaxed);
 }
 
 RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
@@ -268,10 +270,12 @@ RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
     }
     CCS_LOAD_METRIC(max_log_record_age_us);
     CCS_LOAD_METRIC(log_writer_failures);
-    CCS_LOAD_METRIC(log_writer_healthy);
+    CCS_LOAD_METRIC(log_writers_active);
     CCS_LOAD_METRIC(max_log_batch_records);
     CCS_LOAD_METRIC(max_log_batch_bytes);
 #undef CCS_LOAD_METRIC
+
+    result.log_writer_healthy = result.log_writers_active > 0 ? 1 : 0;
 
     return result;
 }

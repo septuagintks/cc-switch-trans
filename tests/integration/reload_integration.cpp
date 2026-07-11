@@ -4,20 +4,26 @@
 #include "config/runtime_compiler.hpp"
 #include "core/app_service.hpp"
 
+#include <nlohmann/json.hpp>
+
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -97,6 +103,29 @@ std::string receive_http_message(SOCKET socket) {
     return data;
 }
 
+std::string http_body(const std::string& message) {
+    const auto header_end = message.find("\r\n\r\n");
+    require(header_end != std::string::npos, "HTTP message is missing its header terminator");
+    return message.substr(header_end + 4);
+}
+
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+std::vector<nlohmann::json> read_log_events(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::vector<nlohmann::json> events;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty()) {
+            events.push_back(nlohmann::json::parse(line));
+        }
+    }
+    return events;
+}
+
 class MockUpstream {
 public:
     MockUpstream(std::string marker, bool gated)
@@ -152,11 +181,19 @@ public:
         return port_;
     }
 
-    void wait_until_received() {
+    void wait_until_received(std::size_t count = 1) {
         std::unique_lock<std::mutex> lock(mutex_);
         require(
-            received_cv_.wait_for(lock, 5s, [this]() { return received_; }),
+            received_cv_.wait_for(lock, 5s, [this, count]() {
+                return requests_.size() >= count;
+            }),
             "timed out waiting for upstream " + marker_);
+    }
+
+    std::string request_body(std::size_t index) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        require(index < requests_.size(), "upstream request index is out of range");
+        return http_body(requests_[index]);
     }
 
     void release() {
@@ -185,10 +222,10 @@ private:
                     continue;
                 }
                 try {
-                    (void)receive_http_message(client);
+                    const auto request = receive_http_message(client);
                     {
                         std::lock_guard<std::mutex> lock(mutex_);
-                        received_ = true;
+                        requests_.push_back(request);
                     }
                     received_cv_.notify_all();
                     if (gated_) {
@@ -215,10 +252,10 @@ private:
     SOCKET listener_ = INVALID_SOCKET;
     std::uint16_t port_ = 0;
     std::atomic_bool stopping_{false};
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable received_cv_;
     std::condition_variable release_cv_;
-    bool received_ = false;
+    std::vector<std::string> requests_;
     bool released_ = false;
     std::thread thread_;
 };
@@ -247,7 +284,12 @@ std::uint16_t free_port() {
     }
 }
 
-std::string proxy_request(std::uint16_t port, const std::string& label) {
+std::string proxy_request(
+    std::uint16_t port,
+    const std::string& label,
+    const std::string& path = "/v1/responses",
+    const std::string& body = "{}",
+    int expected_status = 200) {
     SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     require(client != INVALID_SOCKET, "failed to create proxy client");
     sockaddr_in address{};
@@ -260,15 +302,16 @@ std::string proxy_request(std::uint16_t port, const std::string& label) {
         throw std::runtime_error("failed to connect to proxy: " + std::to_string(error));
     }
     try {
-        const std::string body = "{}";
         send_all(
             client,
-            "POST /v1/responses?case=" + label + " HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "POST " + path + "?case=" + label + " HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                 "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size())
                 + "\r\nConnection: close\r\n\r\n" + body);
         const auto response = receive_http_message(client);
         close_socket(client);
-        require(response.find("HTTP/1.1 200") == 0, "proxy request did not return HTTP 200");
+        require(
+            response.find("HTTP/1.1 " + std::to_string(expected_status)) == 0,
+            "proxy request returned an unexpected status");
         return response;
     } catch (...) {
         close_socket(client);
@@ -295,6 +338,16 @@ ccs::ConfigDocument make_document(
     return document;
 }
 
+ccs::RuleDefinition set_marker_rule(const std::string& id, const std::string& value) {
+    ccs::RuleDefinition rule;
+    rule.id.value = id;
+    rule.enabled = true;
+    rule.type = "set_field";
+    rule.options["path"] = "/marker";
+    rule.options["value"] = value;
+    return rule;
+}
+
 ccs::RuntimeSnapshotPtr compile(
     const ccs::ConfigDocument& document,
     const std::filesystem::path& application_root) {
@@ -305,11 +358,21 @@ ccs::RuntimeSnapshotPtr compile(
     return snapshot;
 }
 
+bool try_compile(
+    const ccs::ConfigDocument& document,
+    const std::filesystem::path& application_root,
+    ccs::RuntimeSnapshotPtr& snapshot,
+    std::string& error) {
+    ccs::RuntimeCompiler compiler(application_root);
+    return compiler.compile(document, {}, snapshot, error);
+}
+
 void test_reload_generation_and_profile_io() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path()
         / ("ccs-trans-reload-integration-" + std::to_string(nonce));
     const auto paths = ccs::make_app_paths(root);
+    const auto reloaded_log_path = paths.logs_directory / "reloaded.log";
     std::string error;
     require(ccs::ensure_app_directories(paths, error), error);
 
@@ -320,33 +383,98 @@ void test_reload_generation_and_profile_io() {
         proxy_port,
         paths.default_log_file,
         "http://127.0.0.1:" + std::to_string(upstream_a.port()));
+    document.profiles.at("live").rules.push_back(set_marker_rule("set-first", "first"));
+    document.profiles.at("live").rules.push_back(set_marker_rule("set-second", "second"));
 
     {
         ccs::AppService service(compile(document, paths.root));
         require(service.start(error), "service start failed: " + error);
 
         auto old_request = std::async(std::launch::async, [&]() {
-            return proxy_request(proxy_port, "old");
+            return proxy_request(
+                proxy_port, "old", "/v1/responses", R"({"marker":"input"})");
         });
         upstream_a.wait_until_received();
+        require(nlohmann::json::parse(upstream_a.request_body(0)).at("marker") == "second",
+            "old generation applies its original rule order");
 
         ccs::ConfigStore store(paths);
         require(store.load(error), error);
         require(store.save(document, error), error);
-        ccs::ConfigStore reloaded(paths);
-        require(reloaded.load(error), error);
-        require(reloaded.document().profiles.at("live").upstream.base_url
-                == document.profiles.at("live").upstream.base_url,
-            "saved profile was not reloaded while proxy was active");
 
         auto next_document = document;
         next_document.profiles.at("live").upstream.base_url =
             "http://127.0.0.1:" + std::to_string(upstream_b.port());
+        next_document.profiles.at("live").local.request_path = "/v2/responses";
+        std::reverse(
+            next_document.profiles.at("live").rules.begin(),
+            next_document.profiles.at("live").rules.end());
+        require(store.save(next_document, error), error);
+        ccs::ConfigStore reloaded(paths);
+        require(reloaded.load(error), error);
+        require(reloaded.document().profiles.at("live").upstream.base_url
+                == next_document.profiles.at("live").upstream.base_url,
+            "saved profile was not reloaded while proxy was active");
+
+        const auto before_invalid_save = read_file(paths.config_file);
+        auto invalid_document = next_document;
+        invalid_document.application.runtime.worker_threads = 0;
+        error.clear();
+        require(!store.save(invalid_document, error), "invalid config save unexpectedly succeeded");
+        require(read_file(paths.config_file) == before_invalid_save,
+            "failed config save leaves canonical bytes unchanged");
+
         require(service.reload(compile(next_document, paths.root), error), "hot reload failed: " + error);
 
-        const auto new_response = proxy_request(proxy_port, "new");
+        (void)proxy_request(proxy_port, "removed-route", "/v1/responses", "{}", 404);
+        const auto new_response = proxy_request(
+            proxy_port, "new", "/v2/responses", R"({"marker":"input"})");
         require(new_response.find("\"marker\":\"B\"") != std::string::npos,
             "new request did not use reloaded upstream B");
+        upstream_b.wait_until_received();
+        require(nlohmann::json::parse(upstream_b.request_body(0)).at("marker") == "first",
+            "new generation applies the reloaded rule order");
+
+        auto collision_document = next_document;
+        collision_document.profiles.emplace(
+            "collision", collision_document.profiles.at("live"));
+        ccs::RuntimeSnapshotPtr rejected_snapshot;
+        error.clear();
+        require(
+            !try_compile(collision_document, paths.root, rejected_snapshot, error)
+                && error.find("route collision") != std::string::npos,
+            "route collision candidate is rejected before generation swap");
+        const auto after_rejected_reload = proxy_request(
+            proxy_port, "after-reject", "/v2/responses", R"({"marker":"input"})");
+        require(after_rejected_reload.find("\"marker\":\"B\"") != std::string::npos,
+            "rejected candidate leaves the current generation serving traffic");
+
+        const auto blocked_log_parent = root / "blocked-log-parent";
+        {
+            std::ofstream output(blocked_log_parent, std::ios::binary);
+            output << "not a directory";
+        }
+        auto invalid_log_document = next_document;
+        invalid_log_document.application.logging.path =
+            (blocked_log_parent / "ccs-trans.log").generic_string();
+        error.clear();
+        require(!service.reload(compile(invalid_log_document, paths.root), error),
+            "candidate with an unusable log path unexpectedly reloaded");
+        require(service.status() == ccs::ServiceState::Running,
+            "failed candidate logger leaves the current service running");
+        const auto after_log_failure = proxy_request(
+            proxy_port, "after-log-failure", "/v2/responses", R"({"marker":"input"})");
+        require(after_log_failure.find("\"marker\":\"B\"") != std::string::npos,
+            "failed candidate logger leaves the current generation serving traffic");
+
+        auto log_path_document = next_document;
+        log_path_document.application.logging.path = reloaded_log_path.generic_string();
+        require(service.reload(compile(log_path_document, paths.root), error),
+            "log path generation reload failed: " + error);
+        const auto log_path_response = proxy_request(
+            proxy_port, "log-path", "/v2/responses", R"({"marker":"input"})");
+        require(log_path_response.find("\"marker\":\"B\"") != std::string::npos,
+            "log path reload changed request forwarding");
 
         upstream_a.release();
         require(old_request.wait_for(5s) == std::future_status::ready, "old request did not complete");
@@ -357,6 +485,83 @@ void test_reload_generation_and_profile_io() {
         service.stop();
         require(service.wait() == 0, "service did not stop cleanly");
     }
+
+    const auto events = read_log_events(paths.default_log_file);
+    std::string old_request_id;
+    std::string new_request_id;
+    std::uint64_t old_generation = 0;
+    std::uint64_t new_generation = 0;
+    for (const auto& event : events) {
+        if (event.value("event", "") != "request_received") {
+            continue;
+        }
+        const auto query = event.value("query", "");
+        if (query == "case=old") {
+            old_request_id = event.at("request_id").get<std::string>();
+            old_generation = event.at("generation_id").get<std::uint64_t>();
+        } else if (query == "case=new") {
+            new_request_id = event.at("request_id").get<std::string>();
+            new_generation = event.at("generation_id").get<std::uint64_t>();
+        }
+    }
+    require(!old_request_id.empty() && !new_request_id.empty(),
+        "reload log contains both request chains");
+    require(old_generation != 0 && new_generation != 0 && old_generation != new_generation,
+        "reload assigns distinct observable generations");
+
+    std::vector<std::string> old_rules;
+    std::vector<std::string> new_rules;
+    bool swap_logged = false;
+    for (const auto& event : events) {
+        if (event.value("event", "") == "request_rule") {
+            auto& rules = event.value("request_id", "") == old_request_id
+                ? old_rules
+                : new_rules;
+            if (event.value("request_id", "") == old_request_id
+                || event.value("request_id", "") == new_request_id) {
+                rules.push_back(event.at("rule_id").get<std::string>());
+            }
+        }
+        if (event.value("event", "") == "config_reload"
+            && event.value("mode", "") == "generation_swap"
+            && event.value("previous_generation_id", std::uint64_t{0}) == old_generation
+            && event.value("generation_id", std::uint64_t{0}) == new_generation) {
+            swap_logged = true;
+        }
+    }
+    require(old_rules == std::vector<std::string>({"set-first", "set-second"}),
+        "old request logs the original rule order");
+    require(new_rules == std::vector<std::string>({"set-second", "set-first"}),
+        "new request logs the reloaded rule order");
+    require(swap_logged, "generation swap log links previous and current generations");
+
+    const auto reloaded_events = read_log_events(reloaded_log_path);
+    std::uint64_t log_path_generation = 0;
+    bool log_path_swap_logged = false;
+    bool healthy_writer_snapshot = false;
+    for (const auto& event : reloaded_events) {
+        if (event.value("event", "") == "request_received"
+            && event.value("query", "") == "case=log-path") {
+            log_path_generation = event.value("generation_id", std::uint64_t{0});
+        }
+        if (event.value("event", "") == "config_reload"
+            && event.value("mode", "") == "generation_swap"
+            && event.value("previous_generation_id", std::uint64_t{0}) == new_generation) {
+            log_path_swap_logged = true;
+        }
+        if (event.value("event", "") == "performance_snapshot"
+            && event.value("reason", "") == "server_stop"
+            && event.value("log_writers_active", std::uint64_t{0}) == 1
+            && event.value("log_writer_healthy", false)
+            && event.value("log_writer_failures", std::uint64_t{0}) >= 1) {
+            healthy_writer_snapshot = true;
+        }
+    }
+    require(log_path_generation != 0 && log_path_generation != new_generation,
+        "log path reload publishes another observable generation");
+    require(log_path_swap_logged, "log path swap links its previous generation");
+    require(healthy_writer_snapshot,
+        "retired and rejected writers do not clear the active generation health metric");
 
     std::error_code remove_error;
     std::filesystem::remove_all(root, remove_error);
