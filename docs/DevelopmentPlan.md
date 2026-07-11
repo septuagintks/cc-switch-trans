@@ -294,8 +294,8 @@ route kind、upstream 与仅含 enabled rules 的 pipeline 定义副本。`Route
 独立 CTest 覆盖 Responses/Chat/Messages 与各自 Usage、404/405/invalid path、尾斜杠、
 percent canonicalization、同 path 不同 method、跨 profile collision、选中 disabled
 草稿、绝对/相对日志路径、失败不替换 snapshot、源文档修改后的所有权和并发只读
-lookup。生产 server 未切换；主请求 `POST`/Usage `GET` 将在 11.5 改由 protocol
-descriptor 提供。
+lookup。生产 server 未切换；主请求与 Usage method 已由 11.5 protocol descriptor
+接管，不再是 compiler 常量。
 
 ### 11.5 建立 ProtocolRegistry
 
@@ -327,6 +327,17 @@ Review 重点：handler 是否泄漏 socket/WinHTTP/logger 生命周期，协议
 
 完成标准：增加一个测试 protocol 只需要注册 handler 和 fixture，不修改 router、
 worker 或 transport。
+
+阶段 11.5 已完成。RuntimeCompiler 从 immutable ProtocolRegistry snapshot 查找 handler，
+未知协议、重复注册、非法 method、unsupported Usage 和已知 specialized rule 不适用组合
+均在 publish 前失败。Responses、Chat、Messages descriptor 均声明 method、Usage/SSE/
+JSON capability 和 `remove_tool` 适用性；OpenAI 与 Anthropic 本地错误 envelope 使用结构化
+JSON 生成并正确转义，upstream response 不参与重包。
+
+独立 CTest 注册了不支持 Usage 的 synthetic `echo`/`PUT` protocol，并在不修改 router、
+worker 或 transport 的情况下得到可路由 snapshot；同时验证 registry copy 不受后续外部
+注册影响、Messages envelope、capability 与 specialized rule 适用性。生产 server 仍未
+接线，因此本工作包不声称 Messages 网络转发已经交付。
 
 ### 11.6 建立 RuleRegistry 与编译 Pipeline
 

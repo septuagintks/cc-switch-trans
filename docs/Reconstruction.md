@@ -321,9 +321,9 @@ canonical path 语义固定为：
 - 同 canonical path 的不同 method 可以共存；method 不匹配返回 405 和稳定排序的
   Allow 集合，path 不存在返回 404，非法 path 单独分类。
 
-阶段 11.4 的 compiler 暂按已批准的当前协议共同约束生成主请求 `POST`、Usage `GET`。
-阶段 11.5 接入 ProtocolRegistry 后，主 method 必须来自 protocol descriptor；这不是
-请求运行时的协议分支。
+当前 compiler 已从 ProtocolRegistry descriptor 取得主请求与 Usage method，不在
+RuntimeCompiler 或请求路径中根据 protocol id 分支。registry 在 compiler 构造时复制为
+immutable snapshot；后续对外部 builder 的注册不会改变现有 runtime generation。
 
 ## Protocol Handler
 
@@ -354,6 +354,17 @@ handler 不负责：
 
 透明 profile 不应因为选择了某个 handler 就自动解析 JSON。只有非空且需要 body 的
 pipeline 才进入 JSON 解析路径。
+
+当前三个 descriptor 的主请求均为 `POST`、Usage 为 `GET`，且都声明 transparent SSE、
+JSON request body 和 `remove_tool` 专用 rule capability。Responses/Chat 使用 OpenAI
+本地错误 envelope，Messages 使用 Anthropic envelope；这只应用于命中 profile 后由
+本地产生的协议错误，上游 status/header/body 不重包。Messages 在 11.5 不执行任何
+专用 rewrite，透明传输由 11.7 server 接线验证。
+
+Registry 对未知/重复 protocol、非法 method、Usage capability 和已知 specialized rule
+不适用组合在 snapshot 发布前失败。未知 generic rule 不由 protocol 层猜测，交给
+RuleRegistry。增加测试 protocol 只需注册一个 handler；RouteTable、worker 和 transport
+不需要修改。
 
 ## Rule Pipeline
 

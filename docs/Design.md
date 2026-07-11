@@ -163,6 +163,12 @@ route 持有 immutable `RuntimeProfile`、独立 upstream target 和 enabled rul
 RouteTable 使用 canonical path 的外层 hash 与 method 的内层 hash，lookup 不扫描
 profile。编译失败不替换调用方已有 snapshot。
 
+`ProtocolRegistry` 已接入 compiler。Responses、Chat、Messages handler 提供稳定 id、
+主/Usage method、Usage/SSE/JSON capability、专用 rule 适用性和本地错误 envelope；
+RuntimeProfile 直接持有 immutable handler。compiler 构造时复制 registry snapshot，
+后续外部注册不会改变已发布 generation。OpenAI handlers 生成 OpenAI error object，
+Messages 生成 Anthropic error envelope；上游 response 仍透明，不由 handler 改写。
+
 当前 schema 中一个 profile 表示整套 `AppConfig` 覆盖并可被选为 active profile。
 重构后的 Profile 改为“一条可同时启用的代理链”，两种含义不能混用。v2 loader
 明确拒绝旧结构并保留原文件，不建立双模型 fallback；在 11.7 server 切换前，两套

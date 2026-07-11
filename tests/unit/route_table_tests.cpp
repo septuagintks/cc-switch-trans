@@ -1,6 +1,7 @@
 #include "config/config_document.hpp"
 #include "config/runtime_compiler.hpp"
 #include "core/url.hpp"
+#include "protocols/protocol_registry.hpp"
 #include "routing/profile.hpp"
 #include "routing/route_table.hpp"
 #include "runtime/runtime_snapshot.hpp"
@@ -115,7 +116,7 @@ void test_route_table_lookup() {
 
     auto profile = std::make_shared<ccs::RuntimeProfile>();
     profile->id = "synthetic";
-    profile->protocol = ccs::ProtocolId{"responses"};
+    profile->handler = ccs::builtin_protocol_registry()->find("responses");
     std::shared_ptr<const ccs::RuntimeProfile> immutable_profile = profile;
 
     ccs::RouteTable table;
@@ -210,7 +211,7 @@ void test_runtime_compiler_multi_profile() {
     const auto responses = snapshot->routes.lookup("POST", "/findcg/request/");
     require(responses.status == ccs::RouteLookupStatus::Matched, "Responses route lookup");
     require(responses.entry->profile->id == "findcg", "Responses profile ownership");
-    require(responses.entry->profile->protocol.value == "responses", "Responses protocol ownership");
+    require(responses.entry->profile->handler->id() == "responses", "Responses protocol ownership");
     require(responses.entry->profile->request_pipeline.size() == 1, "only enabled rules enter runtime pipeline");
     require(responses.entry->profile->request_pipeline[0].id.value == "enabled-rule", "rule order retained");
     require(responses.entry->upstream.base_url == "https://responses.example.com", "Responses upstream ownership");
@@ -219,9 +220,9 @@ void test_runtime_compiler_multi_profile() {
     require(usage.status == ccs::RouteLookupStatus::Matched, "Usage route lookup");
     require(usage.entry->kind == ccs::RouteKind::Usage, "Usage route kind");
     require(usage.entry->upstream.path == "/v1/usage", "Usage follows profile upstream path");
-    require(snapshot->routes.lookup("POST", "/openrouter/request").entry->profile->protocol.value == "chat",
+    require(snapshot->routes.lookup("POST", "/openrouter/request").entry->profile->handler->id() == "chat",
         "Chat profile compiled without task enum");
-    require(snapshot->routes.lookup("POST", "/anthropic/request").entry->profile->protocol.value == "messages",
+    require(snapshot->routes.lookup("POST", "/anthropic/request").entry->profile->handler->id() == "messages",
         "Messages profile compiled without task enum");
     require(snapshot->routes.lookup("GET", "/anthropic/request").status
             == ccs::RouteLookupStatus::MethodNotAllowed,

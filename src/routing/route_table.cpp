@@ -44,6 +44,10 @@ bool RouteTable::add(RouteEntry entry, std::string& error) {
         error = "route must reference an immutable runtime profile";
         return false;
     }
+    if (!entry.profile->handler) {
+        error = "runtime profile " + entry.profile->id + " has no protocol handler";
+        return false;
+    }
     if (!valid_method(entry.method)) {
         error = "route method must be an uppercase HTTP token";
         return false;

@@ -6,8 +6,13 @@
 
 namespace ccs {
 
-RuntimeCompiler::RuntimeCompiler(std::filesystem::path application_root)
-    : application_root_(std::move(application_root)) {}
+RuntimeCompiler::RuntimeCompiler(
+    std::filesystem::path application_root,
+    std::shared_ptr<const ProtocolRegistry> protocols)
+    : application_root_(std::move(application_root))
+    , protocols_(protocols
+              ? std::make_shared<const ProtocolRegistry>(*protocols)
+              : nullptr) {}
 
 bool RuntimeCompiler::compile(
     const ConfigDocument& document,
@@ -17,6 +22,10 @@ bool RuntimeCompiler::compile(
     error.clear();
     if (application_root_.empty() || !application_root_.is_absolute()) {
         error = "runtime compiler requires an absolute application root";
+        return false;
+    }
+    if (!protocols_) {
+        error = "runtime compiler requires a protocol registry";
         return false;
     }
     if (!validate_config_document(document, error)) {
@@ -49,6 +58,7 @@ bool RuntimeCompiler::compile(
 
     RuntimeSnapshot candidate;
     candidate.application = document.application;
+    candidate.protocols = protocols_;
     if (!resolve_application_log_path(
             document.application,
             application_root_,
@@ -58,9 +68,19 @@ bool RuntimeCompiler::compile(
     }
 
     for (const auto& [profile_id, definition] : selected) {
+        const auto handler = protocols_->find(definition->protocol->value);
+        if (!handler) {
+            error = "profile " + profile_id + " uses unknown protocol: "
+                + definition->protocol->value;
+            return false;
+        }
+        if (!protocols_->validate_profile(handler, profile_id, *definition, error)) {
+            error = "profile " + profile_id + ": " + error;
+            return false;
+        }
         auto mutable_profile = std::make_shared<RuntimeProfile>();
         mutable_profile->id = profile_id;
-        mutable_profile->protocol = *definition->protocol;
+        mutable_profile->handler = handler;
         mutable_profile->source_enabled = definition->enabled;
         for (const auto& rule : definition->rules) {
             if (rule.enabled) {
@@ -73,7 +93,7 @@ bool RuntimeCompiler::compile(
         RouteEntry request_route;
         request_route.profile = profile;
         request_route.kind = RouteKind::Request;
-        request_route.method = "POST";
+        request_route.method = handler->descriptor().request_method;
         request_route.local_path = *definition->local.request_path;
         request_route.upstream = UpstreamTarget{
             *definition->upstream.base_url,
@@ -87,7 +107,7 @@ bool RuntimeCompiler::compile(
             RouteEntry usage_route;
             usage_route.profile = profile;
             usage_route.kind = RouteKind::Usage;
-            usage_route.method = "GET";
+            usage_route.method = handler->descriptor().usage_method;
             usage_route.local_path = *definition->local.usage_path;
             usage_route.upstream = UpstreamTarget{
                 *definition->upstream.base_url,

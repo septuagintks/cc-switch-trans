@@ -51,6 +51,12 @@ cc-switch-trans/
       cli_main.cpp
     logging/
       logger.hpp/.cpp
+    protocols/
+      chat_handler.hpp/.cpp
+      messages_handler.hpp/.cpp
+      protocol_handler.hpp/.cpp
+      protocol_registry.hpp/.cpp
+      responses_handler.hpp/.cpp
     routing/
       profile.hpp
       route_table.hpp/.cpp
@@ -75,6 +81,7 @@ cc-switch-trans/
       config_cli_tests.cpp
       config_document_tests.cpp
       core_tests.cpp
+      protocol_tests.cpp
       route_table_tests.cpp
     integration/
       mock_upstream.py
@@ -104,7 +111,8 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 | `src/core` | AppService、任务枚举、router 基础、取消、指标、transform 接口 | app/routing/runtime 职责混合 |
 | `src/hosts` | CLI 入口 | 将增加 Windows tray 和 macOS menu bar |
 | `src/logging` | JSON Lines、批写、flush、背压、writer health | 保持独立，仅调整标签 |
-| `src/routing` | immutable RuntimeProfile、两级 hash RouteTable、404/405 lookup | 11.5 接 protocol descriptor |
+| `src/protocols` | Responses/Chat/Messages descriptor、registry、local error envelope | 11.6 接 rule factories |
+| `src/routing` | immutable RuntimeProfile + handler、两级 hash RouteTable、404/405 lookup | 11.7 接生产 server |
 | `src/runtime` | v2 RuntimeSnapshot generation 数据模型 | 11.6 接 compiled pipeline |
 | `src/server` | 双 listener、worker、路由编排、reload | 改为单 listener + RouteTable |
 | `src/transforms` | findcg Responses 特定规则 | 改为通用 RuleRegistry/Pipeline |
@@ -142,7 +150,7 @@ src/
     logger.hpp/.cpp
 
   protocols/
-    protocol_handler.hpp
+    protocol_handler.hpp/.cpp
     protocol_registry.hpp/.cpp
     responses_handler.hpp/.cpp
     chat_handler.hpp/.cpp
@@ -284,6 +292,7 @@ core -> C++ standard library
 tests/unit/
   config_cli_tests.cpp
   config_document_tests.cpp
+  protocol_tests.cpp
   route_table_tests.cpp
   protocol_tests.cpp
   rule_pipeline_tests.cpp
