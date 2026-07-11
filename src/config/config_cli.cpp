@@ -1,5 +1,8 @@
 #include "config/config_cli.hpp"
 
+#include "protocols/protocol_registry.hpp"
+#include "rules/rule_registry.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -602,12 +605,53 @@ bool render_rule(
     return true;
 }
 
+bool validate_cli_runtime_semantics(
+    const ConfigDocument& document,
+    std::string& error) {
+    const auto protocols = builtin_protocol_registry();
+    const auto rules = builtin_rule_registry();
+    for (const auto& [profile_id, profile] : document.profiles) {
+        const bool has_enabled_rules = std::any_of(
+            profile.rules.begin(), profile.rules.end(), [](const RuleDefinition& rule) {
+                return rule.enabled;
+            });
+        if (!profile.enabled && !has_enabled_rules) {
+            continue;
+        }
+        if (!profile.protocol) {
+            error = "profile " + profile_id
+                + " must set protocol before enabling the profile or one of its rules";
+            return false;
+        }
+        const auto handler = protocols->find(profile.protocol->value);
+        if (!handler) {
+            error = "profile " + profile_id + " uses unknown protocol: "
+                + profile.protocol->value;
+            return false;
+        }
+        if (profile.enabled
+            && !protocols->validate_profile(handler, profile_id, profile, error)) {
+            error = "profile " + profile_id + ": " + error;
+            return false;
+        }
+        std::shared_ptr<const CompiledPipeline> pipeline;
+        if (!rules->compile_pipeline(profile.rules, handler, pipeline, error)) {
+            error = "profile " + profile_id + ": " + error;
+            return false;
+        }
+    }
+    return true;
+}
+
 bool save_candidate(
     ConfigStore& store,
     const ConfigDocument& candidate,
     std::string rendered,
     std::string& output,
     std::string& error) {
+    if (!validate_cli_runtime_semantics(candidate, error)) {
+        return false;
+    }
     if (!store.save(candidate, error)) {
         return false;
     }
@@ -875,6 +919,10 @@ void print_config_cli_help(std::ostream& output) {
         << "  protocol\n"
         << "  local.request-path, local.usage-path\n"
         << "  upstream.base-url, upstream.request-path, upstream.usage-path\n";
+}
+
+void print_config_cli_version(std::ostream& output) {
+    output << "ccs-trans 0.4.0\n";
 }
 
 } // namespace ccs

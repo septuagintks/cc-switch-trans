@@ -61,5 +61,6 @@ bool execute_config_cli(
     std::string& output,
     std::string& error);
 void print_config_cli_help(std::ostream& output);
+void print_config_cli_version(std::ostream& output);
 
 } // namespace ccs

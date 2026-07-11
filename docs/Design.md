@@ -5,133 +5,86 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | 实现基线 | `0.4.0` |
-| 支持平台 | Windows x64 |
-| 本地入口 | Responses `127.0.0.1:15723`，Chat `127.0.0.1:15724` |
+| 支持平台 | Windows 11 21H2+ x64 |
+| 本地入口 | 应用级单 listener，默认 `127.0.0.1:15723` |
 | 配置根目录 | `%USERPROFILE%/.ccs-trans/` |
-| 网络模型 | 双 listener、共享有界 worker pool、WinHTTP 上游传输 |
-| 下一架构目标 | 单 listener、多代理 Profile、Protocol registry、Rule pipeline |
+| 业务模型 | 多 Profile、ProtocolRegistry、RuleRegistry、精确 RouteTable |
+| 上游网络 | WinHTTP + 当前用户 Windows 系统代理 |
 
-本文描述当前实现和重构期间仍需保持的行为约束。通用化目标模型见
-[Reconstruction.md](Reconstruction.md)，后续构建顺序见
-[DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
+本文描述当前生产路径。目标模型与扩展约束见 [Reconstruction.md](Reconstruction.md)，
+后续顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
 [ProjectStructure.md](ProjectStructure.md)。
 
 ## 项目定位
 
-`ccs-trans` 是本地 OpenAI 兼容 HTTP 转发服务。它接收客户端请求，按本地
-端点和路径选择任务，在命中明确规则时修改请求，再将上游响应返回给原客户端。
+`ccs-trans` 是本地 LLM API Request Transformation Proxy。它负责：
 
-当前设计遵守以下原则：
+1. 在一个 HTTP listener 接收请求；
+2. 按 method + canonical local path 精确选择 Profile；
+3. 执行该 Profile 的有序请求 Rule pipeline；
+4. 把请求转发到 Profile 自己的 upstream；
+5. 原样返回普通响应或增量转发 SSE；
+6. 记录可由 `request_id` 串联的结构化日志。
 
-1. 未命中改写规则时保持透明转发。
-2. 业务规则、路由、传输和宿主生命周期互相隔离。
-3. 所有请求改写都产生可由 `request_id` 串联的结构化日志。
-4. 内部队列、请求体和非流式响应体都有明确上限。
-5. SSE 按 chunk 转发，不因日志或统计累计完整响应。
-6. 配置 reload 不改变已经开始处理的请求。
+它不负责 Provider 选择、API key 保存、模型故障转移或 Agent 行为。这些职责属于
+cc-switch、Codex 或其他上层客户端。
 
 ## 当前拓扑
 
 ```text
 Codex / cc-switch / other client
               |
-              +--> 127.0.0.1:15723
-              |      POST /v1/responses[/]
-              |      GET  /v1/usage
+              v
+       one application listener
               |
-              +--> 127.0.0.1:15724
-                     POST /v1/chat/completions
-                     GET  /v1/usage
-
-Both listeners
-      |
-      v
-bounded connection admission
-      |
-      v
-shared on-demand worker pool
-      |
-      v
-TaskRouter -> transform pipeline -> Proxy / WinHTTP -> upstream
-      |                                  |
-      +-------------- Logger -----------+
+              v
+   bounded global connection admission
+              |
+              v
+      shared FIFO worker queue
+              |
+              v
+ method + canonical path -> RouteEntry
+              |
+              v
+ Profile -> ProtocolHandler -> CompiledPipeline
+              |
+              v
+       Proxy / WinHTTP -> upstream
+              |
+              +---- incremental SSE callbacks
+              +---- structured Logger
 ```
 
-Responses 和 Chat 端点分别拥有自己的监听地址、上游 base URL、主请求路径和
-Usage 路径。Usage 的上游归属由接收端点决定，不根据请求内容猜测。
-
-两个 listener 只承担连接接入。它们共享：
-
-- `max-connections` 总容量；
-- 一个 FIFO 任务队列；
-- 一个按需扩容的 worker pool；
-- 一个 logger 和一组 runtime metrics；
-- 一个进程级 WinHTTP session。
-
-任一 listener 启动失败都会使整次启动失败并释放已绑定端口。运行中不可恢复的
-accept 错误会停止整个服务，避免只剩半套端点继续工作。
+所有 enabled Profile 同时进入一个 immutable RuntimeSnapshot。listener、worker、
+连接容量、timeouts、body limits、logging 和 metrics 是应用级资源，不复制到 Profile。
 
 ## 模块边界
 
 ```text
-hosts -> config + AppService
+CLI host -> ConfigStore + RuntimeCompiler -> AppService
 AppService -> Server
-Server -> routing + transforms + logging + transport
-transport -> core HTTP/config types + operating-system APIs
-transforms -> core task/transform types + structured JSON
-core -> C++ standard library and platform-neutral data types
+Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + Proxy
+Proxy -> HTTP types + cancellation + platform network APIs
 ```
 
 | 模块 | 当前职责 | 禁止承担 |
 | --- | --- | --- |
-| `src/hosts` | CLI 输入、退出码、服务启停 | 复制路由、改写或网络逻辑 |
-| `src/config` | CLI、profile schema、路径、校验、snapshot | 根据请求选择任务 |
-| `src/core` | 生命周期、任务类型、路由基础类型、取消、指标 | 持有宿主 UI 状态 |
-| `src/server` | listener、容量控制、请求编排、reload | 保存无关上游特例 |
-| `src/transport` | HTTP 头过滤、WinHTTP 请求、SSE 回调 | 判断 findcg 或修改 JSON |
-| `src/transforms` | 按任务隔离的结构化请求改写 | 创建 socket 或日志文件 |
+| `src/hosts` | v2 CLI、退出码、服务启停 | 路由、规则或 WinHTTP 逻辑 |
+| `src/config` | schema、CLI、原子持久化、runtime 编译 | 请求期扫描 Profile |
+| `src/routing` | immutable Profile、两级 hash RouteTable | 解析规则 option |
+| `src/protocols` | 协议能力、专用布局、本地错误 envelope | socket/worker 生命周期 |
+| `src/rules` | factory、编译、共享 DOM pipeline | 上游选择或响应改写 |
+| `src/server` | 单 listener、容量、worker、请求编排 | findcg/provider host 特判 |
+| `src/transport` | headers、WinHTTP、SSE、取消、timeout | 修改 JSON 请求 |
 | `src/logging` | JSON Lines、批写、flush、背压 | 决定业务规则 |
 
-`ccs-trans-core` 静态库包含共享服务实现，`ccs-trans` 可执行目标只提供 CLI
-宿主。后续宿主必须复用同一 `AppService`，不能重新实现启动和关闭顺序。
+`ccs-trans-core` 是未来 CLI、Windows tray 和 macOS menu bar 宿主的共享服务核心。
+新增宿主必须复用 `AppService`，不能复制初始化和停止顺序。
 
-## 配置模型
+## 配置与 CLI
 
-当前运行时使用一个不可变 `AppConfig` snapshot：
-
-```text
-AppConfig
-  responses_endpoint
-    listen_host / listen_port
-    upstream_url
-    main_task
-    usage_task
-  chat_endpoint
-    listen_host / listen_port
-    upstream_url
-    main_task
-    usage_task
-  logging
-  timeouts
-  body limits
-  worker_threads / max_connections
-```
-
-每个 `TaskConfig` 包含 method、本地路径、上游路径、transform 名称和日志策略。
-`TaskRouter` 输出明确的 endpoint、task 和 `UpstreamTarget`；后续步骤不再读取
-模糊的共享 URL。
-
-配置字段遵守一对一规则：一个 CLI 参数只修改一个字段，一个字段只有一个
-规范参数名。不存在短参数、同义参数、共享 fallback 或重复参数覆盖。
-
-这里的 endpoint group 是当前实现基线，不是后续继续扩展协议的目标模型。阶段 11
-将应用级 listener/runtime 与代理链拆开：一个应用配置持有多个 enabled Profile，
-每个 Profile 只保存 protocol、本地精确路由、upstream 和有序 rules。新模型通过
-编译后的 `RuntimeSnapshot` 继续满足本节的不可变 generation 约束。
-
-## 持久 Profile
-
-持久数据布局：
+持久布局：
 
 ```text
 %USERPROFILE%/.ccs-trans/
@@ -139,261 +92,203 @@ AppConfig
   logs/
     ccs-trans.log
   state/
+    config.lock
 ```
 
-Windows 通过账户目录 API 解析用户主目录，不接受环境变量替换配置根。相对日志
-路径必须留在 `.ccs-trans` 内；绝对路径可显式指向其他位置。
-
-当前生产 `run` 仍读取 `ccs-trans.config/v1`，但 v2 editable domain 与独立
-`ConfigStore` 已实现，尚未接入当前 server。v2 store 严格拒绝未知字段、错误 JSON
-类型、旧 schema、非法路径和越界数量；保存持有跨进程 write lock，检查加载时源字节
-未变化，写入临时文件并回读 round-trip 后再原子替换。任何失败都不覆盖目标文件。
-Authorization、Cookie、API key 和其他凭据不属于 profile schema，只随每次 HTTP
-请求转发。
-
-v2 `config/profile/rule/run` 命令 parser 与管理命令 executor 也已独立实现并通过临时
-应用根测试，但生产 `cli_main` 暂不分流到它。若管理命令先写 v2、`run` 仍读 v1，
-一次成功编辑就会让当前服务无法启动；因此 host 激活与 RuntimeSnapshot/单 listener
-在 11.7 同一提交切换。当前可执行文件在此之前继续完整使用旧生产 CLI，不形成一个
-写新 schema、读旧 schema 的危险中间态。
-
-v2 `RuntimeCompiler`、`RuntimeSnapshot` 与 `RouteTable` 已完成但同样尚未接入生产
-server。compiler 只复制 enabled profile，或为 `run --profile` 单独编译一个完整草稿；
-route 持有 immutable `RuntimeProfile`、独立 upstream target 和 enabled rule 定义副本。
-RouteTable 使用 canonical path 的外层 hash 与 method 的内层 hash，lookup 不扫描
-profile。编译失败不替换调用方已有 snapshot。
-
-`ProtocolRegistry` 已接入 compiler。Responses、Chat、Messages handler 提供稳定 id、
-主/Usage method、Usage/SSE/JSON capability、专用 rule 适用性和本地错误 envelope；
-RuntimeProfile 直接持有 immutable handler。compiler 构造时复制 registry snapshot，
-后续外部注册不会改变已发布 generation。OpenAI handlers 生成 OpenAI error object，
-Messages 生成 Anthropic error envelope；上游 response 仍透明，不由 handler 改写。
-
-当前 schema 中一个 profile 表示整套 `AppConfig` 覆盖并可被选为 active profile。
-重构后的 Profile 改为“一条可同时启用的代理链”，两种含义不能混用。v2 loader
-明确拒绝旧结构并保留原文件，不建立双模型 fallback；在 11.7 server 切换前，两套
-内部类型只作为开发期隔离存在，不会让一个 `run` 同时接受两种 schema。详细决策见
-[Reconstruction.md](Reconstruction.md)。
-
-运行配置合并顺序：
+Windows 从 `USERPROFILE` 读取用户目录，macOS 使用账户 home。配置 schema 固定为
+`ccs-trans.config/v2`；旧 schema、未知字段、重复 JSON key、错误类型和越界值会被
+拒绝，不做 fallback。
 
 ```text
-built-in defaults
-      -> active profile or --profile
-      -> explicit run options
-      -> validated immutable ConfigSnapshot
+ConfigDocument
+  ApplicationSettings
+    listener
+    runtime
+    timeouts
+    logging
+  profiles
+    <stable id>
+      enabled
+      protocol
+      local request/Usage path
+      upstream base/request/Usage path
+      ordered rules
 ```
 
-命令行覆盖只影响本次运行，不回写 profile。
+disabled Profile 和 Rule 可作为草稿保存。运行时只编译 enabled Profile 和 enabled
+Rule；`run --profile <id>` 可一次性编译一个完整的 disabled Profile，不改写持久状态。
 
-## 路由与任务
+ConfigStore 保存时持有跨进程 lock，比较加载时源字节，写同目录临时文件，回读并做
+canonical round-trip，再原子替换目标。失败不会覆盖原配置。
 
-| 接收端点 | method / local path | 任务 | 上游目标 |
-| --- | --- | --- | --- |
-| Responses | `POST /v1/responses[/]` | `responses` | Responses URL + request path |
-| Responses | `GET /v1/usage` | `responses_usage` | Responses URL + Usage path |
-| Chat | `POST /v1/chat/completions` | `chat_completions` | Chat URL + request path |
-| Chat | `GET /v1/usage` | `chat_usage` | Chat URL + Usage path |
+CLI 一条命令只修改一个字段或执行一个动作。应用字段、Profile 字段和 Rule option
+分别由 `config set`、`profile set`、`rule set` 修改。没有短参数、别名、旧参数或
+`profile use`。
 
-Responses 本地路径同时接受有无尾斜杠形式。其他未配置路径返回结构化 404；已知
-路径使用错误 method 时返回结构化 405。未配置对应 endpoint upstream 时，该端点
-不会接受可转发任务。
+## Runtime 编译
 
-查询参数保留在目标路径中。Hop-by-hop 头和需要由 WinHTTP 重建的头会被过滤，
-其他请求头和响应头保持透传。
+`RuntimeCompiler` 的顺序固定为：
 
-## 请求改写
+```text
+validated ConfigDocument
+  -> select enabled/diagnostic Profile
+  -> resolve ProtocolHandler
+  -> validate protocol capabilities
+  -> compile enabled Rules
+  -> create immutable RuntimeProfile
+  -> canonicalize and add request/Usage routes
+  -> reject collisions
+  -> publish shared_ptr<const RuntimeSnapshot>
+```
 
-当前唯一业务改写为 `remove_findcg_image_gen`，只有同时满足以下条件才执行：
+compiler 构造时复制 ProtocolRegistry 与 RuleRegistry。之后修改外部 builder 不会影响
+该 compiler 或已经发布的 generation。
 
-1. 任务为 Responses；
-2. 上游 URL 解析后的 host 精确等于 `findcg.com` 或 `www.findcg.com`；
-3. 请求体是合法 JSON；
-4. 根级 `tools` 是数组并包含目标工具声明。
+## 路由
 
-改写使用 `nlohmann/json` 结构化解析。它只删除根级工具数组中的目标项，不会
-搜索或修改背景文本、用户输入、嵌套对象或字符串内容。未命中时继续使用原始 body，
-避免透明请求承担不必要的重新序列化成本。
+RouteKey 是 uppercase HTTP method + canonical path。RouteTable 内部先按 path，再按
+method 做两级 hash lookup；每个请求只 canonicalize 一次，不线性扫描 Profile。
 
-解析或规则执行失败时，请求不会携带部分修改后的 body 发往上游。改写结果记录
-规则名、匹配结果、删除数量和 request/task 标识，但业务判断不依赖日志成功与否。
+规则固定为：
+
+- path 大小写敏感；根路径以外的一个尾斜杠被移除；
+- query 在 HTTP parse 时分离，不进入 RouteKey，并原样附加到 upstream；
+- 重复 `/`、dot segment、encoded separator/control、反斜杠和非法 percent escape
+  被拒绝；
+- path 存在但 method 错误返回 405 与排序后的 `Allow`；
+- path 不存在返回 404；非法 path 返回 400；
+- 同 method + canonical path 的配置 collision 会拒绝整个 snapshot；
+- `/_ccs-trans` 命名空间保留给管理接口。
+
+Usage Route 是 Profile 的可选独立 RouteEntry。它使用同一个 Profile/upstream，但不
+执行请求 Rule pipeline，也不记录 request headers、query 或 body。
+
+## Protocol
+
+当前 registry 提供：
+
+| Protocol | 主请求 | Usage | SSE | 本地错误 |
+| --- | --- | --- | --- | --- |
+| `responses` | POST | GET | transparent | OpenAI envelope |
+| `chat` | POST | GET | transparent | OpenAI envelope |
+| `messages` | POST | GET | transparent | Anthropic envelope |
+
+ProtocolHandler 声明 method、能力和专用 Rule 适用性。命中 Profile 后产生的 pipeline、
+transport 或内部错误按 handler envelope 返回；上游 status/header/body 永远不重包。
+
+## Rule Pipeline
+
+首批 Rule：
+
+```text
+set_field(path, value)
+remove_field(path)
+remove_tool(tool)
+```
+
+Generic Rule 使用 RFC 6901 JSON Pointer。目标必须已经存在，不创建中间对象；array
+index 严格拒绝 `-`、前导零、非数字和越界。`set_field` 允许空 pointer 替换 root，
+`remove_field` 禁止删除 root。
+
+`remove_tool` 布局由 Protocol 决定：Responses 匹配 root `name`/`namespace`，Chat
+匹配 `function.name`，Messages 匹配 root `name`。缺失或非 array 的 `tools` 透明。
+
+执行路径：
+
+```text
+empty pipeline -> reuse raw bytes, zero parse
+non-empty      -> parse once -> ordered rules on one DOM
+modified       -> serialize once
+unmodified     -> reuse original bytes
+rule error     -> discard candidate DOM, return local error
+```
+
+Trace 只包含 rule id/type、matched/modified、静态 reason、有界 target/count 和耗时，
+不包含替换值、工具名副本或完整 body。
 
 ## 请求生命周期
 
 ```text
 accept
-  -> connection admission
-  -> parse and enforce request limit
-  -> capture ConfigSnapshot generation
-  -> route
-  -> transform
-  -> send upstream
+  -> global capacity admission
+  -> queue and worker acquisition
+  -> receive request under current request limit
+  -> capture one RequestGeneration
+  -> parse + RouteTable lookup
+  -> optional request pipeline
+  -> WinHTTP upstream
   -> stream or buffer response
   -> send client response
-  -> release connection capacity
+  -> release capacity
 ```
 
-每个请求在开始编排时捕获一个 `shared_ptr<const ConfigSnapshot>` generation。
-reload 之后的新请求读取新 generation，已经进行中的请求继续使用旧上游、路径、
-限制和日志策略，直到自然完成或取消。
+RequestGeneration 持有 RuntimeSnapshot、Proxy 和 Logger。请求进入编排后一直持有同一
+generation；reload 后的新请求读取新 generation，in-flight 请求继续使用旧 Profile、
+pipeline、upstream 和限制。
 
-`AppService` 提供 `start`、`reload`、`stop`、`wait` 和状态查询。停止顺序保证：
-
-1. 停止接受新连接；
-2. 唤醒接入和 worker 等待；
-3. 取消仍在执行的上游请求；
-4. 合并线程；
-5. drain 并关闭日志 writer。
+AppService 提供 `start`、`reload`、`stop`、`wait` 和状态查询。listener/worker/logger
+topology 变化要求 graceful restart；失败时重新启动旧 snapshot。Profile、route、rule、
+upstream 和 body/logging policy 可通过 generation swap 对新请求生效。阶段 11.8 将继续
+收紧 reload 的配置文件入口、generation 日志和 writer failure 行为。
 
 ## 并发与容量
 
-默认 `max-connections=64`，覆盖正在执行和排队的连接。超过容量的新连接会收到
-明确的过载响应，不会无限增长内存。
+默认 `max_connections=64` 覆盖执行中和排队连接。超过容量返回 503，不建立无界队列。
+默认 `worker_threads=32` 是按需 worker 上限；启动预热 `min(8, worker_threads)`。
 
-默认 `worker-threads=32` 表示最大 worker 数，不是启动时固定线程数。服务预热
-8 个 worker，在队列出现需求时增长，空闲时不创建全部线程。同步 worker 模型的
-当前负载口径为：
+metrics 只记录全局资源维度，避免 Profile 数量造成无界 cardinality。Profile/protocol/
+route 只进入每请求日志。
 
-- 聚合 8-16 路 SSE 是桌面常规负载；
-- 50 路连接是压力测试和容量边界；
-- Usage 必须在混合 SSE 负载中保持可用；
-- 是否更换异步网络模型必须由 benchmark 和资源指标证明。
+负载口径：
 
-所有内部队列都必须有上限。SSE 内存占用不得随累计流长度线性增长。
+- 8-16 路 SSE 是桌面常规负载；
+- 50 路是 bounded stress；
+- mixed load 中 Responses/Chat Usage 必须在 SSE 完成前持续成功；
+- 是否换异步网络模型由 benchmark 与资源指标决定。
 
-## 上游传输
+## Transport 与系统代理
 
-Windows transport 使用一个进程级 WinHTTP session，每个请求拥有独立 request
-handle。WinHTTP 按 scheme、host 和 port 管理连接复用。
+Windows minimum 是 Windows 11 21H2 x64。WinHTTP transport 读取当前用户手动代理、
+bypass 和显式 PAC；registry watcher 为新请求发布新 session，in-flight 请求持有旧
+session。
 
-当前 transport 读取 Windows 11 21H2 当前用户系统代理 snapshot：direct 使用
-WinHTTP no-proxy session，手动系统代理使用 named-proxy session；显式 PAC URL 由
-`WinHttpGetProxyForUrl` 按请求解析，再把 direct 或 named-proxy 结果固定到该请求。
-Internet Settings watcher 在变化时发布新 session；请求只复制 shared snapshot，
-in-flight 请求保留旧 session。仅启用 auto-detect 时不执行 WPAD，避免无代理桌面环境
-承担网络发现和固定延迟。
+系统明确 direct 时可直连。一旦系统为目标选择 proxy，DNS/连接/转发失败不能 fallback
+direct。407 返回 `proxy_authentication_unsupported`，不提示或保存密码。仅启用自动
+检测但没有显式 PAC 时忽略 WPAD。
 
-系统明确 direct 或 bypass 时可以直连；系统已经选择代理而该代理失败时不得回退
-direct；`407` 被归类为不支持代理认证。启动和 upstream request 日志记录
-`upstream_proxy_mode=windows_system`，不记录代理地址、PAC 或凭据。
+macOS transport 尚未实现。目标是链接 system libcurl，只使用启动进程继承的 proxy
+环境，不读取或激活 macOS System Settings 代理。
 
-目标 macOS transport 链接系统 libcurl，只继承启动进程的 terminal proxy 环境，
-不读取或修改 macOS 系统代理。Finder/Login Item 启动且没有这些环境变量时直接
-连接。完整平台合约见 [Reconstruction.md](Reconstruction.md)。
+## 日志与安全
 
-超时按阶段独立配置：
+Logger 使用有界 byte queue。正常事件按默认约 100 ms 批写；error 事件等待立即 flush；
+容量不足时生产者背压，不静默丢事件。writer failure 有明确状态和 metrics。
 
-```text
-resolve
-connect
-send
-response header
-SSE stream idle
-optional total request
-```
+SSE 每个 chunk 单独记录连续序号和大小，绝不为日志累计完整 response body。Usage 只
+记录最小完成/错误摘要。请求、Rule、upstream、response 和 chunk 可按 `request_id`、
+Profile、protocol、route kind 串联。
 
-阶段超时和客户端断开都通过 `CancellationToken` 关闭对应 WinHTTP request
-handle。取消只影响目标请求，不关闭共享 session 或其他连接。
+`redact_sensitive` 只遮盖已知敏感 header，不清理 JSON body。启用 body logging 时日志
+可能包含完整模型上下文，必须按高敏感文件处理。发布包不得包含用户 config、logs、
+benchmark 输出或临时目录。
 
-普通响应在 `max-response-body-size` 内缓冲后返回。SSE 响应收到 chunk 后立即送往
-客户端并递增日志序号，不保留完整 `response.body`。客户端发送失败会触发取消，
-worker 随后释放。
+## 验证状态
 
-## 日志与指标
+当前自动验证包括：
 
-日志格式为每行一个 JSON object。普通请求链至少可以通过 `request_id` 关联：
+1. ConfigDocument/ConfigStore/CLI、RouteTable、ProtocolRegistry、RuleRegistry 单测；
+2. Server 404/405/invalid path、OpenAI/Anthropic local error 单测；
+3. reload generation A/B 与运行中 ConfigStore 保存集成测试；
+4. 单端口 Responses/Chat/Messages、三组 Usage、findcg Rule、普通响应、SSE、query、
+   headers、body limits、overload、timeouts、取消和日志 Python 集成测试；
+5. Windows system proxy A/B、in-flight、dead proxy、direct、WPAD-only、bypass、PAC 和
+   407 专项矩阵；
+6. `smoke`、`desktop-8`、`desktop-16`、`mixed-16`、`stress-50` 与 0/1/8/32 Rule
+   microbenchmark。
 
-```text
-request_received
-route_selected
-transform_result
-upstream_request
-response_chunk / upstream_response
-response_sent / request_error
-```
+当前边界：
 
-正常日志默认允许约 100 ms 批量窗口；错误事件要求立即 flush。writer 只有一个，
-待写容量按总 pending bytes 计算并包含正在写入的 batch。容量耗尽时生产者背压，
-记录不得静默丢弃。
-
-指标区分：
-
-- batch window 等待；
-- pending-capacity 背压等待；
-- 实际文件 write 和 flush 时间；
-- 当前/最大队列记录数与字节数；
-- 最老 pending 记录年龄与已写记录最大年龄；
-- writer 健康状态和失败次数；
-- endpoint queue wait、活动连接和 worker 高水位；
-- WinHTTP 阶段耗时、timeout 和 cancellation。
-
-Usage 不进入包含 headers、query 和 body 的普通请求链。它只写最小 completion 或
-rejection 事件，保留 endpoint、task、target、HTTP 状态和耗时。
-
-## Reload 语义
-
-reload 先解析并完整校验新配置，再决定应用方式：
-
-- 上游、路由、timeout、body 限制、日志内容策略和连接容量可由新 generation
-  应用于后续请求；
-- listener 地址、worker 拓扑、部分日志 writer 或 metrics 生命周期变化需要受控
-  重启；
-- 重启失败时恢复旧 snapshot 和旧服务，不能留下部分应用状态；
-- in-flight 请求不迁移 generation。
-
-配置保存和运行时 reload 是两个独立动作。写入成功不代表未校验配置可以直接进入
-运行状态。
-
-## 错误与安全
-
-本地协议错误使用 OpenAI 风格 JSON error body，并带稳定的 HTTP 状态码。主要
-分类包括未知路由、method 错误、请求过大、上游不可达、阶段 timeout、响应过大、
-改写失败和服务过载。
-
-日志是高敏感数据。`redact-sensitive=true` 只处理已知敏感 header，不清理 JSON
-body 中的密钥或上下文。发布包、测试 fixture 和 benchmark 不得从真实日志复制数据。
-
-发布包使用明确白名单，只包含可执行文件、用户文档和第三方许可证。用户配置、
-日志、benchmark 输出和临时目录都不得进入包内。
-
-## 验证基线
-
-当前验证层次：
-
-1. `ccs-trans-core-tests` 覆盖配置、URL、路由、transform、日志边界和错误分支。
-2. `ccs-trans-reload-integration` 验证旧请求保持旧 generation、新请求切换新上游，
-   并验证运行中 profile 原子保存与读取。
-3. Python 集成测试覆盖双 endpoint、Usage、普通响应、SSE、timeout、取消和错误。
-4. benchmark 覆盖 `smoke`、`desktop-8`、`desktop-16`、`mixed-16`、`stress-50`
-   以及 transform 微基准。
-5. `tests/fixtures/stage11` 固定 findcg transform 矩阵、透明 request bytes 和当前
-   schema 只读样例，供重构前后复用。
-
-`mixed-16` 同时运行 8 路 Responses SSE 和 8 路 Chat SSE，并持续向两个 endpoint
-发送 Usage。验收要求两组 Usage 都不等待全部 SSE 完成，且 logger 不报告 writer
-failure 或未预期的 backpressure。
-
-## 当前边界
-
-- 上游 transport 和 listener 仍是 Windows 实现。
-- Windows 自动系统代理已实现；macOS system-libcurl transport 尚未实现。
-- 当前生产协议模型仍固定为 Responses、Chat Completions 及各自 Usage；v2 runtime 已能
-  编译 Responses、Chat、Messages handler，尚待 11.7 接入生产 Server。
-- v2 runtime 已实现配置期 RuleRegistry、generic JSON Pointer 和三协议 `remove_tool`
-  pipeline；当前生产 Server 仍运行旧 transform，尚未执行 compiled pipeline。
-- tray、开机自启、双击后台运行和 macOS 菜单栏宿主尚未实现。
-
-已批准的演进方向是：
-
-1. 先把双 endpoint 模型改为应用级单 listener 与按精确 local path 路由的多
-   Profile。
-2. 用 Protocol registry 承载 Responses、Chat 和 Messages 的协议知识。
-3. 用配置期编译的 Rule pipeline 替换 `Server` 中的 transform 名称和 findcg host
-   特判。
-4. 复用当前 worker、WinHTTP、logger、cancellation、timeout 和 reload generation，
-   不在业务重构中同时重写网络栈。
-5. 重构完成后再实现 Windows tray，随后实现 macOS transport 与菜单栏宿主。
-
-新增协议和规则不能继续堆成 `Server` 或 `Proxy` 中的条件分支。目标目录和迁移顺序
-分别以 [ProjectStructure.md](ProjectStructure.md) 与
-[DevelopmentPlan.md](DevelopmentPlan.md) 为准。
+- listener 与 upstream transport 仍只有 Windows 实现；
+- reload 的完整 generation 可观测性和 logger failure 服务状态在阶段 11.8 收口；
+- v1 config/task/router/findcg transform 源码已退出生产路径，阶段 11.9 删除；
+- tray、开机自启、双击后台运行和 macOS menu bar 尚未实现。

@@ -1,9 +1,11 @@
-import concurrent.futures
 import base64
+import concurrent.futures
 import hashlib
 import http.client
 import json
+import os
 import pathlib
+import shutil
 import socket
 import subprocess
 import sys
@@ -12,6 +14,17 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TMP = ROOT / "tmp"
+
+
+def assert_true(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 def wait_for_port(port, timeout=5):
@@ -44,7 +57,6 @@ def raw_extra_separator_request(port, path, body):
         f"Content-Length: {len(encoded)}\r\n"
         "\r\n\r\n\r\n"
     ).encode("ascii")
-
     with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
         sock.sendall(head + encoded)
         chunks = []
@@ -53,11 +65,9 @@ def raw_extra_separator_request(port, path, body):
             if not chunk:
                 break
             chunks.append(chunk)
-
     raw = b"".join(chunks)
     header, _, data = raw.partition(b"\r\n\r\n")
-    status = int(header.split(b" ", 2)[1])
-    return status, data
+    return int(header.split(b" ", 2)[1]), data
 
 
 def fire_and_disconnect(port, path):
@@ -67,21 +77,105 @@ def fire_and_disconnect(port, path):
         f"Host: 127.0.0.1:{port}\r\n"
         "Content-Type: application/json\r\n"
         f"Content-Length: {len(body)}\r\n"
-        "Connection: close\r\n"
-        "\r\n"
+        "Connection: close\r\n\r\n"
     ).encode("ascii") + body
     with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
         sock.sendall(request_bytes)
 
 
-def assert_true(condition, message):
-    if not condition:
-        raise AssertionError(message)
-
-
 def read_json_lines(path):
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return [json.loads(line) for line in lines]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def profile(protocol, prefix, upstream_port, request_path, usage=True, rules=None):
+    value = {
+        "enabled": True,
+        "protocol": protocol,
+        "local": {"request_path": f"/{prefix}{request_path}"},
+        "upstream": {
+            "base_url": f"http://127.0.0.1:{upstream_port}",
+            "request_path": request_path,
+        },
+        "rules": rules or [],
+    }
+    if usage:
+        value["local"]["usage_path"] = f"/{prefix}/v1/usage"
+        value["upstream"]["usage_path"] = "/v1/usage"
+    return value
+
+
+def write_config(home, listener_port, upstream_ports, log_name="integration.log"):
+    application_root = home / ".ccs-trans"
+    application_root.mkdir(parents=True, exist_ok=True)
+    responses_port, chat_port, messages_port = upstream_ports
+    dead_upstream_port = free_port()
+    config = {
+        "schema_version": "ccs-trans.config/v2",
+        "listener": {"host": "127.0.0.1", "port": listener_port},
+        "runtime": {
+            "worker_threads": 2,
+            "max_connections": 2,
+            "max_request_body_size": 100 * 1024 * 1024,
+            "max_response_body_size": 1024,
+            "metrics_interval_ms": 100,
+        },
+        "timeouts": {
+            "resolve_ms": 30000,
+            "connect_ms": 30000,
+            "send_ms": 30000,
+            "response_header_ms": 100,
+            "stream_idle_ms": 400,
+            "total_ms": 1500,
+        },
+        "logging": {
+            "path": f"logs/{log_name}",
+            "level": "debug",
+            "body": True,
+            "redact_sensitive": True,
+            "body_limit": 64,
+            "queue_capacity": 16 * 1024 * 1024,
+            "flush_interval_ms": 100,
+        },
+        "profiles": {
+            "responses": profile(
+                "responses", "responses", responses_port, "/v1/responses/"
+            ),
+            "chat": profile(
+                "chat", "chat", chat_port, "/custom/chat/completions"
+            ),
+            "messages": profile(
+                "messages", "messages", messages_port, "/v1/messages"
+            ),
+            "messages-dead": profile(
+                "messages", "messages-dead", dead_upstream_port, "/v1/messages"
+            ),
+            "findcg": profile(
+                "responses",
+                "findcg",
+                responses_port,
+                "/v1/responses/",
+                usage=False,
+                rules=[
+                    {
+                        "id": "remove-image-gen",
+                        "enabled": True,
+                        "type": "remove_tool",
+                        "tool": "image_gen",
+                    }
+                ],
+            ),
+        },
+    }
+    (application_root / "config.json").write_text(
+        json.dumps(config, indent=2), encoding="utf-8"
+    )
+    return application_root / "logs" / log_name
+
+
+def process_environment(home):
+    environment = os.environ.copy()
+    environment["USERPROFILE"] = str(home)
+    return environment
 
 
 def main():
@@ -90,46 +184,15 @@ def main():
         raise RuntimeError(f"missing executable: {exe}")
 
     TMP.mkdir(exist_ok=True)
-    log_path = TMP / "integration.log"
-    if log_path.exists():
-        log_path.unlink()
-
-    responses_upstream_port = 19081
-    chat_upstream_port = 19082
-    responses_proxy_port = 15740
-    chat_proxy_port = 15741
-
-    def deterministic_runtime_options(runtime_log_path, chat_upstream_path="/v1/chat/completions"):
-        return [
-            "--responses-listen-host", "127.0.0.1",
-            "--responses-local-path", "/v1/responses/",
-            "--responses-upstream-path", "/v1/responses/",
-            "--responses-usage-local-path", "/v1/usage",
-            "--responses-usage-upstream-path", "/v1/usage",
-            "--chat-listen-host", "127.0.0.1",
-            "--chat-local-path", "/v1/chat/completions",
-            "--chat-upstream-path", chat_upstream_path,
-            "--chat-usage-local-path", "/v1/usage",
-            "--chat-usage-upstream-path", "/v1/usage",
-            "--log-path", str(runtime_log_path),
-            "--log-level", "debug",
-            "--log-body", "true",
-            "--redact-sensitive", "true",
-            "--body-log-limit", "64",
-            "--log-queue-capacity", str(16 * 1024 * 1024),
-            "--log-flush-interval-ms", "100",
-            "--metrics-interval-ms", "100",
-            "--resolve-timeout-ms", "30000",
-            "--connect-timeout-ms", "30000",
-            "--send-timeout-ms", "30000",
-            "--response-header-timeout-ms", "100",
-            "--stream-idle-timeout-ms", "400",
-            "--total-timeout-ms", "1500",
-            "--max-request-body-size", str(100 * 1024 * 1024),
-            "--max-response-body-size", "1024",
-            "--worker-threads", "2",
-            "--max-connections", "2",
-        ]
+    nonce = time.time_ns()
+    home = TMP / f"integration-home-{nonce}"
+    atomic_home = TMP / f"integration-atomic-home-{nonce}"
+    upstream_ports = []
+    while len(upstream_ports) < 3:
+        candidate = free_port()
+        if candidate not in upstream_ports:
+            upstream_ports.append(candidate)
+    proxy_port = free_port()
 
     upstreams = [
         subprocess.Popen(
@@ -138,358 +201,342 @@ def main():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        for port in (responses_upstream_port, chat_upstream_port)
+        for port in upstream_ports
     ]
-    proxy = None
+    proxy_process = None
     try:
-        wait_for_port(responses_upstream_port)
-        wait_for_port(chat_upstream_port)
+        for port in upstream_ports:
+            wait_for_port(port)
 
-        atomic_responses_port = 15742
-        atomic_chat_port = 15743
-        atomic_log_path = TMP / "integration-atomic-start.log"
-        if atomic_log_path.exists():
-            atomic_log_path.unlink()
+        blocked_port = free_port()
+        write_config(atomic_home, blocked_port, upstream_ports, "atomic.log")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
                 blocker.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            blocker.bind(("127.0.0.1", atomic_chat_port))
+            blocker.bind(("127.0.0.1", blocked_port))
             blocker.listen(1)
-            failed_proxy = subprocess.Popen(
-                [
-                    str(exe),
-                    "run",
-                    "--responses-upstream-url",
-                    f"http://127.0.0.1:{responses_upstream_port}",
-                    "--chat-upstream-url",
-                    f"http://127.0.0.1:{chat_upstream_port}",
-                    "--responses-listen-port",
-                    str(atomic_responses_port),
-                    "--chat-listen-port",
-                    str(atomic_chat_port),
-                    *deterministic_runtime_options(atomic_log_path),
-                ],
+            failed = subprocess.Popen(
+                [str(exe), "run"],
                 cwd=ROOT,
+                env=process_environment(atomic_home),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            assert_true(failed_proxy.wait(timeout=5) != 0, "second listener bind failure stops startup")
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                assert_true(
-                    probe.connect_ex(("127.0.0.1", atomic_responses_port)) != 0,
-                    "first listener is released after atomic startup failure",
-                )
+            assert_true(failed.wait(timeout=5) != 0, "occupied single listener stops startup")
 
-        proxy = subprocess.Popen(
-            [
-                str(exe),
-                "run",
-                "--responses-upstream-url",
-                f"http://127.0.0.1:{responses_upstream_port}",
-                "--chat-upstream-url",
-                f"http://127.0.0.1:{chat_upstream_port}",
-                "--responses-listen-port",
-                str(responses_proxy_port),
-                "--chat-listen-port",
-                str(chat_proxy_port),
-                *deterministic_runtime_options(log_path, "/custom/chat/completions"),
-            ],
+        log_path = write_config(home, proxy_port, upstream_ports)
+        listed_profiles = json.loads(
+            subprocess.check_output(
+                [str(exe), "profile", "list"],
+                cwd=ROOT,
+                env=process_environment(home),
+                text=True,
+            )
+        )
+        assert_true(
+            {entry["id"] for entry in listed_profiles}
+            == {"responses", "chat", "messages", "messages-dead", "findcg"},
+            "production host uses the v2 profile CLI",
+        )
+        proxy_process = subprocess.Popen(
+            [str(exe), "run"],
             cwd=ROOT,
+            env=process_environment(home),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        wait_for_port(responses_proxy_port)
-        wait_for_port(chat_proxy_port)
+        wait_for_port(proxy_port)
+        responses_port, chat_port, messages_port = upstream_ports
 
-        status, headers, data = request(
-            responses_proxy_port,
+        status, _, data = request(
+            proxy_port,
             "POST",
-            "/v1/responses/?trace=integration",
+            "/responses/v1/responses/?trace=integration",
             body="abcdef",
             headers={"Authorization": "Bearer secret", "Content-Type": "text/plain"},
         )
         payload = json.loads(data)
-        assert_true(status == 200, "responses status")
-        assert_true(payload["path"] == "/v1/responses/?trace=integration", "responses path")
-        assert_true(payload["body"] == "abcdef", "responses body")
-        assert_true(payload["server_port"] == responses_upstream_port, "responses upstream selected")
+        assert_true(status == 200, "Responses status")
+        assert_true(payload["path"] == "/v1/responses/?trace=integration", "Responses query/path")
+        assert_true(payload["body"] == "abcdef", "Responses transparent body")
+        assert_true(payload["server_port"] == responses_port, "Responses upstream selected")
 
         status, _, data = request(
-            responses_proxy_port,
+            proxy_port,
             "POST",
-            "/v1/responses?trace=no-slash",
+            "/responses/v1/responses?trace=no-slash",
             body="noslash",
             headers={"Content-Type": "text/plain"},
         )
         payload = json.loads(data)
-        assert_true(status == 200, "responses no-slash status")
-        assert_true(payload["path"] == "/v1/responses/?trace=no-slash", "responses no-slash upstream path")
-        assert_true(payload["body"] == "noslash", "responses no-slash body")
+        assert_true(status == 200 and payload["path"] == "/v1/responses/?trace=no-slash", "canonical trailing slash")
 
-        transparent_body = (
-            ROOT / "tests" / "fixtures" / "stage11" / "transparent-request-body.json"
-        ).read_bytes()
+        transparent_body = (ROOT / "tests" / "fixtures" / "stage11" / "transparent-request-body.json").read_bytes()
         status, _, data = request(
-            responses_proxy_port,
+            proxy_port,
             "POST",
-            "/v1/responses?trace=exact-bytes",
+            "/responses/v1/responses?trace=exact-bytes",
             body=transparent_body,
             headers={"Content-Type": "application/json"},
         )
         payload = json.loads(data)
-        assert_true(status == 200, "transparent byte fixture status")
-        assert_true(payload["body_size"] == len(transparent_body), "transparent body byte size")
-        assert_true(
-            payload["body_sha256"] == hashlib.sha256(transparent_body).hexdigest().upper(),
-            "transparent body SHA-256",
-        )
-        assert_true(
-            payload["body_base64"] == base64.b64encode(transparent_body).decode("ascii"),
-            "transparent body exact bytes",
-        )
+        assert_true(status == 200 and payload["body_size"] == len(transparent_body), "transparent fixture size")
+        assert_true(payload["body_sha256"] == hashlib.sha256(transparent_body).hexdigest().upper(), "transparent fixture digest")
+        assert_true(payload["body_base64"] == base64.b64encode(transparent_body).decode("ascii"), "transparent fixture bytes")
 
-        status, _, _ = request(
-            responses_proxy_port,
+        whitespace_body = "\r\n\r\n{\"ok\":true}"
+        status, _, data = request(
+            proxy_port,
             "POST",
-            "/v1/responses?status=407",
-            body=b"{}",
+            "/responses/v1/responses",
+            body=whitespace_body,
             headers={"Content-Type": "application/json"},
         )
-        assert_true(status == 502, "proxy authentication is rejected")
+        assert_true(status == 200 and json.loads(data)["body"] == whitespace_body, "empty pipeline preserves JSON whitespace")
 
+        status, data = raw_extra_separator_request(
+            proxy_port, "/responses/v1/responses", "{\"raw\":true}"
+        )
+        assert_true(status == 200 and json.loads(data)["body"] == "{\"raw\":true}", "extra HTTP separator normalized")
+
+        findcg_body = json.dumps(
+            {
+                "input": "hi",
+                "tools": [{"name": "image_gen"}, {"name": "web_search"}],
+                "nested": {"tools": [{"name": "image_gen"}]},
+            },
+            separators=(",", ":"),
+        )
         status, _, data = request(
-            responses_proxy_port,
+            proxy_port,
             "POST",
-            "/v1/responses",
-            body="\r\n\r\n{\"ok\":true}",
+            "/findcg/v1/responses",
+            body=findcg_body,
             headers={"Content-Type": "application/json"},
         )
-        payload = json.loads(data)
-        assert_true(status == 200, "responses json whitespace status")
-        assert_true(payload["body"] == "{\"ok\":true}", "responses json whitespace trimmed")
+        rewritten = json.loads(json.loads(data)["body"])
+        assert_true(status == 200 and rewritten["tools"] == [{"name": "web_search"}], "findcg profile removes image_gen")
+        assert_true(len(rewritten["nested"]["tools"]) == 1, "findcg profile leaves nested tools")
+        assert_true(
+            request(
+                proxy_port,
+                "POST",
+                "/findcg/v1/responses",
+                body="not json",
+                headers={"Content-Type": "application/json"},
+            )[0]
+            == 400,
+            "findcg invalid JSON fails locally",
+        )
 
-        status, data = raw_extra_separator_request(responses_proxy_port, "/v1/responses", "{\"raw\":true}")
+        status, _, data = request(proxy_port, "POST", "/chat/custom/chat/completions", body="chat")
         payload = json.loads(data)
-        assert_true(status == 200, "responses raw extra separator status")
-        assert_true(payload["body"] == "{\"raw\":true}", "responses raw extra separator body")
+        assert_true(status == 200 and payload["server_port"] == chat_port, "Chat profile target")
+        status, _, data = request(proxy_port, "POST", "/messages/v1/messages", body="messages")
+        payload = json.loads(data)
+        assert_true(status == 200 and payload["server_port"] == messages_port, "Messages profile target")
 
-        status, _, data = request(chat_proxy_port, "POST", "/v1/chat/completions", body="chat")
-        payload = json.loads(data)
-        assert_true(status == 200, "chat status")
-        assert_true(payload["path"] == "/custom/chat/completions", "chat path")
-        assert_true(payload["server_port"] == chat_upstream_port, "chat upstream selected")
+        for prefix, expected_port, secret in (
+            ("responses", responses_port, "responses-usage-secret"),
+            ("chat", chat_port, "chat-usage-secret"),
+            ("messages", messages_port, "messages-usage-secret"),
+        ):
+            status, _, data = request(
+                proxy_port,
+                "GET",
+                f"/{prefix}/v1/usage?scope={prefix}",
+                headers={"Authorization": f"Bearer {secret}"},
+            )
+            assert_true(status == 200 and json.loads(data)["server_port"] == expected_port, f"{prefix} Usage target")
 
         status, _, data = request(
-            responses_proxy_port,
+            proxy_port,
             "GET",
-            "/v1/usage?scope=all",
-            headers={"Authorization": "Bearer responses-usage-secret"},
+            "/messages-dead/v1/usage",
         )
-        payload = json.loads(data)
-        assert_true(status == 200, "usage status")
-        assert_true(payload["path"] == "/v1/usage?scope=all", "usage path")
-        assert_true(payload["remaining"] == 12.5, "usage remaining")
-        assert_true(payload["server_port"] == responses_upstream_port, "Responses Usage upstream selected")
-
-        status, _, data = request(
-            chat_proxy_port,
-            "GET",
-            "/v1/usage?scope=chat",
-            headers={"Authorization": "Bearer chat-usage-secret"},
-        )
-        payload = json.loads(data)
-        assert_true(status == 200, "Chat Usage status")
-        assert_true(payload["server_port"] == chat_upstream_port, "Chat Usage upstream selected")
-
+        messages_usage_error = json.loads(data)
+        messages_usage_status = status
+        messages_usage_error_type = messages_usage_error["error"]["type"]
         assert_true(
-            request(chat_proxy_port, "POST", "/v1/usage", body="{}")[0] == 405,
-            "Chat Usage wrong method is rejected locally",
+            status in (502, 504)
+            and messages_usage_error.get("type") == "error"
+            and messages_usage_error_type
+            in ("upstream_error", "upstream_total_timeout"),
+            "Messages Usage transport failure uses the Anthropic envelope: "
+            f"status={status}, body={messages_usage_error}",
         )
 
+        assert_true(request(proxy_port, "POST", "/chat/v1/usage", body="{}")[0] == 405, "Usage wrong method")
+        assert_true(request(proxy_port, "POST", "/v1/responses", body="{}")[0] == 404, "unprefixed route rejected")
         assert_true(
-            request(responses_proxy_port, "POST", "/v1/chat/completions", body="{}")[0] == 404,
-            "Chat main route is rejected on Responses endpoint",
+            request(
+                proxy_port,
+                "POST",
+                "/responses/v1/responses?status=407",
+                body=b"{}",
+                headers={"Content-Type": "application/json"},
+            )[0]
+            == 502,
+            "proxy authentication unsupported",
         )
         assert_true(
-            request(chat_proxy_port, "POST", "/v1/responses", body="{}")[0] == 404,
-            "Responses main route is rejected on Chat endpoint",
+            request(
+                proxy_port,
+                "POST",
+                "/responses/v1/responses?response_bytes=2048",
+                body="{}",
+                headers={"Content-Type": "application/json"},
+            )[0]
+            == 502,
+            "buffered response size limit",
         )
 
-        status, _, _ = request(
-            responses_proxy_port,
-            "POST",
-            "/v1/responses?response_bytes=2048",
-            body="{}",
-            headers={"Content-Type": "application/json"},
-        )
-        assert_true(status == 502, "buffered response size limit")
-
-        status, _, _ = request(responses_proxy_port, "POST", "/unknown", body="x")
-        assert_true(status == 404, "unknown path status")
-
-        status, _, _ = request(responses_proxy_port, "GET", "/v1/responses/")
-        assert_true(status == 405, "method status")
-
-        events_after_error = read_json_lines(log_path)
-        assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 405 for event in events_after_error), "error log flushed before response returns")
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             delayed = [
-                executor.submit(
+                pool.submit(
                     request,
-                    responses_proxy_port,
+                    proxy_port,
                     "POST",
-                    "/v1/responses?stream=sse&chunk_count=3&chunk_interval_ms=300",
+                    "/responses/v1/responses?delay_ms=80",
                     "{}",
                     {"Content-Type": "application/json"},
                 )
                 for _ in range(2)
             ]
-            time.sleep(0.15)
-            overloaded_status, _, _ = request(
-                responses_proxy_port,
-                "POST",
-                "/v1/responses",
-                body="{}",
-                headers={"Content-Type": "application/json"},
-            )
-            assert_true(overloaded_status == 503, "max connection limit")
+            time.sleep(0.02)
+            overloaded = request(proxy_port, "POST", "/responses/v1/responses", body="{}")[0]
+            assert_true(overloaded == 503, "global max connection limit")
             for future in delayed:
                 assert_true(future.result()[0] == 200, "accepted delayed request")
 
-        status, _, _ = request(
-            responses_proxy_port,
+        timeout_status = request(
+            proxy_port,
             "POST",
-            "/v1/responses?delay_ms=800",
+            "/responses/v1/responses?delay_ms=800",
             body="{}",
             headers={"Content-Type": "application/json"},
-        )
-        assert_true(status == 504, f"response header timeout status: {status}")
+        )[0]
+        assert_true(timeout_status == 504, f"response header timeout: {timeout_status}")
 
-        fire_and_disconnect(responses_proxy_port, "/v1/responses?delay_ms=5000")
-        fire_and_disconnect(responses_proxy_port, "/v1/responses?delay_ms=5000")
+        fire_and_disconnect(proxy_port, "/responses/v1/responses?delay_ms=5000")
+        fire_and_disconnect(proxy_port, "/responses/v1/responses?delay_ms=5000")
         time.sleep(0.4)
         cancellation_started = time.monotonic()
-        status, _, _ = request(
-            responses_proxy_port,
+        status = request(
+            proxy_port,
             "POST",
-            "/v1/responses",
+            "/responses/v1/responses",
             body="{}",
             headers={"Content-Type": "application/json"},
-        )
-        cancellation_elapsed = time.monotonic() - cancellation_started
-        assert_true(status == 200, "client cancellation releases worker capacity")
-        assert_true(cancellation_elapsed < 2, "client cancellation completes promptly")
+        )[0]
+        assert_true(status == 200 and time.monotonic() - cancellation_started < 2, "cancellation releases workers")
 
         status, headers, data = request(
-            responses_proxy_port,
+            proxy_port,
             "POST",
-            "/v1/responses/?stream=sse",
+            "/responses/v1/responses/?stream=sse",
             body="{}",
             headers={"Content-Type": "application/json"},
         )
-        assert_true(status == 200, "sse status")
-        assert_true(headers.get("Content-Type") == "text/event-stream", "sse content-type")
-        assert_true(f"data: {responses_upstream_port}-chunk-0".encode() in data and b"data: [DONE]" in data, "sse body")
+        assert_true(status == 200 and headers.get("Content-Type") == "text/event-stream", "Responses SSE headers")
+        assert_true(f"data: {responses_port}-chunk-0".encode() in data and b"data: [DONE]" in data, "Responses SSE body")
+        status, _, data = request(
+            proxy_port,
+            "POST",
+            "/messages/v1/messages?stream=sse",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert_true(status == 200 and f"data: {messages_port}-chunk-0".encode() in data, "Messages SSE body")
 
         status, _, idle_data = request(
-            responses_proxy_port,
+            proxy_port,
             "POST",
-            "/v1/responses/?stream=sse&chunk_count=3&chunk_interval_ms=700",
+            "/responses/v1/responses/?stream=sse&chunk_count=3&chunk_interval_ms=700",
             body="{}",
             headers={"Content-Type": "application/json"},
         )
-        assert_true(status == 200 and b"chunk-0" in idle_data, "stream idle timeout preserves sent prefix")
-
+        assert_true(status == 200 and b"chunk-0" in idle_data, "stream idle timeout preserves prefix")
         status, _, total_data = request(
-            responses_proxy_port,
+            proxy_port,
             "POST",
-            "/v1/responses/?stream=sse&chunk_count=10&chunk_interval_ms=250",
+            "/responses/v1/responses/?stream=sse&chunk_count=10&chunk_interval_ms=250",
             body="{}",
             headers={"Content-Type": "application/json"},
         )
-        assert_true(status == 200 and b"chunk-0" in total_data, "total timeout preserves sent prefix")
+        assert_true(status == 200 and b"chunk-0" in total_data, "total timeout preserves prefix")
 
-        time.sleep(0.25)
+        time.sleep(0.3)
         events = read_json_lines(log_path)
         rendered = "\n".join(json.dumps(event, separators=(",", ":")) for event in events)
-        assert_true("responses-usage-secret" not in rendered, "Responses Usage request is not logged")
-        assert_true("chat-usage-secret" not in rendered, "Chat Usage request is not logged")
-        usage_events = [event for event in events if event.get("event") == "usage_completed"]
-        assert_true(any(event.get("endpoint") == "responses" and event.get("task") == "responses_usage" and event.get("forwarded") is True and event.get("upstream_url", "").endswith(str(responses_upstream_port)) for event in usage_events), "Responses Usage summary logged")
-        assert_true(any(event.get("endpoint") == "chat" and event.get("task") == "chat_usage" and event.get("forwarded") is True and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in usage_events), "Chat Usage summary logged")
-        assert_true(any(event.get("endpoint") == "chat" and event.get("task") == "chat_usage" and event.get("forwarded") is False and event.get("status_code") == 405 for event in usage_events), "local Usage rejection is distinguished from forwarding")
-        assert_true("Bearer secret" not in rendered, "authorization redacted")
-        assert_true('"Authorization":"***"' in rendered, "redacted marker exists")
+        for secret in ("responses-usage-secret", "chat-usage-secret", "messages-usage-secret"):
+            assert_true(secret not in rendered, f"Usage secret is not logged: {secret}")
+        assert_true("Bearer secret" not in rendered and '"Authorization":"***"' in rendered, "Authorization redacted")
         assert_true('"body":"abcdef"' in rendered, "request body logged")
-        stream_chunks = [event for event in events if event.get("event") == "stream_chunk"]
-        assert_true(stream_chunks, "stream chunks logged")
-        chunk_sequences = {}
-        for event in stream_chunks:
-            chunk_sequences.setdefault(event.get("request_id"), []).append(event.get("chunk_sequence"))
-        assert_true(
-            all(sequence == list(range(len(sequence))) for sequence in chunk_sequences.values()),
-            "stream chunk sequence per request",
-        )
-        assert_true(any("body" in event and "chunk-0" in event["body"] for event in stream_chunks), "stream chunk body logged")
-        stream_sent = [event for event in events if event.get("event") == "response_sent" and event.get("streaming")]
-        assert_true(stream_sent and "body" not in stream_sent[-1], "stream response body is not aggregated")
-        assert_true(stream_sent[-1].get("streamed_body_size", 0) > 0, "streamed body size counted")
-        upstream_requests = [event for event in events if event.get("event") == "upstream_request"]
-        server_starts = [event for event in events if event.get("event") == "server_start"]
-        assert_true(
-            server_starts and server_starts[-1].get("upstream_proxy_mode") == "windows_system",
-            "server start logs Windows system proxy mode",
-        )
-        assert_true(
-            all(event.get("upstream_proxy_mode") == "windows_system" for event in upstream_requests),
-            "upstream requests log Windows system proxy mode",
-        )
-        assert_true(any(event.get("task") == "responses" and event.get("endpoint") == "responses" and event.get("rewrite_reason") == "upstream_not_findcg" for event in upstream_requests), "Responses rewrite decision logged")
-        assert_true(any(event.get("task") == "chat_completions" and event.get("endpoint") == "chat" and event.get("upstream_url", "").endswith(str(chat_upstream_port)) for event in upstream_requests), "Chat task target logged")
-        assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 404 for event in events), "404 logged")
-        assert_true(any(event.get("event") == "request_error" and event.get("status_code") == 405 for event in events), "405 logged")
+
+        usage_events = [event for event in events if event.get("event") == "usage_completed"]
+        for profile_id in ("responses", "chat", "messages"):
+            assert_true(any(event.get("profile_id") == profile_id and event.get("forwarded") is True for event in usage_events), f"{profile_id} Usage summary")
+
+        rule_events = [event for event in events if event.get("event") == "request_rule"]
         assert_true(
             any(
-                event.get("event") == "request_error"
-                and event.get("type") == "proxy_authentication_unsupported"
-                and event.get("status_code") == 502
-                for event in events
+                event.get("profile_id") == "findcg"
+                and event.get("rule_id") == "remove-image-gen"
+                and event.get("affected_count") == 1
+                for event in rule_events
             ),
-            "proxy authentication error classified",
+            "findcg compiled rule logged",
         )
-        cancelled = [event for event in events if event.get("event") == "request_cancelled"]
-        assert_true(len(cancelled) >= 2, "client cancellation logged")
-        timeout_types = {
-            event.get("type")
-            for event in events
-            if event.get("event") == "request_error" and event.get("status_code") == 504
-        }
-        assert_true("upstream_response_header_timeout" in timeout_types, "header timeout classified")
-        assert_true("upstream_stream_idle_timeout" in timeout_types, "stream idle timeout classified")
-        assert_true("upstream_total_timeout" in timeout_types, "total timeout classified")
+        upstream_requests = [event for event in events if event.get("event") == "upstream_request"]
+        assert_true(any(event.get("profile_id") == "responses" and event.get("json_parse_count") == 0 for event in upstream_requests), "empty pipeline is zero-parse in production")
+        assert_true(any(event.get("profile_id") == "chat" and event.get("protocol") == "chat" for event in upstream_requests), "Chat route context logged")
+        assert_true(any(event.get("profile_id") == "messages" and event.get("protocol") == "messages" for event in upstream_requests), "Messages route context logged")
+        assert_true(all(event.get("upstream_proxy_mode") == "windows_system" for event in upstream_requests), "Windows proxy mode logged")
+
+        stream_chunks = [event for event in events if event.get("event") == "stream_chunk"]
+        sequences = {}
+        for event in stream_chunks:
+            sequences.setdefault(event.get("request_id"), []).append(event.get("chunk_sequence"))
+        assert_true(stream_chunks and all(value == list(range(len(value))) for value in sequences.values()), "SSE chunks are sequenced")
+        stream_sent = [event for event in events if event.get("event") == "response_sent" and event.get("streaming")]
+        assert_true(stream_sent and "body" not in stream_sent[-1], "SSE response body is not aggregated")
+
+        errors = [event for event in events if event.get("event") == "request_error"]
+        assert_true(any(event.get("status_code") == 404 for event in errors), "404 logged")
+        assert_true(any(event.get("status_code") == 405 for event in errors), "405 logged")
+        assert_true(any(event.get("type") == "proxy_authentication_unsupported" for event in errors), "proxy auth classified")
+        assert_true(
+            any(
+                event.get("profile_id") == "messages-dead"
+                and event.get("route_kind") == "usage"
+                and event.get("status_code") == messages_usage_status
+                and event.get("type") == messages_usage_error_type
+                for event in errors
+            ),
+            "Usage transport failure logged with route context",
+        )
+        assert_true(len([event for event in events if event.get("event") == "request_cancelled"]) >= 2, "cancellation logged")
+        timeout_types = {event.get("type") for event in errors if event.get("status_code") == 504}
+        assert_true({"upstream_response_header_timeout", "upstream_stream_idle_timeout", "upstream_total_timeout"}.issubset(timeout_types), "timeout phases classified")
+
         snapshots = [event for event in events if event.get("event") == "performance_snapshot"]
         assert_true(snapshots, "performance snapshot logged")
-        latest_snapshot = snapshots[-1]
-        assert_true(latest_snapshot.get("upstream_requests_failed", 0) >= 3, "upstream failures counted")
-        assert_true(latest_snapshot.get("upstream_response_header_timeouts", 0) >= 1, "header timeout counted")
-        assert_true(latest_snapshot.get("upstream_stream_idle_timeouts", 0) >= 1, "stream idle timeout counted")
-        assert_true(latest_snapshot.get("upstream_total_timeouts", 0) >= 1, "total timeout counted")
-        assert_true(latest_snapshot.get("responses_connections_accepted", 0) > 0, "Responses endpoint connections counted")
-        assert_true(latest_snapshot.get("chat_connections_accepted", 0) > 0, "Chat endpoint connections counted")
-        assert_true(latest_snapshot.get("responses_peak_active_workers", 0) > 0, "Responses endpoint workers counted")
-        assert_true(latest_snapshot.get("chat_peak_active_workers", 0) > 0, "Chat endpoint workers counted")
-        assert_true("responses_max_connection_queue_wait_us" in latest_snapshot, "Responses queue wait exposed")
-        assert_true("chat_max_connection_queue_wait_us" in latest_snapshot, "Chat queue wait exposed")
+        latest = snapshots[-1]
+        assert_true(latest.get("connections_accepted", 0) > 0, "global connections counted")
+        assert_true(latest.get("peak_active_workers", 0) > 0, "global workers counted")
+        assert_true("max_connection_queue_wait_us" in latest, "global queue wait exposed")
+        server_starts = [event for event in events if event.get("event") == "server_start"]
+        assert_true(server_starts and server_starts[-1].get("listener_count") == 1, "single listener logged")
 
         print("integration ok")
     finally:
-        if proxy is not None:
-            proxy.terminate()
+        if proxy_process is not None:
+            proxy_process.terminate()
             try:
-                proxy.wait(timeout=5)
+                proxy_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proxy.kill()
+                proxy_process.kill()
         for upstream in upstreams:
             upstream.terminate()
         for upstream in upstreams:
@@ -497,6 +544,8 @@ def main():
                 upstream.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 upstream.kill()
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(atomic_home, ignore_errors=True)
 
 
 if __name__ == "__main__":

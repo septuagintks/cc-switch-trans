@@ -7,11 +7,8 @@
 
 namespace ccs {
 
-AppService::AppService(AppConfig config)
-    : AppService(make_config_snapshot(std::move(config))) {}
-
-AppService::AppService(ConfigSnapshot config)
-    : config_(std::move(config)) {}
+AppService::AppService(RuntimeSnapshotPtr snapshot)
+    : snapshot_(std::move(snapshot)) {}
 
 AppService::~AppService() {
     stop();
@@ -40,7 +37,7 @@ bool AppService::start_impl(std::string& error) {
     startup_error_.clear();
     exit_code_ = 1;
     try {
-        server_ = std::make_shared<Server>(config_);
+        server_ = std::make_shared<Server>(snapshot_);
         const auto running_server = server_;
         thread_ = std::thread([this, running_server]() {
             const int code = running_server->run([this](bool succeeded, const std::string& startup_error) {
@@ -90,19 +87,19 @@ bool AppService::start_impl(std::string& error) {
     return false;
 }
 
-bool AppService::reload(ConfigSnapshot config, std::string& error) {
+bool AppService::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     if (wait_in_progress_) {
         error = "service cannot reload while wait is in progress";
         return false;
     }
-    if (!config) {
-        error = "config snapshot must not be null";
+    if (!snapshot) {
+        error = "runtime snapshot must not be null";
         return false;
     }
 
     std::shared_ptr<Server> running_server;
-    ConfigSnapshot previous_config;
+    RuntimeSnapshotPtr previous_snapshot;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_ != ServiceState::Running || !server_) {
@@ -110,17 +107,17 @@ bool AppService::reload(ConfigSnapshot config, std::string& error) {
             return false;
         }
         running_server = server_;
-        previous_config = config_;
+        previous_snapshot = snapshot_;
     }
 
-    const auto result = running_server->reload(config, error);
+    const auto result = running_server->reload(snapshot, error);
     if (result == ReloadResult::Applied) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (server_ != running_server || state_ != ServiceState::Running) {
             error = "service state changed while applying reload";
             return false;
         }
-        config_ = std::move(config);
+        snapshot_ = std::move(snapshot);
         return true;
     }
     if (result == ReloadResult::Failed) {
@@ -143,7 +140,7 @@ bool AppService::reload(ConfigSnapshot config, std::string& error) {
         std::lock_guard<std::mutex> lock(mutex_);
         server_.reset();
         state_ = ServiceState::Stopped;
-        config_ = config;
+        snapshot_ = snapshot;
     }
 
     std::string restart_error;
@@ -153,7 +150,7 @@ bool AppService::reload(ConfigSnapshot config, std::string& error) {
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        config_ = previous_config;
+        snapshot_ = previous_snapshot;
     }
     std::string rollback_error;
     if (start_impl(rollback_error)) {

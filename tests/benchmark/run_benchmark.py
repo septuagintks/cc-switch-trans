@@ -9,6 +9,7 @@ import math
 import os
 import pathlib
 import platform
+import shutil
 import signal
 import socket
 import statistics
@@ -238,14 +239,14 @@ def request_once(port, path, body, barrier, timeout):
             connection.close()
 
 
-def usage_once(port, endpoint):
+def usage_once(port, endpoint, local_path="/v1/usage"):
     connection = None
     try:
         started = time.perf_counter_ns()
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         connection.request(
             "GET",
-            f"/v1/usage?endpoint={endpoint}",
+            f"{local_path}?endpoint={endpoint}",
             headers={"Authorization": "Bearer benchmark-synthetic", "Connection": "close"},
         )
         response = connection.getresponse()
@@ -302,15 +303,23 @@ def run_requests(port, profile, local_path="/v1/responses"):
     return summarize(samples, wall_seconds)
 
 
-def run_mixed_requests(responses_port, chat_port, profile):
+def run_mixed_requests(
+    responses_port,
+    chat_port,
+    profile,
+    responses_path="/v1/responses",
+    chat_path="/v1/chat/completions",
+    responses_usage_path="/v1/usage",
+    chat_usage_path="/v1/usage",
+):
     body = synthetic_body(profile["request_body_size"])
     stream_count = profile["request_count"]
     responses_count = stream_count // 2
     chat_count = stream_count - responses_count
     barrier = threading.Barrier(stream_count)
     timeout = max(30, profile["chunk_count"] * profile["chunk_interval_ms"] / 1000 + 20)
-    response_path = request_path(profile, "/v1/responses")
-    chat_path = request_path(profile, "/v1/chat/completions")
+    response_path = request_path(profile, responses_path)
+    chat_path = request_path(profile, chat_path)
     usage_results = {"responses": [], "chat": []}
     completed_while_streaming = {"responses": 0, "chat": 0}
 
@@ -325,9 +334,9 @@ def run_mixed_requests(responses_port, chat_port, profile):
         ]
         time.sleep(0.2)
 
-        def run_usage(endpoint, port):
+        def run_usage(endpoint, port, usage_path):
             for _ in range(profile["usage_requests_per_endpoint"]):
-                sample = usage_once(port, endpoint)
+                sample = usage_once(port, endpoint, usage_path)
                 usage_results[endpoint].append(sample)
                 if any(not future.done() for future in stream_futures):
                     completed_while_streaming[endpoint] += 1
@@ -335,8 +344,10 @@ def run_mixed_requests(responses_port, chat_port, profile):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as usage_executor:
             usage_futures = [
-                usage_executor.submit(run_usage, "responses", responses_port),
-                usage_executor.submit(run_usage, "chat", chat_port),
+                usage_executor.submit(
+                    run_usage, "responses", responses_port, responses_usage_path
+                ),
+                usage_executor.submit(run_usage, "chat", chat_port, chat_usage_path),
             ]
             for future in usage_futures:
                 future.result()
@@ -370,10 +381,9 @@ def validate_mixed_result(result, runtime_metrics, profile):
     if runtime_metrics is None:
         raise RuntimeError("mixed-16 requires runtime metrics")
     max_wait_us = profile["max_endpoint_queue_wait_ms"] * 1000
-    for endpoint in ("responses", "chat"):
-        wait = runtime_metrics.get(f"{endpoint}_max_connection_queue_wait_us", 0)
-        if wait > max_wait_us:
-            raise RuntimeError(f"mixed-16 {endpoint} queue wait exceeded bound: {wait} us")
+    wait = runtime_metrics.get("max_connection_queue_wait_us", 0)
+    if wait > max_wait_us:
+        raise RuntimeError(f"mixed-16 global queue wait exceeded bound: {wait} us")
     if runtime_metrics.get("log_writer_failures", 0) != 0:
         raise RuntimeError("mixed-16 observed a logger writer failure")
     if runtime_metrics.get("log_backpressure_count", 0) != 0:
@@ -556,7 +566,82 @@ class ProcessSampler:
         }
 
 
-def start_process(command, stdout_path, graceful_group=False):
+def write_proxy_config(
+    home,
+    listener_port,
+    upstream_port,
+    log_path,
+    log_body,
+    worker_threads,
+    max_connections,
+    metrics_interval_ms,
+):
+    app_root = home / ".ccs-trans"
+    app_root.mkdir(parents=True, exist_ok=True)
+    config = {
+        "schema_version": "ccs-trans.config/v2",
+        "listener": {"host": "127.0.0.1", "port": listener_port},
+        "runtime": {
+            "worker_threads": worker_threads,
+            "max_connections": max_connections,
+            "max_request_body_size": 100 * 1024 * 1024,
+            "max_response_body_size": 100 * 1024 * 1024,
+            "metrics_interval_ms": metrics_interval_ms,
+        },
+        "timeouts": {
+            "resolve_ms": 30000,
+            "connect_ms": 30000,
+            "send_ms": 30000,
+            "response_header_ms": 30000,
+            "stream_idle_ms": 30000,
+            "total_ms": 0,
+        },
+        "logging": {
+            "path": str(log_path),
+            "level": "info",
+            "body": log_body,
+            "redact_sensitive": True,
+            "body_limit": 1024 * 1024,
+            "queue_capacity": 16 * 1024 * 1024,
+            "flush_interval_ms": 100,
+        },
+        "profiles": {
+            "responses": {
+                "enabled": True,
+                "protocol": "responses",
+                "local": {
+                    "request_path": "/responses/v1/responses",
+                    "usage_path": "/responses/v1/usage",
+                },
+                "upstream": {
+                    "base_url": f"http://127.0.0.1:{upstream_port}",
+                    "request_path": "/v1/responses/",
+                    "usage_path": "/v1/usage",
+                },
+                "rules": [],
+            },
+            "chat": {
+                "enabled": True,
+                "protocol": "chat",
+                "local": {
+                    "request_path": "/chat/v1/chat/completions",
+                    "usage_path": "/chat/v1/usage",
+                },
+                "upstream": {
+                    "base_url": f"http://127.0.0.1:{upstream_port}",
+                    "request_path": "/v1/chat/completions",
+                    "usage_path": "/v1/usage",
+                },
+                "rules": [],
+            },
+        },
+    }
+    (app_root / "config.json").write_text(
+        json.dumps(config, indent=2), encoding="utf-8"
+    )
+
+
+def start_process(command, stdout_path, graceful_group=False, environment=None):
     flags = 0
     if graceful_group and os.name == "nt":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -567,6 +652,7 @@ def start_process(command, stdout_path, graceful_group=False):
         stdout=stdout_file,
         stderr=subprocess.STDOUT,
         creationflags=flags,
+        env=environment,
     )
     process._benchmark_stdout_file = stdout_file
     return process
@@ -634,7 +720,7 @@ def main():
         transform_exe = exe.parent / f"ccs-trans-transform-benchmark{suffix}"
     else:
         transform_exe = transform_exe.resolve()
-    supports_runtime_metrics = "--metrics-interval-ms" in executable_help(exe)
+    supports_runtime_metrics = "runtime.metrics-interval-ms" in executable_help(exe)
 
     TMP.mkdir(parents=True, exist_ok=True)
     upstream_port = free_port()
@@ -666,87 +752,45 @@ def main():
             direct_mock = get_json(upstream_port, "/benchmark/metrics")
 
             proxy_port = free_port()
-            chat_proxy_port = free_port()
             proxy_output = TMP / f"proxy-{nonce}-{name}.txt"
             proxy_log = TMP / f"proxy-{nonce}-{name}.log"
-            proxy_command = [
-                str(exe),
-                "run",
-                "--responses-upstream-url",
-                f"http://127.0.0.1:{upstream_port}",
-                "--responses-listen-host",
-                "127.0.0.1",
-                "--responses-listen-port",
-                str(proxy_port),
-                "--responses-local-path",
-                "/v1/responses/",
-                "--responses-upstream-path",
-                "/v1/responses/",
-                "--responses-usage-local-path",
-                "/v1/usage",
-                "--responses-usage-upstream-path",
-                "/v1/usage",
-                "--chat-listen-host",
-                "127.0.0.1",
-                "--chat-upstream-url",
-                f"http://127.0.0.1:{upstream_port}",
-                "--chat-listen-port",
-                str(chat_proxy_port),
-                "--chat-local-path",
-                "/v1/chat/completions",
-                "--chat-upstream-path",
-                "/v1/chat/completions",
-                "--chat-usage-local-path",
-                "/v1/usage",
-                "--chat-usage-upstream-path",
-                "/v1/usage",
-                "--log-path",
-                str(proxy_log),
-                "--log-level",
-                "info",
-                "--log-body",
-                args.log_body,
-                "--redact-sensitive",
-                "true",
-                "--body-log-limit",
-                str(1024 * 1024),
-                "--log-queue-capacity",
-                str(16 * 1024 * 1024),
-                "--log-flush-interval-ms",
-                "100",
-                "--worker-threads",
-                str(args.worker_threads),
-                "--max-connections",
-                str(args.max_connections),
-                "--max-request-body-size",
-                str(100 * 1024 * 1024),
-                "--max-response-body-size",
-                str(100 * 1024 * 1024),
-                "--resolve-timeout-ms",
-                "30000",
-                "--connect-timeout-ms",
-                "30000",
-                "--send-timeout-ms",
-                "30000",
-                "--response-header-timeout-ms",
-                "30000",
-                "--stream-idle-timeout-ms",
-                "30000",
-                "--total-timeout-ms",
-                "0",
-            ]
-            if supports_runtime_metrics:
-                proxy_command.extend(["--metrics-interval-ms", "250"])
+            proxy_home = TMP / f"home-{nonce}-{name}"
+            write_proxy_config(
+                proxy_home,
+                proxy_port,
+                upstream_port,
+                proxy_log,
+                args.log_body == "true",
+                args.worker_threads,
+                args.max_connections,
+                250 if supports_runtime_metrics else 0,
+            )
+            proxy_environment = os.environ.copy()
+            proxy_environment["USERPROFILE"] = str(proxy_home)
             try:
-                proxy = start_process(proxy_command, proxy_output)
+                proxy = start_process(
+                    [str(exe), "run"],
+                    proxy_output,
+                    environment=proxy_environment,
+                )
                 wait_for_port(proxy_port, proxy)
                 post_json(upstream_port, "/benchmark/reset")
                 sampler = ProcessSampler(proxy.pid)
                 sampler.start()
                 if profile.get("mixed"):
-                    proxied = run_mixed_requests(proxy_port, chat_proxy_port, profile)
+                    proxied = run_mixed_requests(
+                        proxy_port,
+                        proxy_port,
+                        profile,
+                        responses_path="/responses/v1/responses",
+                        chat_path="/chat/v1/chat/completions",
+                        responses_usage_path="/responses/v1/usage",
+                        chat_usage_path="/chat/v1/usage",
+                    )
                 else:
-                    proxied = run_requests(proxy_port, profile)
+                    proxied = run_requests(
+                        proxy_port, profile, "/responses/v1/responses"
+                    )
                 resources = sampler.stop()
                 proxy_mock = get_json(upstream_port, "/benchmark/metrics")
                 if supports_runtime_metrics:
@@ -759,6 +803,7 @@ def main():
             finally:
                 stop_process(proxy)
                 proxy = None
+                shutil.rmtree(proxy_home, ignore_errors=True)
 
             direct_summary = direct["streams"] if profile.get("mixed") else direct
             proxy_summary = proxied["streams"] if profile.get("mixed") else proxied

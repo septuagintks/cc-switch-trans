@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import pathlib
+import shutil
 import socket
 import subprocess
 import sys
@@ -316,6 +317,54 @@ def stop_process(process):
             process.wait(timeout=5)
 
 
+def write_runtime_config(home, listener_port, upstream_url, log_path):
+    app_root = home / ".ccs-trans"
+    app_root.mkdir(parents=True, exist_ok=True)
+    config = {
+        "schema_version": "ccs-trans.config/v2",
+        "listener": {"host": "127.0.0.1", "port": listener_port},
+        "runtime": {
+            "worker_threads": 8,
+            "max_connections": 16,
+            "max_request_body_size": 100 * 1024 * 1024,
+            "max_response_body_size": 100 * 1024 * 1024,
+            "metrics_interval_ms": 0,
+        },
+        "timeouts": {
+            "resolve_ms": 3000,
+            "connect_ms": 3000,
+            "send_ms": 3000,
+            "response_header_ms": 3000,
+            "stream_idle_ms": 3000,
+            "total_ms": 5000,
+        },
+        "logging": {
+            "path": str(log_path),
+            "level": "info",
+            "body": False,
+            "redact_sensitive": True,
+            "body_limit": 1024 * 1024,
+            "queue_capacity": 16 * 1024 * 1024,
+            "flush_interval_ms": 100,
+        },
+        "profiles": {
+            "proxy-test": {
+                "enabled": True,
+                "protocol": "responses",
+                "local": {"request_path": "/v1/responses"},
+                "upstream": {
+                    "base_url": upstream_url,
+                    "request_path": "/v1/responses",
+                },
+                "rules": [],
+            }
+        },
+    }
+    (app_root / "config.json").write_text(
+        json.dumps(config, indent=2), encoding="utf-8"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", type=pathlib.Path, required=True)
@@ -339,6 +388,7 @@ def main():
     backup_path = TMP / f"proxy-settings-backup-{nonce}.json"
     process_output_path = TMP / f"ccs-trans-{nonce}.txt"
     log_path = TMP / f"ccs-trans-{nonce}.log"
+    runtime_home = TMP / f"home-{nonce}"
     original_settings = read_proxy_settings()
     write_backup(backup_path, original_settings)
 
@@ -359,38 +409,14 @@ def main():
         set_system_proxy(proxy_a.address)
 
         responses_port = free_port()
-        chat_port = free_port()
+        write_runtime_config(runtime_home, responses_port, target_prefix, log_path)
+        environment = os.environ.copy()
+        environment["USERPROFILE"] = str(runtime_home)
         output = process_output_path.open("wb")
         process = subprocess.Popen(
-            [
-                str(exe),
-                "run",
-                "--responses-upstream-url",
-                target_prefix,
-                "--responses-listen-port",
-                str(responses_port),
-                "--chat-listen-port",
-                str(chat_port),
-                "--log-path",
-                str(log_path),
-                "--log-body",
-                "false",
-                "--redact-sensitive",
-                "true",
-                "--resolve-timeout-ms",
-                "3000",
-                "--connect-timeout-ms",
-                "3000",
-                "--send-timeout-ms",
-                "3000",
-                "--response-header-timeout-ms",
-                "3000",
-                "--stream-idle-timeout-ms",
-                "3000",
-                "--total-timeout-ms",
-                "5000",
-            ],
+            [str(exe), "run"],
             cwd=ROOT,
+            env=environment,
             stdout=output,
             stderr=subprocess.STDOUT,
         )
@@ -478,6 +504,7 @@ def main():
         stop_process(process)
         if output is not None:
             output.close()
+        shutil.rmtree(runtime_home, ignore_errors=True)
         restore_error = None
         try:
             restore_system_proxy(original_settings)

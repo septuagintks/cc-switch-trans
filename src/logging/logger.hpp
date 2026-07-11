@@ -1,6 +1,5 @@
 #pragma once
 
-#include "config/config.hpp"
 #include "core/runtime_metrics.hpp"
 
 #include <chrono>
@@ -54,12 +53,19 @@ struct LogWriterStatus {
     std::size_t pending_bytes = 0;
 };
 
+struct LoggerConfig {
+    std::filesystem::path path;
+    std::string level = "info";
+    std::size_t queue_capacity = 16 * 1024 * 1024;
+    int flush_interval_ms = 100;
+};
+
 class Logger {
 public:
     using FailureHandler = std::function<void(const std::string&)>;
 
     explicit Logger(
-        AppConfig config,
+        LoggerConfig config,
         std::shared_ptr<RuntimeMetrics> metrics = {},
         std::unique_ptr<LogSink> sink = {},
         FailureHandler failure_handler = {});
@@ -84,7 +90,7 @@ private:
     void writer_loop();
     void report_writer_failure(std::string error);
 
-    AppConfig config_;
+    LoggerConfig config_;
     std::shared_ptr<RuntimeMetrics> metrics_;
     std::unique_ptr<LogSink> sink_;
     FailureHandler failure_handler_;

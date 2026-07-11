@@ -1,7 +1,8 @@
 #include "server/server.hpp"
 
 #include "core/request_id.hpp"
-#include "core/transform.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -35,11 +36,20 @@ namespace {
 constexpr int kBacklog = 64;
 constexpr std::size_t kHeaderLimit = 64 * 1024;
 
-const AppConfig& require_config_snapshot(const ConfigSnapshot& snapshot) {
+const RuntimeSnapshot& require_runtime_snapshot(const RuntimeSnapshotPtr& snapshot) {
     if (!snapshot) {
-        throw std::invalid_argument("config snapshot must not be null");
+        throw std::invalid_argument("runtime snapshot must not be null");
     }
     return *snapshot;
+}
+
+LoggerConfig make_logger_config(const RuntimeSnapshot& snapshot) {
+    return LoggerConfig{
+        snapshot.log_path,
+        snapshot.application.logging.level,
+        static_cast<std::size_t>(snapshot.application.logging.queue_capacity),
+        static_cast<int>(snapshot.application.logging.flush_interval_ms),
+    };
 }
 
 class RequestMetricsScope {
@@ -155,7 +165,12 @@ std::string reason_phrase(int status_code) {
 }
 
 std::string error_json(const std::string& message, const std::string& type) {
-    return "{\"error\":{\"message\":\"" + message + "\",\"type\":\"" + type + "\"}}";
+    return nlohmann::json({
+        {"error", {
+            {"message", message},
+            {"type", type},
+        }},
+    }).dump();
 }
 
 std::string json_escape(const std::string& value) {
@@ -229,29 +244,17 @@ std::string limited_body(const std::string& body, std::size_t limit) {
     return body.substr(0, limit);
 }
 
-void append_body_fields(std::vector<LogField>& fields, const AppConfig& config, const std::string& body) {
+void append_body_fields(
+    std::vector<LogField>& fields,
+    const LoggingSettings& logging,
+    const std::string& body) {
     fields.push_back(field_number("body_size", static_cast<long long>(body.size())));
-    if (!config.log_body) {
+    if (!logging.body) {
         return;
     }
-    fields.push_back(field_string("body", limited_body(body, config.body_log_limit)));
-    fields.push_back(field_bool("body_truncated", body.size() > config.body_log_limit));
-}
-
-std::string removed_tools_to_json(const std::vector<RemovedTool>& tools) {
-    std::ostringstream out;
-    out << "[";
-    bool first = true;
-    for (const auto& tool : tools) {
-        if (!first) {
-            out << ",";
-        }
-        first = false;
-        out << "{\"type\":\"" << json_escape(tool.type)
-            << "\",\"name\":\"" << json_escape(tool.name) << "\"}";
-    }
-    out << "]";
-    return out.str();
+    const auto limit = static_cast<std::size_t>(logging.body_limit);
+    fields.push_back(field_string("body", limited_body(body, limit)));
+    fields.push_back(field_bool("body_truncated", body.size() > limit));
 }
 
 std::size_t content_length(const Headers& headers) {
@@ -274,18 +277,6 @@ bool has_json_content_type(const Headers& headers) {
         }
     }
     return false;
-}
-
-std::size_t leading_json_whitespace(const std::string& body) {
-    std::size_t count = 0;
-    while (count < body.size()) {
-        const char ch = body[count];
-        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
-            break;
-        }
-        ++count;
-    }
-    return count;
 }
 
 void split_target(HttpRequest& request) {
@@ -382,7 +373,6 @@ std::string build_stream_response_head(HttpResponse response) {
 struct ClientJob {
     SOCKET client = INVALID_SOCKET;
     std::string client_ip;
-    EndpointGroupKind endpoint = EndpointGroupKind::Responses;
     std::chrono::steady_clock::time_point accepted_at;
 };
 
@@ -543,8 +533,8 @@ void close_socket(SOCKET socket) {
 
 class BoundListener {
 public:
-    explicit BoundListener(const EndpointGroupConfig& endpoint)
-        : endpoint_(&endpoint) {}
+    explicit BoundListener(const ListenerSettings& settings)
+        : settings_(&settings) {}
 
     ~BoundListener() {
         close();
@@ -561,11 +551,10 @@ public:
         hints.ai_flags = AI_PASSIVE;
 
         addrinfo* result = nullptr;
-        const auto port = std::to_string(endpoint_->listen_port);
-        const int rc = getaddrinfo(endpoint_->listen_host.c_str(), port.c_str(), &hints, &result);
+        const auto port = std::to_string(settings_->port);
+        const int rc = getaddrinfo(settings_->host.c_str(), port.c_str(), &hints, &result);
         if (rc != 0 || result == nullptr) {
-            error = "failed to resolve " + std::string(endpoint_group_name(endpoint_->kind))
-                + " listen address: " + endpoint_->listen_host + ":" + port;
+            error = "failed to resolve listen address: " + settings_->host + ":" + port;
             return false;
         }
 
@@ -595,13 +584,11 @@ public:
         freeaddrinfo(result);
 
         if (socket_ == INVALID_SOCKET) {
-            error = "failed to bind " + std::string(endpoint_group_name(endpoint_->kind))
-                + " endpoint " + endpoint_->listen_host + ":" + port;
+            error = "failed to bind listener " + settings_->host + ":" + port;
             return false;
         }
         if (listen(socket_, kBacklog) == SOCKET_ERROR) {
-            error = "failed to listen on " + std::string(endpoint_group_name(endpoint_->kind))
-                + " endpoint " + endpoint_->listen_host + ":" + port;
+            error = "failed to listen on " + settings_->host + ":" + port;
             close();
             return false;
         }
@@ -618,12 +605,8 @@ public:
         return socket_;
     }
 
-    const EndpointGroupConfig& endpoint() const {
-        return *endpoint_;
-    }
-
 private:
-    const EndpointGroupConfig* endpoint_;
+    const ListenerSettings* settings_;
     SOCKET socket_ = INVALID_SOCKET;
 };
 
@@ -707,8 +690,7 @@ void handle_client(
     const Server* server,
     ClientCancellationMonitor& cancellation_monitor,
     std::size_t max_body_size,
-    std::string client_ip,
-    EndpointGroupKind endpoint) {
+    std::string client_ip) {
     try {
         const auto raw = recv_request(client, max_body_size);
         CancellationSource cancellation_source;
@@ -716,7 +698,6 @@ void handle_client(
         server->process_raw_request_to_sender(
             raw,
             client_ip,
-            endpoint,
             [&](const std::string& data) {
                 const bool sent = send_all(client, data);
                 if (!sent) {
@@ -738,7 +719,7 @@ void handle_client(
             : "internal server error";
         const int status = too_large ? 413 : 500;
         server->log_request_error(
-            endpoint, status, too_large ? "invalid_request_error" : "server_error", message);
+            status, too_large ? "invalid_request_error" : "server_error", message);
         HttpResponse response;
         response.status_code = status;
         response.reason = reason_phrase(status);
@@ -749,18 +730,21 @@ void handle_client(
     close_socket(client);
 }
 
-void reject_overloaded_client(SOCKET client, const Server* server, EndpointGroupKind endpoint) {
-    server->log_request_error(endpoint, 503, "server_overloaded", "maximum connection count reached");
-    HttpResponse response;
-    response.status_code = 503;
-    response.reason = reason_phrase(503);
-    response.body = error_json("server is at connection capacity", "server_overloaded");
-    send_all(client, build_response(std::move(response)));
-    shutdown(client, SD_SEND);
-    const int drain_timeout_ms = 250;
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&drain_timeout_ms), sizeof(drain_timeout_ms));
-    char drain_buffer[4096];
-    while (recv(client, drain_buffer, sizeof(drain_buffer), 0) > 0) {
+void reject_overloaded_client(SOCKET client, const Server* server) {
+    try {
+        server->log_request_error(503, "server_overloaded", "maximum connection count reached");
+        HttpResponse response;
+        response.status_code = 503;
+        response.reason = reason_phrase(503);
+        response.body = error_json("server is at connection capacity", "server_overloaded");
+        send_all(client, build_response(std::move(response)));
+        shutdown(client, SD_SEND);
+        const int drain_timeout_ms = 250;
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&drain_timeout_ms), sizeof(drain_timeout_ms));
+        char drain_buffer[4096];
+        while (recv(client, drain_buffer, sizeof(drain_buffer), 0) > 0) {
+        }
+    } catch (...) {
     }
     close_socket(client);
 }
@@ -772,31 +756,30 @@ void reject_overloaded_client(SOCKET client, const Server* server, EndpointGroup
 class Server::RequestGeneration {
 public:
     RequestGeneration(
-        ConfigSnapshot config_snapshot,
+        RuntimeSnapshotPtr runtime_snapshot,
         const std::shared_ptr<RuntimeMetrics>& metrics,
         std::shared_ptr<Logger> shared_logger = {})
-        : snapshot(std::move(config_snapshot))
-        , config(require_config_snapshot(snapshot))
-        , responses_router({&config.responses_endpoint})
-        , chat_router({&config.chat_endpoint})
-        , proxy(config.timeouts, config.max_response_body_size, metrics)
+        : snapshot(std::move(runtime_snapshot))
+        , runtime(require_runtime_snapshot(snapshot))
+        , proxy(
+              runtime.application.timeouts,
+              static_cast<std::size_t>(runtime.application.runtime.max_response_body_size),
+              metrics)
         , logger(std::move(shared_logger)) {
         if (!logger) {
-            logger = std::make_shared<Logger>(config, metrics);
+            logger = std::make_shared<Logger>(make_logger_config(runtime), metrics);
         }
     }
 
-    ConfigSnapshot snapshot;
-    const AppConfig& config;
-    TaskRouter responses_router;
-    TaskRouter chat_router;
+    RuntimeSnapshotPtr snapshot;
+    const RuntimeSnapshot& runtime;
     Proxy proxy;
     std::shared_ptr<Logger> logger;
 };
 
-Server::Server(ConfigSnapshot config)
+Server::Server(RuntimeSnapshotPtr snapshot)
     : metrics_(std::make_shared<RuntimeMetrics>())
-    , generation_(std::make_shared<RequestGeneration>(std::move(config), metrics_)) {}
+    , generation_(std::make_shared<RequestGeneration>(std::move(snapshot), metrics_)) {}
 
 std::shared_ptr<Server::RequestGeneration> Server::current_generation() const {
     std::shared_lock<std::shared_mutex> lock(generation_mutex_);
@@ -804,14 +787,12 @@ std::shared_ptr<Server::RequestGeneration> Server::current_generation() const {
 }
 
 void Server::log_request_error(
-    EndpointGroupKind endpoint,
     int status_code,
     const std::string& type,
     const std::string& message) const {
     const auto generation = current_generation();
     generation->logger->log("error", "request_error", {
         field_string("request_id", make_request_id()),
-        field_string("endpoint", endpoint_group_name(endpoint)),
         field_string("message", message),
         field_string("type", type),
         field_number("status_code", status_code),
@@ -824,29 +805,32 @@ void Server::request_stop() {
 #endif
 }
 
-ReloadResult Server::reload(ConfigSnapshot config, std::string& error) {
-    if (!config || !validate_config(*config, error)) {
-        if (error.empty()) {
-            error = "config snapshot must not be null";
-        }
+ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
+    error.clear();
+    if (!snapshot) {
+        error = "runtime snapshot must not be null";
+        return ReloadResult::Failed;
+    }
+    if (!snapshot->protocols || !snapshot->rules || snapshot->routes.empty()) {
+        error = "runtime snapshot is incomplete";
         return ReloadResult::Failed;
     }
 
     std::lock_guard<std::mutex> lock(reload_mutex_);
     const auto current = current_generation();
-    const auto& old_config = current->config;
-    const auto& new_config = *config;
-    const bool listener_changed =
-        old_config.responses_endpoint.listen_host != new_config.responses_endpoint.listen_host
-        || old_config.responses_endpoint.listen_port != new_config.responses_endpoint.listen_port
-        || old_config.chat_endpoint.listen_host != new_config.chat_endpoint.listen_host
-        || old_config.chat_endpoint.listen_port != new_config.chat_endpoint.listen_port;
-    const bool execution_changed = old_config.worker_threads != new_config.worker_threads
-        || old_config.metrics_interval_ms != new_config.metrics_interval_ms;
-    const bool same_log_path = old_config.log_path == new_config.log_path;
-    const bool same_log_writer_settings = old_config.log_level == new_config.log_level
-        && old_config.log_queue_capacity == new_config.log_queue_capacity
-        && old_config.log_flush_interval_ms == new_config.log_flush_interval_ms;
+    const auto& old_runtime = current->runtime;
+    const auto& old_application = old_runtime.application;
+    const auto& new_application = snapshot->application;
+    const bool listener_changed = old_application.listener.host != new_application.listener.host
+        || old_application.listener.port != new_application.listener.port;
+    const bool execution_changed =
+        old_application.runtime.worker_threads != new_application.runtime.worker_threads
+        || old_application.runtime.metrics_interval_ms != new_application.runtime.metrics_interval_ms;
+    const bool same_log_path = old_runtime.log_path == snapshot->log_path;
+    const bool same_log_writer_settings =
+        old_application.logging.level == new_application.logging.level
+        && old_application.logging.queue_capacity == new_application.logging.queue_capacity
+        && old_application.logging.flush_interval_ms == new_application.logging.flush_interval_ms;
     if (listener_changed || execution_changed || (same_log_path && !same_log_writer_settings)) {
         current->logger->log("info", "config_reload", {
             field_string("mode", "graceful_restart_required"),
@@ -860,7 +844,7 @@ ReloadResult Server::reload(ConfigSnapshot config, std::string& error) {
 
     std::shared_ptr<Logger> logger = current->logger;
     if (!same_log_path) {
-        logger = std::make_shared<Logger>(new_config, metrics_);
+        logger = std::make_shared<Logger>(make_logger_config(*snapshot), metrics_);
         std::string log_error;
         if (!logger->open(log_error)) {
             error = log_error;
@@ -869,16 +853,17 @@ ReloadResult Server::reload(ConfigSnapshot config, std::string& error) {
     }
 
     try {
-        auto next = std::make_shared<RequestGeneration>(std::move(config), metrics_, std::move(logger));
+        auto next = std::make_shared<RequestGeneration>(
+            std::move(snapshot), metrics_, std::move(logger));
         {
             std::unique_lock<std::shared_mutex> generation_lock(generation_mutex_);
             generation_ = next;
         }
         next->logger->log("info", "config_reload", {
             field_string("mode", "generation_swap"),
-            field_string("responses_upstream_url", next->config.responses_endpoint.upstream_url),
-            field_string("chat_upstream_url", next->config.chat_endpoint.upstream_url),
-            field_string("log_path", next->config.log_path.string()),
+            field_number("profile_count", static_cast<long long>(next->runtime.profiles.size())),
+            field_number("route_count", static_cast<long long>(next->runtime.routes.size())),
+            field_string("log_path", next->runtime.log_path.string()),
         });
     } catch (const std::exception& ex) {
         error = "failed to build config generation: " + std::string(ex.what());
@@ -889,10 +874,9 @@ ReloadResult Server::reload(ConfigSnapshot config, std::string& error) {
 
 std::string Server::process_raw_request(
     const std::string& raw,
-    const std::string& client_ip,
-    EndpointGroupKind endpoint) const {
+    const std::string& client_ip) const {
     std::string output;
-    process_raw_request_to_sender(raw, client_ip, endpoint, [&](const std::string& data) {
+    process_raw_request_to_sender(raw, client_ip, [&](const std::string& data) {
         output += data;
         return true;
     });
@@ -902,289 +886,305 @@ std::string Server::process_raw_request(
 bool Server::process_raw_request_to_sender(
     const std::string& raw,
     const std::string& client_ip,
-    EndpointGroupKind endpoint,
     const std::function<bool(const std::string&)>& sender,
     const CancellationToken& cancellation) const {
     return process_with_generation(
-        current_generation(), raw, client_ip, endpoint, sender, cancellation);
+        current_generation(), raw, client_ip, sender, cancellation);
 }
 
 bool Server::process_with_generation(
     const std::shared_ptr<RequestGeneration>& generation,
     const std::string& raw,
     const std::string& client_ip,
-    EndpointGroupKind endpoint,
     const std::function<bool(const std::string&)>& sender,
     const CancellationToken& cancellation) const {
-    const auto& config = generation->config;
-    const auto& router = endpoint == EndpointGroupKind::Responses
-        ? generation->responses_router
-        : generation->chat_router;
+    const auto& runtime = generation->runtime;
+    const auto& logging = runtime.application.logging;
     const auto request_id = make_request_id();
     const auto started = std::chrono::steady_clock::now();
     RequestMetricsScope metrics_scope(metrics_, cancellation);
-    std::string request_task = "unknown";
+    std::string profile_id = "unknown";
+    std::string protocol_id = "unknown";
+    std::string route_kind = "unknown";
+    std::shared_ptr<const ProtocolHandler> protocol_handler;
 
     try {
         auto request = parse_request(raw, client_ip);
-        const auto route = router.route(request.path);
-        request_task = route.task == nullptr ? "unknown" : task_name(route.task->kind);
-        if (route.task != nullptr && is_usage_task(route.task->kind)) {
-            request.request_id = request_id;
-            if (!route.configured()) {
-                HttpResponse response;
-                response.status_code = 404;
-                response.reason = reason_phrase(404);
-                response.body = error_json("unsupported route", "invalid_request_error");
-                generation->logger->log("info", "usage_rejected", {
-                    field_string("request_id", request.request_id),
-                    field_string("endpoint", endpoint_group_name(endpoint)),
-                    field_string("task", task_name(route.task->kind)),
-                    field_number("status_code", response.status_code),
-                });
-                return sender(build_response(std::move(response)));
-            }
-            auto response = handle_usage_request(
-                generation, request, *route.endpoint, *route.task, cancellation);
+        request.request_id = request_id;
+        const auto lookup = runtime.routes.lookup(request.method, request.path);
+        if (lookup.status != RouteLookupStatus::Matched || lookup.entry == nullptr) {
+            auto response = handle_local_route_error(lookup);
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - started);
-            const auto upstream = route.upstream_target();
+            generation->logger->log("error", "request_error", {
+                field_string("request_id", request.request_id),
+                field_string("method", request.method),
+                field_string("local_path", request.path),
+                field_string("message", lookup.status == RouteLookupStatus::MethodNotAllowed
+                        ? "method not allowed"
+                        : lookup.status == RouteLookupStatus::InvalidPath
+                            ? "invalid request path"
+                            : "unsupported route"),
+                field_string("type", "invalid_request_error"),
+                field_number("status_code", response.status_code),
+                field_number("duration_ms", elapsed.count()),
+            });
+            generation->logger->log("info", "response_sent", {
+                field_string("request_id", request.request_id),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_number("status_code", response.status_code),
+                field_number("duration_ms", elapsed.count()),
+                field_bool("streaming", false),
+            });
+            return sender(build_response(std::move(response)));
+        }
+
+        const auto& route = *lookup.entry;
+        profile_id = route.profile->id;
+        protocol_id = std::string(route.profile->handler->id());
+        route_kind = route_kind_name(route.kind);
+        protocol_handler = route.profile->handler;
+        if (route.kind == RouteKind::Usage) {
+            auto response = handle_usage_request(generation, request, route, cancellation);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
             generation->logger->log("info", "usage_completed", {
                 field_string("request_id", request.request_id),
-                field_string("endpoint", endpoint_group_name(endpoint)),
-                field_string("task", task_name(route.task->kind)),
-                field_bool("forwarded", request.method == route.task->method),
-                field_string("upstream_url", upstream.base_url),
-                field_string("upstream_path", upstream.path),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_bool("forwarded", true),
+                field_string("upstream_url", route.upstream.base_url),
+                field_string("upstream_path", route.upstream.path),
                 field_number("status_code", response.status_code),
                 field_number("duration_ms", elapsed.count()),
             });
             return sender(build_response(std::move(response)));
         }
 
-        request.request_id = request_id;
         std::vector<LogField> request_fields = {
             field_string("request_id", request.request_id),
-            field_string("api_type", route.task == nullptr ? "unknown" : task_name(route.task->kind)),
-            field_string("endpoint", endpoint_group_name(endpoint)),
+            field_string("profile_id", profile_id),
+            field_string("protocol", protocol_id),
+            field_string("route_kind", route_kind),
             field_string("method", request.method),
-            field_string("local_path", request.path),
+            field_string("local_path", lookup.canonical_path),
             field_string("query", request.query),
             field_string("client_ip", request.client_ip),
-            field_raw("headers", headers_to_json(request.headers, config.redact_sensitive)),
+            field_raw("headers", headers_to_json(request.headers, logging.redact_sensitive)),
         };
-        append_body_fields(request_fields, config, request.body);
+        append_body_fields(request_fields, logging, request.body);
         generation->logger->log("info", "request_received", request_fields);
 
-        const bool json_proxy_request = route.task != nullptr
-            && (route.task->kind == ApiTaskKind::Responses
-                || route.task->kind == ApiTaskKind::ChatCompletions)
-            && request.method == "POST"
-            && has_json_content_type(request.headers);
-        if (json_proxy_request) {
-            const auto trim_bytes = leading_json_whitespace(request.body);
-            if (trim_bytes > 0 && trim_bytes < request.body.size()) {
-                request.body.erase(0, trim_bytes);
-                generation->logger->log("debug", "request_body_normalized", {
-                    field_string("request_id", request.request_id),
-                    field_string("endpoint", endpoint_group_name(endpoint)),
-                    field_number("trimmed_leading_bytes", static_cast<long long>(trim_bytes)),
-                    field_number("body_size", static_cast<long long>(request.body.size())),
-                });
-            }
+        RulePipelineResult pipeline_result;
+        if (!route.profile->request_pipeline) {
+            pipeline_result.ok = false;
+            pipeline_result.error = RulePipelineError{
+                500,
+                "server_error",
+                "runtime profile has no compiled request pipeline",
+                {},
+                {},
+                "missing_compiled_pipeline",
+            };
+        } else {
+            pipeline_result = route.profile->request_pipeline->apply(request.body);
+        }
+        for (const auto& trace : pipeline_result.traces) {
+            generation->logger->log("info", "request_rule", {
+                field_string("request_id", request.request_id),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_string("rule_id", trace.rule_id),
+                field_string("rule_type", trace.rule_type),
+                field_bool("matched", trace.matched),
+                field_bool("modified", trace.modified),
+                field_string("reason", trace.reason),
+                field_string("target", trace.summary.target),
+                field_number("affected_count", static_cast<long long>(trace.summary.affected_count)),
+                field_number("duration_us", static_cast<long long>(trace.duration_us)),
+            });
+        }
+        if (!pipeline_result.ok) {
+            const RulePipelineError fallback{
+                500,
+                "server_error",
+                "request rule pipeline failed",
+                {},
+                {},
+                "pipeline_failed",
+            };
+            const auto& pipeline_error = pipeline_result.error
+                ? *pipeline_result.error
+                : fallback;
+            generation->logger->log("error", "request_error", {
+                field_string("request_id", request.request_id),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_string("rule_id", pipeline_error.rule_id),
+                field_string("rule_type", pipeline_error.rule_type),
+                field_string("reason", pipeline_error.reason),
+                field_string("message", pipeline_error.message),
+                field_string("type", pipeline_error.type),
+                field_number("status_code", pipeline_error.status_code),
+            });
+            auto response = route.profile->handler->local_error(
+                pipeline_error.status_code,
+                pipeline_error.type,
+                pipeline_error.message);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
+            std::vector<LogField> sent_fields = {
+                field_string("request_id", request.request_id),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_number("status_code", response.status_code),
+                field_number("duration_ms", elapsed.count()),
+                field_bool("streaming", false),
+            };
+            append_body_fields(sent_fields, logging, response.body);
+            generation->logger->log("info", "response_sent", sent_fields);
+            return sender(build_response(std::move(response)));
+        }
+        if (pipeline_result.rewritten_body) {
+            request.body = std::move(*pipeline_result.rewritten_body);
         }
 
-        TransformResult transform_result;
-        transform_result.original_body_size = request.body.size();
-        transform_result.rewritten_body_size = request.body.size();
-        transform_result.rewrite_reason = "no_transform_configured";
-        const bool main_task_ready = route.task != nullptr
-            && !is_usage_task(route.task->kind)
-            && route.configured()
-            && request.method == route.task->method;
-        const auto upstream_target = route.upstream_target();
-        if (main_task_ready
-            && std::find(route.task->transforms.begin(), route.task->transforms.end(), "remove_findcg_image_gen") != route.task->transforms.end()) {
-            try {
-                transform_result = findcg_transform_.apply(*route.task, upstream_target, request.body);
-                if (transform_result.rewritten_body) {
-                    request.body = std::move(*transform_result.rewritten_body);
-                    transform_result.rewritten_body.reset();
-                }
-            } catch (const TransformError& ex) {
-                generation->logger->log("error", "request_error", {
-                    field_string("request_id", request.request_id),
-                    field_string("task", task_name(route.task->kind)),
-                    field_string("endpoint", endpoint_group_name(endpoint)),
-                    field_string("message", ex.what()),
-                    field_string("type", "rewrite_error"),
-                    field_number("status_code", ex.status_code()),
-                });
-                HttpResponse response;
-                response.status_code = ex.status_code();
-                response.reason = reason_phrase(response.status_code);
-                response.body = error_json(ex.what(), ex.response_type());
-                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - started);
-                std::vector<LogField> sent_fields = {
-                    field_string("request_id", request.request_id),
-                    field_string("task", task_name(route.task->kind)),
-                    field_string("endpoint", endpoint_group_name(endpoint)),
-                    field_number("status_code", response.status_code),
-                    field_number("duration_ms", elapsed.count()),
-                    field_bool("streaming", false),
-                };
-                append_body_fields(sent_fields, config, response.body);
-                generation->logger->log("info", "response_sent", sent_fields);
-                return sender(build_response(std::move(response)));
-            }
-        }
-
-        const bool can_proxy_stream = main_task_ready;
         HttpResponse response;
         bool streamed = false;
         std::size_t streamed_body_size = 0;
         std::size_t stream_chunk_count = 0;
 
-        if (can_proxy_stream) {
-            std::vector<LogField> upstream_request_fields = {
-                field_string("request_id", request.request_id),
-                field_string("task", task_name(route.task->kind)),
-                field_string("endpoint", endpoint_group_name(route.endpoint->kind)),
-                field_string("method", request.method),
-                field_string("upstream_url", upstream_target.base_url),
-                field_string("upstream_path", upstream_target.path),
-                field_string("query", request.query),
-                field_string("upstream_proxy_mode", upstream_proxy_mode()),
-                field_bool("rewrite_enabled", transform_result.matched),
-                field_string("rewrite_name", transform_result.rewrite_name),
-                field_string("rewrite_reason", transform_result.rewrite_reason),
-                field_number("removed_tools_count", static_cast<long long>(transform_result.removed_tools.size())),
-                field_raw("removed_tools", removed_tools_to_json(transform_result.removed_tools)),
-                field_number("original_body_size", static_cast<long long>(transform_result.original_body_size)),
-                field_number("rewritten_body_size", static_cast<long long>(transform_result.rewritten_body_size)),
-                field_raw("headers", headers_to_json(request.headers, config.redact_sensitive)),
-            };
-            append_body_fields(upstream_request_fields, config, request.body);
-            generation->logger->log("info", "upstream_request", upstream_request_fields);
+        std::vector<LogField> upstream_request_fields = {
+            field_string("request_id", request.request_id),
+            field_string("profile_id", profile_id),
+            field_string("protocol", protocol_id),
+            field_string("route_kind", route_kind),
+            field_string("method", request.method),
+            field_string("upstream_url", route.upstream.base_url),
+            field_string("upstream_path", route.upstream.path),
+            field_string("query", request.query),
+            field_string("upstream_proxy_mode", upstream_proxy_mode()),
+            field_bool("rewrite_modified", pipeline_result.modified),
+            field_number("rule_count", static_cast<long long>(pipeline_result.traces.size())),
+            field_number("json_parse_count", static_cast<long long>(pipeline_result.parse_count)),
+            field_number("json_serialize_count", static_cast<long long>(pipeline_result.serialize_count)),
+            field_number("original_body_size", static_cast<long long>(pipeline_result.original_body_size)),
+            field_number("rewritten_body_size", static_cast<long long>(pipeline_result.output_body_size)),
+            field_raw("headers", headers_to_json(request.headers, logging.redact_sensitive)),
+        };
+        append_body_fields(upstream_request_fields, logging, request.body);
+        generation->logger->log("info", "upstream_request", upstream_request_fields);
 
-            try {
-                response = generation->proxy.forward_streaming(
-                    request,
-                    upstream_target,
-                    [&](const HttpResponse& headers_response) {
-                        streamed = true;
-                        metrics_->stream_started();
-                        std::vector<LogField> upstream_response_fields = {
-                            field_string("request_id", request.request_id),
-                            field_string("task", task_name(route.task->kind)),
-                            field_string("endpoint", endpoint_group_name(endpoint)),
-                            field_number("status_code", headers_response.status_code),
-                            field_bool("streaming", true),
-                            field_raw("headers", headers_to_json(headers_response.headers, config.redact_sensitive)),
-                            field_number("body_size", 0),
-                        };
-                        generation->logger->log("info", "upstream_response", upstream_response_fields);
-                        return sender(build_stream_response_head(headers_response));
-                    },
-                    [&](const std::string& chunk) {
-                        std::vector<LogField> chunk_fields = {
-                            field_string("request_id", request.request_id),
-                            field_string("task", task_name(route.task->kind)),
-                            field_string("endpoint", endpoint_group_name(endpoint)),
-                            field_number("chunk_sequence", static_cast<long long>(stream_chunk_count)),
-                            field_number("chunk_size", static_cast<long long>(chunk.size())),
-                        };
-                        append_body_fields(chunk_fields, config, chunk);
-                        generation->logger->log("info", "stream_chunk", chunk_fields);
-                        ++stream_chunk_count;
-                        streamed_body_size += chunk.size();
-                        const bool sent = sender(chunk);
-                        if (sent) {
-                            metrics_->stream_chunk_forwarded(chunk.size());
-                        }
-                        return sent;
-                    },
-                    cancellation);
-            } catch (const ProxyError& ex) {
-                if (ex.type() == "client_cancelled") {
-                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - started);
-                    generation->logger->log("info", "request_cancelled", {
+        try {
+            response = generation->proxy.forward_streaming(
+                request,
+                route.upstream,
+                [&](const HttpResponse& headers_response) {
+                    streamed = true;
+                    metrics_->stream_started();
+                    generation->logger->log("info", "upstream_response", {
                         field_string("request_id", request.request_id),
-                        field_string("task", task_name(route.task->kind)),
-                        field_string("endpoint", endpoint_group_name(endpoint)),
-                        field_number("duration_ms", elapsed.count()),
+                        field_string("profile_id", profile_id),
+                        field_string("protocol", protocol_id),
+                        field_string("route_kind", route_kind),
+                        field_number("status_code", headers_response.status_code),
+                        field_bool("streaming", true),
+                        field_raw("headers", headers_to_json(
+                            headers_response.headers, logging.redact_sensitive)),
+                        field_number("body_size", 0),
                     });
-                    return false;
-                }
-                metrics_->upstream_request_failed();
-                generation->logger->log("error", "request_error", {
+                    return sender(build_stream_response_head(headers_response));
+                },
+                [&](const std::string& chunk) {
+                    std::vector<LogField> chunk_fields = {
+                        field_string("request_id", request.request_id),
+                        field_string("profile_id", profile_id),
+                        field_string("protocol", protocol_id),
+                        field_string("route_kind", route_kind),
+                        field_number("chunk_sequence", static_cast<long long>(stream_chunk_count)),
+                        field_number("chunk_size", static_cast<long long>(chunk.size())),
+                    };
+                    append_body_fields(chunk_fields, logging, chunk);
+                    generation->logger->log("info", "stream_chunk", chunk_fields);
+                    ++stream_chunk_count;
+                    streamed_body_size += chunk.size();
+                    const bool sent = sender(chunk);
+                    if (sent) {
+                        metrics_->stream_chunk_forwarded(chunk.size());
+                    }
+                    return sent;
+                },
+                cancellation);
+        } catch (const ProxyError& ex) {
+            if (ex.type() == "client_cancelled") {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started);
+                generation->logger->log("info", "request_cancelled", {
                     field_string("request_id", request.request_id),
-                    field_string("task", task_name(route.task->kind)),
-                    field_string("endpoint", endpoint_group_name(endpoint)),
-                    field_string("message", ex.what()),
-                    field_string("type", ex.type()),
-                    field_number("status_code", ex.status_code()),
+                    field_string("profile_id", profile_id),
+                    field_string("protocol", protocol_id),
+                    field_string("route_kind", route_kind),
+                    field_number("duration_ms", elapsed.count()),
                 });
-                if (streamed) {
-                    return true;
-                }
-                response.status_code = ex.status_code();
-                response.reason = reason_phrase(response.status_code);
-                response.body = error_json(ex.what(), ex.type());
+                return false;
             }
+            metrics_->upstream_request_failed();
+            generation->logger->log("error", "request_error", {
+                field_string("request_id", request.request_id),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_string("message", ex.what()),
+                field_string("type", ex.type()),
+                field_number("status_code", ex.status_code()),
+            });
+            if (streamed) {
+                return true;
+            }
+            response = route.profile->handler->local_error(
+                ex.status_code(), ex.type(), ex.what());
+        }
 
-            if (!streamed) {
-                if (response.reason.empty()) {
-                    response.reason = reason_phrase(response.status_code);
-                }
-                std::vector<LogField> upstream_response_fields = {
-                    field_string("request_id", request.request_id),
-                    field_string("task", task_name(route.task->kind)),
-                    field_string("endpoint", endpoint_group_name(endpoint)),
-                    field_number("status_code", response.status_code),
-                    field_bool("streaming", false),
-                    field_raw("headers", headers_to_json(response.headers, config.redact_sensitive)),
-                };
-                append_body_fields(upstream_response_fields, config, response.body);
-                generation->logger->log("info", "upstream_response", upstream_response_fields);
+        if (!streamed) {
+            if (response.reason.empty()) {
+                response.reason = reason_phrase(response.status_code);
             }
-        } else {
-            response = handle_local_route_error(request, route);
-            if (response.status_code >= 400) {
-                const std::string error_message = response.status_code == 404
-                    ? "unsupported route"
-                    : response.status_code == 405 ? "method not allowed" : "task upstream is not configured";
-                const std::string error_type = response.status_code == 500
-                    ? "configuration_error"
-                    : "invalid_request_error";
-                generation->logger->log("error", "request_error", {
-                    field_string("request_id", request.request_id),
-                    field_string("task", route.task == nullptr ? "unknown" : task_name(route.task->kind)),
-                    field_string("endpoint", endpoint_group_name(endpoint)),
-                    field_string("message", error_message),
-                    field_string("type", error_type),
-                    field_number("status_code", response.status_code),
-                });
-            }
+            std::vector<LogField> upstream_response_fields = {
+                field_string("request_id", request.request_id),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_number("status_code", response.status_code),
+                field_bool("streaming", false),
+                field_raw("headers", headers_to_json(
+                    response.headers, logging.redact_sensitive)),
+            };
+            append_body_fields(upstream_response_fields, logging, response.body);
+            generation->logger->log("info", "upstream_response", upstream_response_fields);
         }
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started);
         std::vector<LogField> sent_fields = {
             field_string("request_id", request.request_id),
-            field_string("task", route.task == nullptr ? "unknown" : task_name(route.task->kind)),
-            field_string("endpoint", endpoint_group_name(endpoint)),
+            field_string("profile_id", profile_id),
+            field_string("protocol", protocol_id),
+            field_string("route_kind", route_kind),
             field_number("status_code", response.status_code),
             field_number("duration_ms", elapsed.count()),
             field_bool("streaming", streamed),
             field_number("stream_chunk_count", static_cast<long long>(stream_chunk_count)),
             field_number("streamed_body_size", static_cast<long long>(streamed_body_size)),
-            field_raw("headers", headers_to_json(response.headers, config.redact_sensitive)),
+            field_raw("headers", headers_to_json(response.headers, logging.redact_sensitive)),
         };
         if (!streamed) {
-            append_body_fields(sent_fields, config, response.body);
+            append_body_fields(sent_fields, logging, response.body);
         }
         generation->logger->log("info", "response_sent", sent_fields);
 
@@ -1196,8 +1196,9 @@ bool Server::process_with_generation(
         if (ex.type() == "client_cancelled") {
             generation->logger->log("info", "request_cancelled", {
                 field_string("request_id", request_id),
-                field_string("task", request_task),
-                field_string("endpoint", endpoint_group_name(endpoint)),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
             });
             return false;
         }
@@ -1205,16 +1206,22 @@ bool Server::process_with_generation(
     } catch (const std::exception& ex) {
         generation->logger->log("error", "request_error", {
             field_string("request_id", request_id),
-            field_string("endpoint", endpoint_group_name(endpoint)),
+            field_string("profile_id", profile_id),
+            field_string("protocol", protocol_id),
+            field_string("route_kind", route_kind),
             field_string("message", ex.what()),
             field_string("type", "server_error"),
             field_number("status_code", 500),
         });
 
-        HttpResponse response;
-        response.status_code = 500;
-        response.reason = reason_phrase(500);
-        response.body = error_json("internal server error", "server_error");
+        HttpResponse response = protocol_handler
+            ? protocol_handler->local_error(500, "server_error", "internal server error")
+            : HttpResponse{
+                  500,
+                  reason_phrase(500),
+                  {},
+                  error_json("internal server error", "server_error"),
+              };
         return sender(build_response(response));
     }
 }
@@ -1235,28 +1242,6 @@ void Server::log_performance_snapshot(const std::string& reason) const {
         field_number("peak_active_workers", static_cast<long long>(snapshot.peak_active_workers)),
         field_number("connection_queue_wait_time_us", static_cast<long long>(snapshot.connection_queue_wait_time_us)),
         field_number("max_connection_queue_wait_us", static_cast<long long>(snapshot.max_connection_queue_wait_us)),
-        field_number("responses_connections_accepted", static_cast<long long>(snapshot.responses_endpoint.connections_accepted)),
-        field_number("responses_connections_rejected", static_cast<long long>(snapshot.responses_endpoint.connections_rejected)),
-        field_number("responses_connections_completed", static_cast<long long>(snapshot.responses_endpoint.connections_completed)),
-        field_number("responses_current_connections", static_cast<long long>(snapshot.responses_endpoint.current_connections)),
-        field_number("responses_peak_connections", static_cast<long long>(snapshot.responses_endpoint.peak_connections)),
-        field_number("responses_current_queued_connections", static_cast<long long>(snapshot.responses_endpoint.current_queued_connections)),
-        field_number("responses_peak_queued_connections", static_cast<long long>(snapshot.responses_endpoint.peak_queued_connections)),
-        field_number("responses_current_active_workers", static_cast<long long>(snapshot.responses_endpoint.current_active_workers)),
-        field_number("responses_peak_active_workers", static_cast<long long>(snapshot.responses_endpoint.peak_active_workers)),
-        field_number("responses_connection_queue_wait_time_us", static_cast<long long>(snapshot.responses_endpoint.connection_queue_wait_time_us)),
-        field_number("responses_max_connection_queue_wait_us", static_cast<long long>(snapshot.responses_endpoint.max_connection_queue_wait_us)),
-        field_number("chat_connections_accepted", static_cast<long long>(snapshot.chat_endpoint.connections_accepted)),
-        field_number("chat_connections_rejected", static_cast<long long>(snapshot.chat_endpoint.connections_rejected)),
-        field_number("chat_connections_completed", static_cast<long long>(snapshot.chat_endpoint.connections_completed)),
-        field_number("chat_current_connections", static_cast<long long>(snapshot.chat_endpoint.current_connections)),
-        field_number("chat_peak_connections", static_cast<long long>(snapshot.chat_endpoint.peak_connections)),
-        field_number("chat_current_queued_connections", static_cast<long long>(snapshot.chat_endpoint.current_queued_connections)),
-        field_number("chat_peak_queued_connections", static_cast<long long>(snapshot.chat_endpoint.peak_queued_connections)),
-        field_number("chat_current_active_workers", static_cast<long long>(snapshot.chat_endpoint.current_active_workers)),
-        field_number("chat_peak_active_workers", static_cast<long long>(snapshot.chat_endpoint.peak_active_workers)),
-        field_number("chat_connection_queue_wait_time_us", static_cast<long long>(snapshot.chat_endpoint.connection_queue_wait_time_us)),
-        field_number("chat_max_connection_queue_wait_us", static_cast<long long>(snapshot.chat_endpoint.max_connection_queue_wait_us)),
         field_number("requests_started", static_cast<long long>(snapshot.requests_started)),
         field_number("requests_completed", static_cast<long long>(snapshot.requests_completed)),
         field_number("requests_cancelled", static_cast<long long>(snapshot.requests_cancelled)),
@@ -1312,20 +1297,10 @@ void Server::log_performance_snapshot(const std::string& reason) const {
 HttpResponse Server::handle_usage_request(
     const std::shared_ptr<RequestGeneration>& generation,
     const HttpRequest& request,
-    const EndpointGroupConfig& endpoint,
-    const TaskConfig& task,
+    const RouteEntry& route,
     const CancellationToken& cancellation) const {
-    if (request.method != "GET") {
-        HttpResponse response;
-        response.status_code = 405;
-        response.reason = reason_phrase(405);
-        response.headers.emplace_back("Allow", "GET");
-        response.body = error_json("method not allowed", "invalid_request_error");
-        return response;
-    }
-
     try {
-        auto response = generation->proxy.forward(request, endpoint.upstream_target(task), cancellation);
+        auto response = generation->proxy.forward(request, route.upstream, cancellation);
         if (response.reason.empty()) {
             response.reason = reason_phrase(response.status_code);
         }
@@ -1335,45 +1310,41 @@ HttpResponse Server::handle_usage_request(
             throw;
         }
         metrics_->upstream_request_failed();
-        HttpResponse response;
-        response.status_code = ex.status_code();
-        response.reason = reason_phrase(response.status_code);
-        response.body = error_json(ex.what(), ex.type());
-        return response;
+        generation->logger->log("error", "request_error", {
+            field_string("request_id", request.request_id),
+            field_string("profile_id", route.profile->id),
+            field_string("protocol", std::string(route.profile->handler->id())),
+            field_string("route_kind", route_kind_name(route.kind)),
+            field_string("message", ex.what()),
+            field_string("type", ex.type()),
+            field_number("status_code", ex.status_code()),
+        });
+        return route.profile->handler->local_error(
+            ex.status_code(), ex.type(), ex.what());
     }
 }
 
-HttpResponse Server::handle_local_route_error(const HttpRequest& request, const RouteDecision& route) const {
-    if (route.task == nullptr) {
-        HttpResponse response;
-        response.status_code = 404;
-        response.reason = reason_phrase(404);
-        response.body = error_json("unsupported route", "invalid_request_error");
-        return response;
-    }
-
-    const auto& task = *route.task;
-    if (!route.configured()) {
-        HttpResponse response;
-        response.status_code = 500;
-        response.reason = reason_phrase(500);
-        response.body = error_json("task upstream is not configured", "configuration_error");
-        return response;
-    }
-
-    if (request.method != task.method) {
-        HttpResponse response;
-        response.status_code = 405;
-        response.reason = reason_phrase(405);
-        response.headers.emplace_back("Allow", task.method);
-        response.body = error_json("method not allowed", "invalid_request_error");
-        return response;
-    }
-
+HttpResponse Server::handle_local_route_error(const RouteLookup& route) const {
     HttpResponse response;
-    response.status_code = 500;
-    response.reason = reason_phrase(500);
-    response.body = error_json("request was not dispatched", "server_error");
+    if (route.status == RouteLookupStatus::InvalidPath) {
+        response.status_code = 400;
+        response.body = error_json("invalid request path", "invalid_request_error");
+    } else if (route.status == RouteLookupStatus::MethodNotAllowed) {
+        response.status_code = 405;
+        std::string allowed;
+        for (const auto& method : route.allowed_methods) {
+            if (!allowed.empty()) {
+                allowed += ", ";
+            }
+            allowed += method;
+        }
+        response.headers.emplace_back("Allow", std::move(allowed));
+        response.body = error_json("method not allowed", "invalid_request_error");
+    } else {
+        response.status_code = 404;
+        response.body = error_json("unsupported route", "invalid_request_error");
+    }
+    response.reason = reason_phrase(response.status_code);
     return response;
 }
 
@@ -1399,7 +1370,10 @@ int Server::run(const StartupCallback& startup_callback) {
         console_shutdown_requested().store(false, std::memory_order_release);
         auto startup_generation = current_generation();
         const auto startup_snapshot = startup_generation->snapshot;
-        const auto& config = *startup_snapshot;
+        const auto application = startup_snapshot->application;
+        const auto log_path = startup_snapshot->log_path;
+        const auto profile_count = startup_snapshot->profiles.size();
+        const auto route_count = startup_snapshot->routes.size();
         WinsockRuntime winsock;
         std::string log_error;
         if (!startup_generation->logger->open(log_error)) {
@@ -1409,10 +1383,9 @@ int Server::run(const StartupCallback& startup_callback) {
         }
         SetConsoleCtrlHandler(console_handler, TRUE);
 
-        BoundListener responses_listener(config.responses_endpoint);
-        BoundListener chat_listener(config.chat_endpoint);
+        BoundListener listener(application.listener);
         std::string listener_error;
-        if (!responses_listener.open(listener_error) || !chat_listener.open(listener_error)) {
+        if (!listener.open(listener_error)) {
             report_startup(false, listener_error);
             std::cerr << listener_error << "\n";
             SetConsoleCtrlHandler(console_handler, FALSE);
@@ -1420,39 +1393,29 @@ int Server::run(const StartupCallback& startup_callback) {
         }
 
         std::cout << "ccs-trans listening on http://"
-                  << config.responses_endpoint.listen_host << ":" << config.responses_endpoint.listen_port
-                  << " (responses) and http://"
-                  << config.chat_endpoint.listen_host << ":" << config.chat_endpoint.listen_port
-                  << " (chat)\n";
+                  << application.listener.host << ":" << application.listener.port << "\n";
         startup_generation->logger->log("info", "server_start", {
-            field_number("listener_count", 2),
-            field_string("responses_listen_host", config.responses_endpoint.listen_host),
-            field_number("responses_listen_port", config.responses_endpoint.listen_port),
-            field_bool("responses_enabled", config.responses_endpoint.enabled()),
-            field_string("responses_upstream_url", config.responses_endpoint.upstream_url),
-            field_string("responses_upstream_path", config.responses_endpoint.main_task.upstream_path),
-            field_string("responses_usage_upstream_path", config.responses_endpoint.usage_task.upstream_path),
-            field_string("chat_listen_host", config.chat_endpoint.listen_host),
-            field_number("chat_listen_port", config.chat_endpoint.listen_port),
-            field_bool("chat_enabled", config.chat_endpoint.enabled()),
-            field_string("chat_upstream_url", config.chat_endpoint.upstream_url),
-            field_string("chat_upstream_path", config.chat_endpoint.main_task.upstream_path),
-            field_string("chat_usage_upstream_path", config.chat_endpoint.usage_task.upstream_path),
-            field_string("log_path", config.log_path.string()),
+            field_number("listener_count", 1),
+            field_string("listen_host", application.listener.host),
+            field_number("listen_port", application.listener.port),
+            field_number("profile_count", static_cast<long long>(profile_count)),
+            field_number("route_count", static_cast<long long>(route_count)),
+            field_string("log_path", log_path.string()),
             field_string("upstream_proxy_mode", upstream_proxy_mode()),
-            field_number("worker_threads", static_cast<long long>(config.worker_threads)),
-            field_number("max_connections", static_cast<long long>(config.max_connections)),
-            field_number("metrics_interval_ms", config.metrics_interval_ms),
-            field_number("resolve_timeout_ms", config.timeouts.resolve_ms),
-            field_number("connect_timeout_ms", config.timeouts.connect_ms),
-            field_number("send_timeout_ms", config.timeouts.send_ms),
-            field_number("response_header_timeout_ms", config.timeouts.response_header_ms),
-            field_number("stream_idle_timeout_ms", config.timeouts.stream_idle_ms),
-            field_number("total_timeout_ms", config.timeouts.total_ms),
+            field_number("worker_threads", application.runtime.worker_threads),
+            field_number("max_connections", application.runtime.max_connections),
+            field_number("metrics_interval_ms", application.runtime.metrics_interval_ms),
+            field_number("resolve_timeout_ms", application.timeouts.resolve_ms),
+            field_number("connect_timeout_ms", application.timeouts.connect_ms),
+            field_number("send_timeout_ms", application.timeouts.send_ms),
+            field_number("response_header_timeout_ms", application.timeouts.response_header_ms),
+            field_number("stream_idle_timeout_ms", application.timeouts.stream_idle_ms),
+            field_number("total_timeout_ms", application.timeouts.total_ms),
         });
         startup_generation.reset();
 
-        PeriodicReporter reporter(config.metrics_interval_ms, [this]() {
+        PeriodicReporter reporter(
+            static_cast<int>(application.runtime.metrics_interval_ms), [this]() {
             log_performance_snapshot("periodic");
         });
 
@@ -1465,7 +1428,8 @@ int Server::run(const StartupCallback& startup_callback) {
         ClientCancellationMonitor cancellation_monitor(metrics_);
 
         std::vector<std::thread> workers;
-        workers.reserve(config.worker_threads);
+        const auto worker_limit = static_cast<std::size_t>(application.runtime.worker_threads);
+        workers.reserve(worker_limit);
         const auto worker_loop = [&]() {
             while (true) {
                 ClientJob job;
@@ -1483,22 +1447,30 @@ int Server::run(const StartupCallback& startup_callback) {
                     const auto queue_wait = std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - job.accepted_at);
                     metrics_->worker_started(
-                        job.endpoint,
                         client_queue.size(),
                         static_cast<std::uint64_t>(queue_wait.count()));
                 }
-                handle_client(
-                    job.client,
-                    this,
-                    cancellation_monitor,
-                    current_generation()->config.max_request_body_size,
-                    std::move(job.client_ip),
-                    job.endpoint);
+                try {
+                    handle_client(
+                        job.client,
+                        this,
+                        cancellation_monitor,
+                        static_cast<std::size_t>(current_generation()
+                                ->runtime.application.runtime.max_request_body_size),
+                        std::move(job.client_ip));
+                } catch (...) {
+                    close_socket(job.client);
+                    try {
+                        log_request_error(
+                            500, "worker_error", "request worker failed unexpectedly");
+                    } catch (...) {
+                    }
+                }
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex);
                     --active_worker_count;
                     --open_connections;
-                    metrics_->worker_finished(job.endpoint, open_connections);
+                    metrics_->worker_finished(open_connections);
                 }
             }
         };
@@ -1508,7 +1480,7 @@ int Server::run(const StartupCallback& startup_callback) {
             }
         };
         try {
-            grow_workers(std::min<std::size_t>(config.worker_threads, 8));
+            grow_workers(std::min<std::size_t>(worker_limit, 8));
         } catch (...) {
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
@@ -1521,9 +1493,10 @@ int Server::run(const StartupCallback& startup_callback) {
             throw;
         }
 
-        const auto accept_loop = [&](const BoundListener& listener) {
-            while (!stop_requested_.load(std::memory_order_acquire)
-                && !console_shutdown_requested().load(std::memory_order_acquire)) {
+        const auto accept_loop = [&]() noexcept {
+            try {
+                while (!stop_requested_.load(std::memory_order_acquire)
+                    && !console_shutdown_requested().load(std::memory_order_acquire)) {
                 fd_set read_set;
                 FD_ZERO(&read_set);
                 FD_SET(listener.socket(), &read_set);
@@ -1540,7 +1513,6 @@ int Server::run(const StartupCallback& startup_callback) {
                         return;
                     }
                     log_request_error(
-                        listener.endpoint().kind,
                         500,
                         "listener_error",
                         "listener wait failed: " + std::to_string(error));
@@ -1560,7 +1532,6 @@ int Server::run(const StartupCallback& startup_callback) {
                         return;
                     }
                     log_request_error(
-                        listener.endpoint().kind,
                         500,
                         "listener_error",
                         "listener accept failed: " + std::to_string(error));
@@ -1568,52 +1539,81 @@ int Server::run(const StartupCallback& startup_callback) {
                     return;
                 }
                 bool queued = false;
+                bool queue_failed = false;
                 bool worker_scale_failed = false;
                 std::size_t worker_count_after_scale = 0;
+                std::string client_ip;
+                try {
+                    client_ip = peer_ip(client_addr);
+                } catch (...) {
+                    queue_failed = true;
+                }
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex);
-                    if (open_connections < current_generation()->config.max_connections) {
-                        ++open_connections;
-                        client_queue.push(ClientJob{
-                            client,
-                            peer_ip(client_addr),
-                            listener.endpoint().kind,
-                            std::chrono::steady_clock::now(),
-                        });
-                        metrics_->connection_accepted(
-                            listener.endpoint().kind, open_connections, client_queue.size());
-                        const auto required_workers = std::min(
-                            config.worker_threads,
-                            active_worker_count + client_queue.size());
+                    if (!queue_failed
+                        && open_connections < current_generation()
+                            ->runtime.application.runtime.max_connections) {
                         try {
-                            grow_workers(required_workers);
+                            client_queue.push(ClientJob{
+                                client,
+                                std::move(client_ip),
+                                std::chrono::steady_clock::now(),
+                            });
+                            ++open_connections;
+                            metrics_->connection_accepted(
+                                open_connections, client_queue.size());
+                            const auto required_workers = std::min(
+                                worker_limit,
+                                active_worker_count + client_queue.size());
+                            try {
+                                grow_workers(required_workers);
+                            } catch (...) {
+                                worker_scale_failed = true;
+                            }
+                            worker_count_after_scale = workers.size();
+                            queued = true;
                         } catch (...) {
-                            worker_scale_failed = true;
+                            queue_failed = true;
                         }
-                        worker_count_after_scale = workers.size();
-                        queued = true;
                     }
+                }
+                if (queue_failed) {
+                    close_socket(client);
+                    stop_requested_.store(true, std::memory_order_release);
+                    try {
+                        log_request_error(
+                            500, "listener_queue_error", "failed to queue accepted connection");
+                    } catch (...) {
+                    }
+                    return;
                 }
                 if (worker_scale_failed) {
                     current_generation()->logger->log("error", "worker_scale_failed", {
                         field_number("current_worker_threads", static_cast<long long>(worker_count_after_scale)),
-                        field_number("worker_thread_limit", static_cast<long long>(config.worker_threads)),
+                        field_number("worker_thread_limit", static_cast<long long>(worker_limit)),
                     });
                 }
                 if (!queued) {
-                    metrics_->connection_rejected(listener.endpoint().kind);
-                    reject_overloaded_client(client, this, listener.endpoint().kind);
+                    metrics_->connection_rejected();
+                    reject_overloaded_client(client, this);
                     continue;
                 }
                 queue_cv.notify_one();
             }
+            } catch (...) {
+                stop_requested_.store(true, std::memory_order_release);
+                try {
+                    log_request_error(
+                        500, "listener_error", "listener loop failed unexpectedly");
+                } catch (...) {
+                }
+            }
         };
 
         std::vector<std::thread> acceptors;
-        acceptors.reserve(2);
+        acceptors.reserve(1);
         try {
-            acceptors.emplace_back(accept_loop, std::cref(responses_listener));
-            acceptors.emplace_back(accept_loop, std::cref(chat_listener));
+            acceptors.emplace_back(accept_loop);
         } catch (...) {
             stop_requested_.store(true, std::memory_order_release);
             for (auto& acceptor : acceptors) {
@@ -1635,8 +1635,7 @@ int Server::run(const StartupCallback& startup_callback) {
         for (auto& acceptor : acceptors) {
             acceptor.join();
         }
-        responses_listener.close();
-        chat_listener.close();
+        listener.close();
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
             accepting_done = true;
@@ -1650,7 +1649,7 @@ int Server::run(const StartupCallback& startup_callback) {
         reporter.stop();
         log_performance_snapshot("server_stop");
         current_generation()->logger->log("info", "server_stop", {
-            field_number("listener_count", 2),
+            field_number("listener_count", 1),
         });
         SetConsoleCtrlHandler(console_handler, FALSE);
         return 0;

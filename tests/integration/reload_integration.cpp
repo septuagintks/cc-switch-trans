@@ -1,5 +1,7 @@
 #include "config/app_paths.hpp"
-#include "config/profile_store.hpp"
+#include "config/config_document.hpp"
+#include "config/config_store.hpp"
+#include "config/runtime_compiler.hpp"
 #include "core/app_service.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -274,6 +276,35 @@ std::string proxy_request(std::uint16_t port, const std::string& label) {
     }
 }
 
+ccs::ConfigDocument make_document(
+    std::uint16_t port,
+    const std::filesystem::path& log_path,
+    const std::string& upstream_url) {
+    auto document = ccs::make_default_config_document();
+    document.application.listener.port = port;
+    document.application.logging.path = log_path.generic_string();
+    document.application.logging.body = false;
+    document.application.logging.redact_sensitive = true;
+    ccs::ProfileDefinition profile;
+    profile.enabled = true;
+    profile.protocol = ccs::ProtocolId{"responses"};
+    profile.local.request_path = "/v1/responses";
+    profile.upstream.base_url = upstream_url;
+    profile.upstream.request_path = "/v1/responses";
+    document.profiles.emplace("live", std::move(profile));
+    return document;
+}
+
+ccs::RuntimeSnapshotPtr compile(
+    const ccs::ConfigDocument& document,
+    const std::filesystem::path& application_root) {
+    ccs::RuntimeCompiler compiler(application_root);
+    ccs::RuntimeSnapshotPtr snapshot;
+    std::string error;
+    require(compiler.compile(document, {}, snapshot, error), error);
+    return snapshot;
+}
+
 void test_reload_generation_and_profile_io() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path()
@@ -284,44 +315,36 @@ void test_reload_generation_and_profile_io() {
 
     MockUpstream upstream_a("A", true);
     MockUpstream upstream_b("B", false);
-    ccs::AppConfig config;
-    config.responses_endpoint.listen_port = free_port();
-    do {
-        config.chat_endpoint.listen_port = free_port();
-    } while (config.chat_endpoint.listen_port == config.responses_endpoint.listen_port);
-    config.responses_endpoint.upstream_url = "http://127.0.0.1:" + std::to_string(upstream_a.port());
-    config.chat_endpoint.upstream_url = config.responses_endpoint.upstream_url;
-    config.log_path = paths.default_log_file;
-    config.log_body = false;
-    config.redact_sensitive = true;
+    const auto proxy_port = free_port();
+    auto document = make_document(
+        proxy_port,
+        paths.default_log_file,
+        "http://127.0.0.1:" + std::to_string(upstream_a.port()));
 
     {
-        ccs::AppService service(config);
+        ccs::AppService service(compile(document, paths.root));
         require(service.start(error), "service start failed: " + error);
 
         auto old_request = std::async(std::launch::async, [&]() {
-            return proxy_request(config.responses_endpoint.listen_port, "old");
+            return proxy_request(proxy_port, "old");
         });
         upstream_a.wait_until_received();
 
-        ccs::ProfileStore store(paths);
+        ccs::ConfigStore store(paths);
         require(store.load(error), error);
-        require(store.create("live", error), error);
-        require(store.set("live", "responses-upstream-url", config.responses_endpoint.upstream_url, error), error);
-        require(store.save(error), error);
-        ccs::ProfileStore reloaded(paths);
+        require(store.save(document, error), error);
+        ccs::ConfigStore reloaded(paths);
         require(reloaded.load(error), error);
-        std::string profile_json;
-        require(reloaded.show_json("live", profile_json, error), error);
-        require(profile_json.find(config.responses_endpoint.upstream_url) != std::string::npos,
+        require(reloaded.document().profiles.at("live").upstream.base_url
+                == document.profiles.at("live").upstream.base_url,
             "saved profile was not reloaded while proxy was active");
 
-        auto next_config = config;
-        next_config.responses_endpoint.upstream_url =
+        auto next_document = document;
+        next_document.profiles.at("live").upstream.base_url =
             "http://127.0.0.1:" + std::to_string(upstream_b.port());
-        require(service.reload(ccs::make_config_snapshot(next_config), error), "hot reload failed: " + error);
+        require(service.reload(compile(next_document, paths.root), error), "hot reload failed: " + error);
 
-        const auto new_response = proxy_request(config.responses_endpoint.listen_port, "new");
+        const auto new_response = proxy_request(proxy_port, "new");
         require(new_response.find("\"marker\":\"B\"") != std::string::npos,
             "new request did not use reloaded upstream B");
 

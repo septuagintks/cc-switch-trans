@@ -19,40 +19,19 @@ void RuntimeMetrics::update_peak(std::atomic<std::uint64_t>& peak, std::uint64_t
     }
 }
 
-RuntimeMetrics::EndpointMetrics& RuntimeMetrics::endpoint_metrics(EndpointGroupKind endpoint) {
-    return endpoint == EndpointGroupKind::Responses
-        ? responses_endpoint_metrics_
-        : chat_endpoint_metrics_;
-}
-
-const RuntimeMetrics::EndpointMetrics& RuntimeMetrics::endpoint_metrics(EndpointGroupKind endpoint) const {
-    return endpoint == EndpointGroupKind::Responses
-        ? responses_endpoint_metrics_
-        : chat_endpoint_metrics_;
-}
-
-void RuntimeMetrics::connection_accepted(EndpointGroupKind endpoint, std::size_t current, std::size_t queued) {
+void RuntimeMetrics::connection_accepted(std::size_t current, std::size_t queued) {
     connections_accepted_.fetch_add(1, std::memory_order_relaxed);
     current_connections_.store(current, std::memory_order_relaxed);
     current_queued_connections_.store(queued, std::memory_order_relaxed);
     update_peak(peak_connections_, current);
     update_peak(peak_queued_connections_, queued);
-
-    auto& endpoint_values = endpoint_metrics(endpoint);
-    endpoint_values.connections_accepted.fetch_add(1, std::memory_order_relaxed);
-    const auto endpoint_current = endpoint_values.current_connections.fetch_add(1, std::memory_order_relaxed) + 1;
-    const auto endpoint_queued = endpoint_values.current_queued_connections.fetch_add(1, std::memory_order_relaxed) + 1;
-    update_peak(endpoint_values.peak_connections, endpoint_current);
-    update_peak(endpoint_values.peak_queued_connections, endpoint_queued);
 }
 
-void RuntimeMetrics::connection_rejected(EndpointGroupKind endpoint) {
+void RuntimeMetrics::connection_rejected() {
     connections_rejected_.fetch_add(1, std::memory_order_relaxed);
-    endpoint_metrics(endpoint).connections_rejected.fetch_add(1, std::memory_order_relaxed);
 }
 
 void RuntimeMetrics::worker_started(
-    EndpointGroupKind endpoint,
     std::size_t queued,
     std::uint64_t queue_wait_us) {
     current_queued_connections_.store(queued, std::memory_order_relaxed);
@@ -60,24 +39,12 @@ void RuntimeMetrics::worker_started(
     update_peak(peak_active_workers_, active);
     connection_queue_wait_time_us_.fetch_add(queue_wait_us, std::memory_order_relaxed);
     update_peak(max_connection_queue_wait_us_, queue_wait_us);
-
-    auto& endpoint_values = endpoint_metrics(endpoint);
-    endpoint_values.current_queued_connections.fetch_sub(1, std::memory_order_relaxed);
-    const auto endpoint_active = endpoint_values.current_active_workers.fetch_add(1, std::memory_order_relaxed) + 1;
-    endpoint_values.connection_queue_wait_time_us.fetch_add(queue_wait_us, std::memory_order_relaxed);
-    update_peak(endpoint_values.peak_active_workers, endpoint_active);
-    update_peak(endpoint_values.max_connection_queue_wait_us, queue_wait_us);
 }
 
-void RuntimeMetrics::worker_finished(EndpointGroupKind endpoint, std::size_t current) {
+void RuntimeMetrics::worker_finished(std::size_t current) {
     current_active_workers_.fetch_sub(1, std::memory_order_relaxed);
     current_connections_.store(current, std::memory_order_relaxed);
     connections_completed_.fetch_add(1, std::memory_order_relaxed);
-
-    auto& endpoint_values = endpoint_metrics(endpoint);
-    endpoint_values.current_active_workers.fetch_sub(1, std::memory_order_relaxed);
-    endpoint_values.current_connections.fetch_sub(1, std::memory_order_relaxed);
-    endpoint_values.connections_completed.fetch_add(1, std::memory_order_relaxed);
 }
 
 void RuntimeMetrics::request_started() {
@@ -306,23 +273,6 @@ RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
     CCS_LOAD_METRIC(max_log_batch_bytes);
 #undef CCS_LOAD_METRIC
 
-    const auto load_endpoint = [](const EndpointMetrics& source) {
-        EndpointRuntimeMetricsSnapshot endpoint;
-        endpoint.connections_accepted = load(source.connections_accepted);
-        endpoint.connections_rejected = load(source.connections_rejected);
-        endpoint.connections_completed = load(source.connections_completed);
-        endpoint.current_connections = load(source.current_connections);
-        endpoint.peak_connections = load(source.peak_connections);
-        endpoint.current_queued_connections = load(source.current_queued_connections);
-        endpoint.peak_queued_connections = load(source.peak_queued_connections);
-        endpoint.current_active_workers = load(source.current_active_workers);
-        endpoint.peak_active_workers = load(source.peak_active_workers);
-        endpoint.connection_queue_wait_time_us = load(source.connection_queue_wait_time_us);
-        endpoint.max_connection_queue_wait_us = load(source.max_connection_queue_wait_us);
-        return endpoint;
-    };
-    result.responses_endpoint = load_endpoint(endpoint_metrics(EndpointGroupKind::Responses));
-    result.chat_endpoint = load_endpoint(endpoint_metrics(EndpointGroupKind::Chat));
     return result;
 }
 

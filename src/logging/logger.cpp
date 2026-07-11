@@ -161,7 +161,7 @@ LogField field_raw(std::string name, std::string raw_json) {
 }
 
 Logger::Logger(
-    AppConfig config,
+    LoggerConfig config,
     std::shared_ptr<RuntimeMetrics> metrics,
     std::unique_ptr<LogSink> sink,
     FailureHandler failure_handler)
@@ -201,7 +201,7 @@ bool Logger::open(std::string& error) {
         }
         return false;
     };
-    const auto parent = config_.log_path.parent_path();
+    const auto parent = config_.path.parent_path();
     if (!parent.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(parent, ec);
@@ -213,7 +213,7 @@ bool Logger::open(std::string& error) {
 
     bool sink_opened = false;
     try {
-        sink_opened = sink_->open(config_.log_path, error);
+        sink_opened = sink_->open(config_.path, error);
     } catch (const std::exception& ex) {
         error = "log sink open failed: " + std::string(ex.what());
     } catch (...) {
@@ -245,7 +245,7 @@ bool Logger::log(std::string level, std::string event, std::initializer_list<Log
 }
 
 bool Logger::log(std::string level, std::string event, const std::vector<LogField>& fields) const {
-    if (level_value(level) < level_value(config_.log_level)) {
+    if (level_value(level) < level_value(config_.level)) {
         return true;
     }
 
@@ -259,7 +259,7 @@ bool Logger::log(std::string level, std::string event, const std::vector<LogFiel
     }
     const auto has_space = [&]() {
         return stopping_ || state_ != LogWriterState::Running || pending_records_ == 0
-            || pending_bytes_ + line_size <= config_.log_queue_capacity;
+            || pending_bytes_ + line_size <= config_.queue_capacity;
     };
     const bool backpressured = !has_space();
     const auto wait_started = std::chrono::steady_clock::now();
@@ -306,7 +306,7 @@ LogWriterStatus Logger::status() const {
 }
 
 void Logger::writer_loop() {
-    const auto flush_interval = std::chrono::milliseconds(config_.log_flush_interval_ms);
+    const auto flush_interval = std::chrono::milliseconds(config_.flush_interval_ms);
     while (true) {
         std::deque<QueuedRecord> batch;
         std::size_t batch_bytes = 0;

@@ -114,20 +114,20 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 
 | 目录 | 当前职责 | 已知重构点 |
 | --- | --- | --- |
-| `src/config` | v2 CLI/document/store/compiler、旧生产 CLI/AppConfig/ProfileStore、用户路径 | 11.7 一次切换 host/runtime |
-| `src/core` | AppService、任务枚举、router 基础、取消、指标、transform 接口 | app/routing/runtime 职责混合 |
+| `src/config` | 生产 v2 CLI/document/store/compiler、用户路径；旧 AppConfig/ProfileStore 已无生产引用 | 11.9 删除 v1 源码 |
+| `src/core` | RuntimeSnapshot AppService、取消、全局指标；旧 task/router/transform 已无生产引用 | 11.9 删除旧模型并移动 AppService |
 | `src/hosts` | CLI 入口 | 将增加 Windows tray 和 macOS menu bar |
-| `src/logging` | JSON Lines、批写、flush、背压、writer health | 保持独立，仅调整标签 |
-| `src/protocols` | Responses/Chat/Messages descriptor、registry、local error envelope | 11.7 接生产 server |
-| `src/routing` | immutable RuntimeProfile + handler/compiled pipeline、两级 hash RouteTable、404/405 lookup | 11.7 接生产 server |
-| `src/rules` | RuleRegistry、共享 DOM pipeline、generic JSON Pointer 与三协议 remove_tool | 11.7 接生产 server/logging |
-| `src/runtime` | v2 RuntimeSnapshot、protocol/rule registry generation 数据模型 | 11.7 接 AppService/reload |
-| `src/server` | 双 listener、worker、路由编排、reload | 改为单 listener + RouteTable |
-| `src/transforms` | 生产 Server 仍使用的旧 findcg Responses 规则 | 11.7 切换 pipeline 后删除 |
+| `src/logging` | 独立 LoggerConfig、JSON Lines、批写、flush、背压、writer health | 11.8 收口 generation/writer failure |
+| `src/protocols` | 生产 Responses/Chat/Messages descriptor、registry、local error envelope | 保持协议边界 |
+| `src/routing` | 生产 immutable RuntimeProfile + compiled pipeline、两级 hash RouteTable | 保持请求期 O(1) lookup |
+| `src/rules` | 生产 RuleRegistry、共享 DOM pipeline、generic JSON Pointer 与三协议 remove_tool | 11.8 收口 reload trace |
+| `src/runtime` | 生产 RuntimeSnapshot、protocol/rule registry generation | 11.8 增加 generation 观测 |
+| `src/server` | 单 listener、全局 FIFO worker、RouteTable/pipeline 编排、reload | 11.8 收口 reload/logger failure |
+| `src/transforms` | 已无生产引用的旧 findcg Responses 类 | 11.9 删除 |
 | `src/transport` | headers、WinHTTP system proxy、streaming、cancel、timeout | 后续拆平台实现 |
-| `tests/unit` | 配置、路由、protocol/rule registry、JSON Pointer、日志和旧 transform | 11.7 扩展生产 host 覆盖 |
-| `tests/integration` | 双上游、协议、reload generation | 扩展多 profile/Messages/rules |
-| `tests/benchmark` | 8/16/50 路、旧 transform 与 0/1/8/32-rule 微基准 | 11.7 接真实 profile 请求路径 |
+| `tests/unit` | v2 配置/host、路由、protocol/rule、JSON Pointer、日志及待删旧模型 | 11.9 删除旧测试 |
+| `tests/integration` | 单端口多 Profile/协议/Usage/rules、reload generation、Windows proxy | 11.8 扩展 reload/rule rollback |
+| `tests/benchmark` | 单 listener 8/16/50 路、旧 transform 与 0/1/8/32-rule 微基准 | 11.9 删除旧 transform 基准 |
 | `tests/fixtures` | 纯合成、可跨测试层复用的协议/config 输入 | v2 schema 与新 rule cases |
 
 ## 阶段 11 目标目录
@@ -191,12 +191,12 @@ src/
 
 | 当前文件/职责 | 目标位置 | 迁移触发点 |
 | --- | --- | --- |
-| `core/app_service.*` | `app/app_service.*` | 新 RuntimeSnapshot 接入 AppService |
-| `config/profile_store.*` | 删除；`config/config_store.*` 已接替持久化职责 | 新 CLI 接入后移除旧 v1 store |
-| `config/config.*` | 保留 CLI 解析后删除；领域类型已进入 `config_document.*` | `runtime_compiler.*` 接入后删除旧 AppConfig |
-| `core/task*` | `routing/profile.hpp` + `route_table.*` | 固定 endpoint/task enum 被移除 |
-| `core/transform.*` | `rules/rule.*` | RuleRegistry 接入 |
-| `transforms/findcg_*` | `rules/remove_tool_rule.*` | findcg 行为改为 profile rule |
+| `core/app_service.*` | `app/app_service.*` | 11.9 目录归位 |
+| `config/profile_store.*` | 删除；`config/config_store.*` 已接替 | 11.9 清理 v1 |
+| `config/config.*` | 删除；领域类型已进入 `config_document.*` | 11.9 清理 v1 |
+| `core/task*` | 删除；生产已使用 `routing/profile.hpp` + `route_table.*` | 11.9 清理旧 enum/router |
+| `core/transform.*` | 删除；生产已使用 `rules/rule.*` | 11.9 清理旧接口 |
+| `transforms/findcg_*` | 删除；生产已使用 `rules/remove_tool_rule.*` | 11.9 清理旧特例 |
 | `transport/proxy.*` | `transport/windows/winhttp_transport.*` | transport interface 稳定 |
 
 每次移动必须同时更新：

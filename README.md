@@ -1,43 +1,16 @@
 # ccs-trans
 
-`ccs-trans` is a local OpenAI-compatible HTTP transformation proxy for Windows.
-The current release is `0.4.0`.
+`ccs-trans` is a local LLM API request transformation proxy. The current
+release is `0.4.0` and supports Windows 11 21H2 x64 or newer.
 
-It exposes independent endpoint groups for OpenAI Responses and Chat
-Completions, forwards normal JSON and SSE responses, and records the complete
-request chain as structured JSON Lines logs. Responses requests sent to
-`findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations
-before forwarding. Requests that do not match that rule remain transparent.
-
-## Endpoints
-
-The default listeners are:
-
-```text
-127.0.0.1:15723  Responses and its Usage route
-127.0.0.1:15724  Chat Completions and its Usage route
-```
-
-Supported local routes:
-
-```text
-15723: POST /v1/responses
-15723: POST /v1/responses/
-15723: GET  /v1/usage
-15724: POST /v1/chat/completions
-15724: GET  /v1/usage
-```
-
-Each Usage request is sent to the upstream owned by the receiving endpoint.
-The two listeners share one bounded connection limit, worker pool, logger,
-metrics set, and process-level WinHTTP session.
+One process binds one application listener. Enabled Profiles add exact local
+routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
+select their own upstream targets, and optionally run an ordered request Rule
+pipeline. Ordinary responses and SSE streams are forwarded transparently.
 
 ## Build
 
 Requirements: CMake 3.20 or newer, Ninja, and a C++17 compiler.
-
-The supported Windows baseline is Windows 11 21H2 x64. Windows 10 and earlier
-versions are not compatibility targets.
 
 ```text
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -46,60 +19,7 @@ cmake --build build
 
 The Windows executable is `build/ccs-trans.exe`.
 
-## Run
-
-Start only the Responses endpoint:
-
-```text
-ccs-trans run --responses-upstream-url https://www.findcg.com
-```
-
-Start both endpoint groups:
-
-```text
-ccs-trans run \
-  --responses-upstream-url https://www.findcg.com \
-  --chat-upstream-url https://chat.example.com
-```
-
-Only canonical long options are accepted. A field has one option name, options
-cannot be repeated, and boolean values are written as `true` or `false`.
-
-## Persistent Profiles
-
-```text
-ccs-trans profile create findcg
-ccs-trans profile set findcg responses-upstream-url https://www.findcg.com
-ccs-trans profile set findcg chat-upstream-url https://chat.example.com
-ccs-trans profile use findcg
-ccs-trans profile show findcg
-ccs-trans run
-```
-
-Profile commands:
-
-```text
-ccs-trans profile list
-ccs-trans profile show <name>
-ccs-trans profile create <name>
-ccs-trans profile remove <name>
-ccs-trans profile use <name>
-ccs-trans profile set <name> <key> <value>
-ccs-trans profile unset <name> <key>
-```
-
-`profile set` and `profile unset` change one canonical field per invocation.
-Keys use the long option name without `--`. `run --profile <name>` selects a
-profile for one run, while explicit run options override profile values without
-writing them back.
-
-In the current release, a persistent profile represents one complete runtime
-configuration override. The planned generalized architecture changes Profile
-to mean one simultaneously enabled proxy chain. That schema and CLI transition
-is documented in [docs/Reconstruction.md](docs/Reconstruction.md); it is not
-part of the current executable behavior.
-
-The persistent root is:
+## Configuration Root
 
 ```text
 Windows: %USERPROFILE%/.ccs-trans/
@@ -110,89 +30,179 @@ logs/ccs-trans.log
 state/
 ```
 
-The account home is resolved through the operating-system account API. A
-relative `log-path` stays under `.ccs-trans`; use an absolute path to place the
-log elsewhere. `config.json` uses schema `ccs-trans.config/v1`, typed values,
-and atomic replacement. Credentials, cookies, and Authorization values are not
-valid profile fields and are never persisted.
+Windows resolves the root from `USERPROFILE`. Relative log paths stay under
+the application root; an absolute path can place the log elsewhere. The
+configuration schema is `ccs-trans.config/v2`. Old schemas and unknown fields
+are rejected rather than migrated or silently ignored.
 
-## Configuration
+Profiles never persist API keys, Authorization headers, cookies, or proxy
+credentials. Credentials remain request headers supplied by the client.
 
-Endpoint options:
+## First Profile
 
-```text
---responses-listen-host <host>
---responses-listen-port <port>
---responses-upstream-url <url>
---responses-local-path <path>
---responses-upstream-path <path>
---responses-usage-local-path <path>
---responses-usage-upstream-path <path>
---chat-listen-host <host>
---chat-listen-port <port>
---chat-upstream-url <url>
---chat-local-path <path>
---chat-upstream-path <path>
---chat-usage-local-path <path>
---chat-usage-upstream-path <path>
-```
-
-Runtime options:
+This example exposes a findcg Responses route and removes `image_gen` before
+forwarding:
 
 ```text
---profile <name>
---log-path <path>
---log-level <trace|debug|info|warn|error>
---log-body <true|false>
---redact-sensitive <true|false>
---body-log-limit <bytes>
---log-queue-capacity <bytes>
---log-flush-interval-ms <ms>
---metrics-interval-ms <ms>
---resolve-timeout-ms <ms>
---connect-timeout-ms <ms>
---send-timeout-ms <ms>
---response-header-timeout-ms <ms>
---stream-idle-timeout-ms <ms>
---total-timeout-ms <ms>
---max-request-body-size <bytes>
---max-response-body-size <bytes>
---worker-threads <count>
---max-connections <count>
+ccs-trans profile create findcg
+ccs-trans profile set findcg protocol responses
+ccs-trans profile set findcg local.request-path /findcg/v1/responses
+ccs-trans profile set findcg local.usage-path /findcg/v1/usage
+ccs-trans profile set findcg upstream.base-url https://www.findcg.com
+ccs-trans profile set findcg upstream.request-path /v1/responses
+ccs-trans profile set findcg upstream.usage-path /v1/usage
+
+ccs-trans rule add findcg remove-image-gen remove_tool
+ccs-trans rule set findcg remove-image-gen tool image_gen
+ccs-trans rule enable findcg remove-image-gen
+ccs-trans profile enable findcg
+ccs-trans run
 ```
 
-Run `ccs-trans --help` for defaults and command syntax.
+If cc-switch appends `/v1/responses` and `/v1/usage`, set its Provider endpoint
+to:
+
+```text
+http://127.0.0.1:15723/findcg
+```
+
+Paths are exact after canonicalization; the profile prefix is configuration,
+not a hard-coded routing convention.
+
+## Multiple Protocols
+
+All enabled Profiles run simultaneously on the same listener. Typical routes
+can be configured as:
+
+```text
+findcg      responses  /findcg/v1/responses
+openrouter  chat       /openrouter/v1/chat/completions
+anthropic   messages   /anthropic/v1/messages
+```
+
+Each optional Usage route belongs to the same Profile and upstream as its main
+request route. A Usage request never executes the request Rule pipeline.
+
+`ccs-trans run --profile <name>` is a one-run diagnostic filter. It compiles
+only that complete Profile, including a disabled Profile, without changing the
+saved enabled state. Without the option, every enabled Profile is loaded.
+
+## CLI
+
+Application settings:
+
+```text
+ccs-trans config show
+ccs-trans config set <key> <value>
+ccs-trans config unset <key>
+```
+
+Profiles:
+
+```text
+ccs-trans profile list
+ccs-trans profile show <name>
+ccs-trans profile create <name>
+ccs-trans profile remove <name>
+ccs-trans profile enable <name>
+ccs-trans profile disable <name>
+ccs-trans profile set <name> <key> <value>
+ccs-trans profile unset <name> <key>
+```
+
+Rules:
+
+```text
+ccs-trans rule list <profile>
+ccs-trans rule show <profile> <id>
+ccs-trans rule add <profile> <id> <type>
+ccs-trans rule remove <profile> <id>
+ccs-trans rule enable <profile> <id>
+ccs-trans rule disable <profile> <id>
+ccs-trans rule set <profile> <id> <key> <json-or-string>
+ccs-trans rule unset <profile> <id> <key>
+ccs-trans rule move <profile> <id> <1-based-position>
+```
+
+Run-only overrides are deliberately limited:
+
+```text
+ccs-trans run [--profile <name>] [--log-level <level>] [--log-path <path>]
+```
+
+Every command changes one field or performs one action. There are no short,
+legacy, or synonymous options. Run `ccs-trans --help` for the canonical key
+list.
+
+## Rules
+
+The initial registry provides:
+
+| Rule | Scope | Required options |
+| --- | --- | --- |
+| `set_field` | Generic RFC 6901 JSON Pointer | `path`, `value` |
+| `remove_field` | Generic RFC 6901 JSON Pointer | `path` |
+| `remove_tool` | Protocol-specific tool layout | `tool` |
+
+Generic rules require existing targets and never create intermediate objects.
+`set_field` may replace the document root with an empty pointer;
+`remove_field` cannot remove the root. Array indexes are strict decimal indexes
+without `-`, leading zeros, or out-of-range fallback.
+
+Responses `remove_tool` checks root tool `name` or `namespace`; Chat checks
+`function.name`; Messages checks root `name`. Missing or non-array `tools`
+remains transparent. A failed rule discards the candidate DOM, so no partial
+rewrite can reach the upstream.
+
+An empty pipeline does not parse JSON. A non-empty pipeline parses once, shares
+one DOM across ordered rules, and serializes at most once only when modified.
+Unmodified requests retain their exact original bytes.
 
 ## Runtime Behavior
 
-- Startup is atomic: both configured listeners bind before request workers run.
-- Immutable configuration snapshots give each request a stable generation.
-- Hot-reloadable fields switch new requests without changing in-flight work.
-- Topology changes use a graceful restart and roll back if restart fails.
-- Client disconnects cancel the corresponding upstream WinHTTP request.
-- DNS, connect, send, response-header, SSE-idle, and total timeouts are separate.
-- Request bodies and buffered non-streaming responses have independent limits.
-- SSE chunks are forwarded and logged incrementally; the full stream is not
-  retained in memory for logging.
+- `method + canonical local path` selects one immutable Route entry.
+- Unknown paths return 404; known paths with a wrong method return 405.
+- Query strings are preserved and appended to the configured upstream path.
+- Client disconnects cancel only the corresponding upstream request.
+- Resolve, connect, send, response-header, SSE-idle, and total timeouts are
+  independent.
+- Request bodies and buffered responses have independent size limits.
+- SSE chunks are forwarded and logged incrementally; logs never aggregate the
+  full stream body.
+- The shared worker pool prewarms 8 threads and grows to the configured maximum,
+  which defaults to 32.
 
-The worker pool prewarms 8 threads and grows on demand up to the configured
-`worker-threads` maximum, which defaults to 32. Aggregate 8-16 SSE connections
-are the normal desktop load; 50 connections are a bounded stress profile.
+Aggregate 8-16 SSE connections are the normal desktop load. Fifty connections
+are a bounded stress profile, not the normal operating target.
 
-## Logging And Security
+## Windows Proxy
 
-Normal events are written in batches with a default 100 ms window. Error events
-flush immediately. The queue is bounded and applies backpressure instead of
-silently dropping records. Metrics distinguish queue wait, batch wait, file
-write, flush, record age, backpressure, and writer failure.
+The WinHTTP transport follows current-user manual proxy, bypass, and explicit
+PAC settings. A registry watcher publishes a new session for new requests when
+settings change; in-flight requests retain their existing session.
 
-Usage requests omit headers, query strings, and bodies from the ordinary
-request-chain log. Their minimal completion event identifies the endpoint,
-task, upstream target, forwarding result, HTTP status, and duration.
+Once Windows selects a proxy, connection or forwarding failure does not retry
+directly. Proxy authentication is unsupported and returns a classified error;
+ccs-trans never prompts for or stores a proxy password. WPAD-only auto-detection
+is intentionally ignored, while an explicit PAC URL is honored.
 
-With `--redact-sensitive false` and `--log-body true`, logs can contain live
-credentials and complete model context. Treat logs as sensitive files. Header
-redaction does not sanitize secrets embedded inside JSON bodies.
+The future macOS transport will link system libcurl and use only proxy
+environment inherited from the launching terminal. It will not activate or
+read macOS system proxy settings.
+
+## Logging
+
+Logs are JSON Lines. Normal events batch for about 100 ms by default; errors
+flush immediately. The queue is bounded and applies backpressure rather than
+silently dropping records. Request, upstream, response, SSE chunk, Usage, and
+Rule events can be joined by `request_id`, Profile, protocol, and route kind.
+
+Usage logs omit request headers, query, and body. Rule logs contain bounded
+paths/counts, never configured replacement values or a second full body.
+
+`logging.redact-sensitive=true` masks known sensitive headers. It does not
+sanitize secrets embedded in JSON bodies. Enabling body logging can record
+complete model context, so log files must be treated as sensitive data.
 
 ## Verify
 
@@ -201,8 +211,8 @@ ctest --test-dir build --output-on-failure
 python tests/integration/run_integration.py build/ccs-trans.exe
 ```
 
-The Windows system-proxy integration changes the current-user proxy briefly and
-is therefore opt-in. It backs up and restores every touched registry value:
+The opt-in Windows proxy matrix temporarily changes and then restores the
+current-user proxy:
 
 ```text
 python tests/integration/run_windows_system_proxy_integration.py \
@@ -210,55 +220,28 @@ python tests/integration/run_windows_system_proxy_integration.py \
   --confirm-system-proxy-mutation
 ```
 
-Synthetic load and transform benchmarks are documented in
-[tests/benchmark/README.md](tests/benchmark/README.md). Generated results remain
-under the ignored `benchmark-results/` directory.
+Load and rule-pipeline benchmarks are documented in
+[tests/benchmark/README.md](tests/benchmark/README.md). Generated results stay
+under ignored `benchmark-results/`.
 
 ## Repository
 
 ```text
 assets/icons/          Canonical cross-platform icon source
 docs/                  Design and development documentation
-src/config/            CLI, persistent profiles, and configuration snapshots
-src/core/              Service lifecycle, routing types, metrics, and transforms
+src/config/            v2 CLI, document store, validation, runtime compiler
+src/core/              Service lifecycle, cancellation, and global metrics
 src/hosts/             Executable entry points
 src/logging/           Structured asynchronous logging
-src/server/            Local listeners and request orchestration
+src/protocols/         Responses, Chat, and Messages handlers/registry
+src/routing/           Immutable Profiles and exact RouteTable
+src/rules/             Rule factories, registry, and compiled pipelines
+src/server/            Single listener, worker queue, request orchestration
 src/transport/         Header filtering and WinHTTP forwarding
-src/transforms/        Scoped request transformations
-tests/unit/            Pure logic and configuration tests
-tests/integration/     End-to-end and reload-generation tests
-tests/benchmark/       Synthetic load and transform benchmarks
-third_party/nlohmann/  Pinned nlohmann/json single-header dependency
+tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-## Development Direction
-
-The next work replaces fixed protocol endpoint groups with one application
-listener and multiple exact-path proxy Profiles. Each Profile will select a
-Responses, Chat, or Messages protocol handler, its own upstream, and an ordered
-request Rule pipeline. Application-level worker, timeout, logging, and resource
-settings remain shared. The current synchronous worker, WinHTTP transport,
-logging, cancellation, and snapshot-generation behavior stay in place while
-the business model is changed.
-
-After that refactor, the planned hosts are a Windows tray executable with
-double-click background startup and a real current-user startup toggle, then a
-macOS menu bar application with login-item control. The canonical 512 px PNG is
-`assets/icons/ccs-trans-512.png`; Windows will derive a multi-resolution ICO
-with ImageMagick, while the macOS menu bar will use PNG assets.
-
-The Windows transport follows current-user manual proxy, bypass, and explicit
-PAC settings with WinHTTP. A registry watcher publishes a new session for new
-requests when settings change; in-flight requests retain their existing
-session. Proxy connection failure does not retry directly, and proxy
-authentication is rejected rather than prompting for or storing credentials.
-WPAD-only auto-detection is intentionally disabled to avoid unsolicited network
-discovery and unstable latency when no proxy is configured. The macOS transport
-will link the system libcurl and use only proxy environment inherited from the
-launching terminal; it will not read or modify macOS system proxy settings.
-
-See [docs/Design.md](docs/Design.md),
-[docs/Reconstruction.md](docs/Reconstruction.md),
-[docs/DevelopmentPlan.md](docs/DevelopmentPlan.md), and
-[docs/ProjectStructure.md](docs/ProjectStructure.md).
+The next implementation work closes reload-generation observability and removes
+the now-unused v1/task/transform sources. Windows tray support follows that
+cleanup; macOS transport, menu bar hosting, login item support, and packaging
+remain planned. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

@@ -1,6 +1,8 @@
 #include "config/app_paths.hpp"
 #include "config/config.hpp"
+#include "config/config_document.hpp"
 #include "config/profile_store.hpp"
+#include "config/runtime_compiler.hpp"
 #include "core/app_service.hpp"
 #include "core/cancellation.hpp"
 #include "core/task_router.hpp"
@@ -48,6 +50,34 @@ ccs::ParseResult parse(std::initializer_list<const char*> args) {
         pointers.push_back(value.data());
     }
     return ccs::parse_args(static_cast<int>(pointers.size()), pointers.data());
+}
+
+ccs::ConfigDocument runtime_document(
+    std::uint16_t port,
+    const std::filesystem::path& log_path,
+    std::string upstream = "https://example.com",
+    std::string host = "127.0.0.1") {
+    auto document = ccs::make_default_config_document();
+    document.application.listener.host = std::move(host);
+    document.application.listener.port = port;
+    document.application.logging.path = log_path.generic_string();
+    ccs::ProfileDefinition profile;
+    profile.enabled = true;
+    profile.protocol = ccs::ProtocolId{"responses"};
+    profile.local.request_path = "/v1/responses";
+    profile.upstream.base_url = std::move(upstream);
+    profile.upstream.request_path = "/v1/responses";
+    document.profiles.emplace("primary", std::move(profile));
+    return document;
+}
+
+ccs::RuntimeSnapshotPtr compile_runtime(const ccs::ConfigDocument& document) {
+    ccs::RuntimeCompiler compiler(
+        std::filesystem::temp_directory_path() / "ccs-trans-core-runtime");
+    ccs::RuntimeSnapshotPtr snapshot;
+    std::string error;
+    require(compiler.compile(document, {}, snapshot, error), error);
+    return snapshot;
 }
 
 void test_config_resolution() {
@@ -410,9 +440,9 @@ void test_logger_flush_contract() {
     std::filesystem::remove(path, ec);
 
     {
-        ccs::AppConfig config;
-        config.log_path = path;
-        config.log_flush_interval_ms = 50;
+        ccs::LoggerConfig config;
+        config.path = path;
+        config.flush_interval_ms = 50;
         auto metrics = std::make_shared<ccs::RuntimeMetrics>();
         ccs::Logger logger(config, metrics);
         std::string error;
@@ -448,9 +478,9 @@ void test_logger_flush_contract() {
 }
 
 void test_logger_backpressure_contract() {
-    ccs::AppConfig config;
-    config.log_flush_interval_ms = 1;
-    config.log_queue_capacity = 256;
+    ccs::LoggerConfig config;
+    config.flush_interval_ms = 1;
+    config.queue_capacity = 256;
     auto metrics = std::make_shared<ccs::RuntimeMetrics>();
     auto sink_state = std::make_shared<ControlledSinkState>();
     sink_state->block_first_flush = true;
@@ -497,8 +527,8 @@ void test_logger_backpressure_contract() {
 }
 
 void test_logger_failure_contract() {
-    ccs::AppConfig config;
-    config.log_flush_interval_ms = 1;
+    ccs::LoggerConfig config;
+    config.flush_interval_ms = 1;
     auto metrics = std::make_shared<ccs::RuntimeMetrics>();
     auto sink_state = std::make_shared<ControlledSinkState>();
     sink_state->fail_flush = true;
@@ -542,8 +572,8 @@ void test_logger_open_failure_contract() {
 
     auto metrics = std::make_shared<ccs::RuntimeMetrics>();
     {
-        ccs::AppConfig config;
-        config.log_path = parent_file / "ccs-trans.log";
+        ccs::LoggerConfig config;
+        config.path = parent_file / "ccs-trans.log";
         ccs::Logger logger(config, metrics);
         std::string error;
         require(!logger.open(error), "invalid log directory is rejected");
@@ -739,9 +769,9 @@ void test_stage11_config_fixture() {
 
 void test_runtime_metrics() {
     ccs::RuntimeMetrics metrics;
-    metrics.connection_accepted(ccs::EndpointGroupKind::Responses, 1, 1);
-    metrics.connection_accepted(ccs::EndpointGroupKind::Chat, 2, 2);
-    metrics.worker_started(ccs::EndpointGroupKind::Responses, 1, 25);
+    metrics.connection_accepted(1, 1);
+    metrics.connection_accepted(2, 2);
+    metrics.worker_started(1, 25);
     metrics.request_started();
     metrics.stream_started();
     metrics.stream_chunk_forwarded(512);
@@ -751,8 +781,8 @@ void test_runtime_metrics() {
     metrics.upstream_timeout(ccs::UpstreamTimeoutPhase::StreamIdle);
     metrics.upstream_timeout(ccs::UpstreamTimeoutPhase::Total);
     metrics.request_completed();
-    metrics.worker_finished(ccs::EndpointGroupKind::Responses, 1);
-    metrics.connection_rejected(ccs::EndpointGroupKind::Chat);
+    metrics.worker_finished(1);
+    metrics.connection_rejected();
 
     const auto snapshot = metrics.snapshot();
     require(snapshot.connections_accepted == 2, "accepted connection metric");
@@ -761,11 +791,8 @@ void test_runtime_metrics() {
     require(snapshot.peak_queued_connections == 2, "queue high water metric");
     require(snapshot.peak_active_workers == 1, "worker high water metric");
     require(snapshot.connection_queue_wait_time_us == 25, "global connection queue wait metric");
-    require(snapshot.responses_endpoint.connections_accepted == 1, "Responses accepted metric");
-    require(snapshot.responses_endpoint.connections_completed == 1, "Responses completed metric");
-    require(snapshot.responses_endpoint.max_connection_queue_wait_us == 25, "Responses queue wait metric");
-    require(snapshot.chat_endpoint.connections_accepted == 1, "Chat accepted metric");
-    require(snapshot.chat_endpoint.connections_rejected == 1, "Chat rejected metric");
+    require(snapshot.connections_completed == 1, "completed connection metric");
+    require(snapshot.max_connection_queue_wait_us == 25, "maximum queue wait metric");
     require(snapshot.stream_chunks_forwarded == 1, "stream chunk metric");
     require(snapshot.stream_bytes_forwarded == 512, "stream byte metric");
     require(snapshot.upstream_requests_failed == 1, "upstream failure metric");
@@ -779,20 +806,18 @@ void test_app_service_startup_failure() {
     const auto log_path = std::filesystem::temp_directory_path()
         / ("ccs-trans-service-startup-" + std::to_string(nonce) + ".log");
     {
-        ccs::AppConfig config;
-        config.responses_endpoint.upstream_url = "https://example.com";
-        config.responses_endpoint.listen_host = "bad host";
-        config.log_path = log_path;
-        ccs::AppService service(config);
+        const auto snapshot = compile_runtime(runtime_document(
+            15723, log_path, "https://example.com", "256.256.256.256"));
+        ccs::AppService service(snapshot);
         std::string error;
         require(!service.start(error), "service startup failure is synchronous");
-        require(error.find("failed to resolve responses listen address") != std::string::npos,
+        require(error.find("failed to resolve listen address") != std::string::npos,
             "service startup returns the listener error");
         require(service.status() == ccs::ServiceState::Stopped, "failed service remains stopped");
         require(service.wait() != 0, "failed service keeps a non-zero exit code");
         std::string retry_error;
         require(!service.start(retry_error), "failed service can retry startup after joining its thread");
-        require(retry_error.find("failed to resolve responses listen address") != std::string::npos,
+        require(retry_error.find("failed to resolve listen address") != std::string::npos,
             "retried startup returns the listener error");
         require(service.wait() != 0, "retried startup failure remains non-zero");
     }
@@ -802,25 +827,23 @@ void test_app_service_startup_failure() {
 
 void test_server_reload_classification() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    ccs::AppConfig config;
-    config.responses_endpoint.upstream_url = "https://responses-a.example.com";
-    config.chat_endpoint.upstream_url = "https://chat-a.example.com";
-    config.log_path = std::filesystem::temp_directory_path()
+    const auto log_path = std::filesystem::temp_directory_path()
         / ("ccs-trans-server-reload-" + std::to_string(nonce) + ".log");
-    ccs::Server server(ccs::make_config_snapshot(config));
+    auto document = runtime_document(15723, log_path, "https://responses-a.example.com");
+    ccs::Server server(compile_runtime(document));
 
     std::string error;
-    auto hot_config = config;
-    hot_config.responses_endpoint.upstream_url = "https://responses-b.example.com";
+    auto hot_document = document;
+    hot_document.profiles.at("primary").upstream.base_url = "https://responses-b.example.com";
     require(
-        server.reload(ccs::make_config_snapshot(hot_config), error) == ccs::ReloadResult::Applied,
+        server.reload(compile_runtime(hot_document), error) == ccs::ReloadResult::Applied,
         "upstream-only reload is applied in place: " + error);
 
-    auto restart_config = hot_config;
-    ++restart_config.worker_threads;
+    auto restart_document = hot_document;
+    ++restart_document.application.runtime.worker_threads;
     error.clear();
     require(
-        server.reload(ccs::make_config_snapshot(restart_config), error)
+        server.reload(compile_runtime(restart_document), error)
             == ccs::ReloadResult::RestartRequired,
         "worker topology reload requires restart");
 
@@ -830,44 +853,41 @@ void test_server_reload_classification() {
         "null reload snapshot is rejected");
 
     std::error_code ec;
-    std::filesystem::remove(config.log_path, ec);
+    std::filesystem::remove(log_path, ec);
 }
 
 void test_app_service_reload_and_rollback() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    ccs::AppConfig config;
-    config.responses_endpoint.upstream_url = "https://responses-a.example.com";
-    config.chat_endpoint.upstream_url = "https://chat-a.example.com";
     const auto responses_port = static_cast<std::uint16_t>(30000 + nonce % 10000);
-    config.responses_endpoint.listen_port = responses_port;
-    config.chat_endpoint.listen_port = static_cast<std::uint16_t>(responses_port + 1);
-    config.log_path = std::filesystem::temp_directory_path()
+    const auto log_path = std::filesystem::temp_directory_path()
         / ("ccs-trans-service-reload-" + std::to_string(nonce) + ".log");
+    auto document = runtime_document(
+        responses_port, log_path, "https://responses-a.example.com");
 
-    ccs::AppService service(config);
+    ccs::AppService service(compile_runtime(document));
     std::string error;
     require(service.start(error), "reload test service starts: " + error);
 
-    auto hot_config = config;
-    hot_config.responses_endpoint.upstream_url = "https://responses-b.example.com";
+    auto hot_document = document;
+    hot_document.profiles.at("primary").upstream.base_url = "https://responses-b.example.com";
     require(
-        service.reload(ccs::make_config_snapshot(hot_config), error),
+        service.reload(compile_runtime(hot_document), error),
         "service applies hot reload: " + error);
     require(service.status() == ccs::ServiceState::Running, "service remains running after hot reload");
 
-    auto restart_config = hot_config;
-    ++restart_config.worker_threads;
+    auto restart_document = hot_document;
+    ++restart_document.application.runtime.worker_threads;
     error.clear();
     require(
-        service.reload(ccs::make_config_snapshot(restart_config), error),
+        service.reload(compile_runtime(restart_document), error),
         "service performs graceful restart reload: " + error);
     require(service.status() == ccs::ServiceState::Running, "service runs after restart reload");
 
-    auto invalid_topology = restart_config;
-    invalid_topology.responses_endpoint.listen_host = "bad host";
+    auto invalid_topology = restart_document;
+    invalid_topology.application.listener.host = "256.256.256.256";
     error.clear();
     require(
-        !service.reload(ccs::make_config_snapshot(invalid_topology), error),
+        !service.reload(compile_runtime(invalid_topology), error),
         "failed restart reload reports failure");
     require(
         error.find("previous configuration was restored") != std::string::npos,
@@ -881,7 +901,64 @@ void test_app_service_reload_and_rollback() {
     waiter.join();
     require(wait_result == 0, "reloaded service stops cleanly while another thread waits");
     std::error_code ec;
-    std::filesystem::remove(config.log_path, ec);
+    std::filesystem::remove(log_path, ec);
+}
+
+void test_server_v2_route_and_protocol_errors() {
+    const auto log_path = std::filesystem::temp_directory_path()
+        / "ccs-trans-v2-route-errors.log";
+    auto document = runtime_document(15723, log_path);
+    ccs::RuleDefinition responses_rule;
+    responses_rule.id.value = "remove-image";
+    responses_rule.enabled = true;
+    responses_rule.type = "remove_tool";
+    responses_rule.options["tool"] = "image_gen";
+    document.profiles.at("primary").rules.push_back(responses_rule);
+
+    ccs::ProfileDefinition messages;
+    messages.enabled = true;
+    messages.protocol = ccs::ProtocolId{"messages"};
+    messages.local.request_path = "/v1/messages";
+    messages.upstream.base_url = "https://messages.example.com";
+    messages.upstream.request_path = "/v1/messages";
+    auto messages_rule = responses_rule;
+    messages_rule.id.value = "remove-messages-image";
+    messages.rules.push_back(std::move(messages_rule));
+    document.profiles.emplace("messages", std::move(messages));
+
+    ccs::Server server(compile_runtime(document));
+    const auto send = [&](const std::string& method, const std::string& path, const std::string& body) {
+        return server.process_raw_request(
+            method + " " + path + " HTTP/1.1\r\nContent-Type: application/json\r\n"
+                "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body,
+            "127.0.0.1");
+    };
+    const auto response_body = [](const std::string& response) {
+        const auto separator = response.find("\r\n\r\n");
+        require(separator != std::string::npos, "local response has an HTTP header");
+        return nlohmann::json::parse(response.substr(separator + 4));
+    };
+
+    const auto invalid_json = send("POST", "/v1/responses", "not json");
+    require(invalid_json.find("HTTP/1.1 400") == 0, "Responses rule parse error returns 400");
+    require(response_body(invalid_json)["error"]["type"] == "invalid_request_error",
+        "Responses rule error uses the OpenAI envelope");
+
+    const auto messages_root = send("POST", "/v1/messages", "[]");
+    require(messages_root.find("HTTP/1.1 400") == 0, "Messages rule shape error returns 400");
+    const auto messages_error = response_body(messages_root);
+    require(messages_error["type"] == "error"
+            && messages_error["error"]["type"] == "invalid_request_error",
+        "Messages rule error uses the Anthropic envelope");
+
+    const auto wrong_method = send("GET", "/v1/responses", "");
+    require(wrong_method.find("HTTP/1.1 405") == 0
+            && wrong_method.find("Allow: POST") != std::string::npos,
+        "known v2 path returns 405 with Allow");
+    require(send("POST", "/unknown", "{}").find("HTTP/1.1 404") == 0,
+        "unknown v2 path returns 404");
+    require(send("POST", "/v1//responses", "{}").find("HTTP/1.1 400") == 0,
+        "non-canonical request path returns 400");
 }
 
 void test_cancellation() {
@@ -934,6 +1011,7 @@ int main() {
         {"app service startup failure", test_app_service_startup_failure},
         {"server reload classification", test_server_reload_classification},
         {"app service reload and rollback", test_app_service_reload_and_rollback},
+        {"server v2 route and protocol errors", test_server_v2_route_and_protocol_errors},
         {"cancellation", test_cancellation},
     };
 

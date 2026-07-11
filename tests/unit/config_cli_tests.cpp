@@ -207,6 +207,12 @@ void test_management_workflow() {
     output = execute(store, {"rule", "add", "findcg", "remove-image", "remove_tool"});
     shown = nlohmann::json::parse(output);
     require(shown["enabled"] == false && shown["type"] == "remove_tool", "rule add makes disabled rule");
+    const auto before_invalid_rule_enable = read_file(paths.config_file);
+    require(execute_fails(store, {"rule", "enable", "findcg", "remove-image"}, error)
+            && error.find("missing required option: tool") != std::string::npos,
+        "rule enable performs factory option validation");
+    require(read_file(paths.config_file) == before_invalid_rule_enable,
+        "failed semantic rule enable leaves bytes unchanged");
     output = execute(store, {"rule", "set", "findcg", "remove-image", "tool", "image_gen"});
     require(nlohmann::json::parse(output)["tool"] == "image_gen", "bare rule value stored as string");
     output = execute(store, {"rule", "enable", "findcg", "remove-image"});

@@ -2,8 +2,8 @@
 
 ## 计划范围
 
-当前 `0.4.0` Windows 实现是重构基线。本文只保留尚未完成的工作，不再记录历史
-版本、旧 CLI 迁移和已完成阶段流水。
+当前 `0.4.0` Windows 实现是重构基线。本文保留阶段 11 的执行依据、当前完成状态和
+尚未完成的工作，不再维护旧版本迁移流水。
 
 后续顺序固定为：
 
@@ -248,9 +248,9 @@ show 输出与磁盘 JSON 一致。
 disable/move/unset/remove，并逐项比较 show 与磁盘 typed JSON；错误参数、不完整 enable、
 跨字段冲突和 enabled profile 必填字段 unset 均保持文件字节不变。
 
-生产 `cli_main` 的接线明确延后到 11.7：当前 server 还不能消费 v2，提前让管理命令写
-v2 会制造“写 v2、run 读 v1”的不可启动中间态。parser/executor 不是 legacy fallback；
-切换提交会用它替换旧 CLI，届时同一可执行文件只接受 v2。
+生产 `cli_main` 的接线在 11.3 提交中明确延后到 11.7：当时 server 尚不能消费 v2，
+提前让管理命令写 v2 会制造“写 v2、run 读 v1”的不可启动中间态。parser/executor
+不是 legacy fallback；11.7 已用它替换旧 CLI，同一可执行文件现在只接受 v2。
 
 ### 11.4 编译 RuntimeSnapshot 与路由表
 
@@ -294,8 +294,8 @@ route kind、upstream 与仅含 enabled rules 的 pipeline 定义副本。`Route
 独立 CTest 覆盖 Responses/Chat/Messages 与各自 Usage、404/405/invalid path、尾斜杠、
 percent canonicalization、同 path 不同 method、跨 profile collision、选中 disabled
 草稿、绝对/相对日志路径、失败不替换 snapshot、源文档修改后的所有权和并发只读
-lookup。生产 server 未切换；主请求与 Usage method 已由 11.5 protocol descriptor
-接管，不再是 compiler 常量。
+lookup。在 11.4 提交中生产 server 尚未切换；主请求与 Usage method 已由 11.5
+protocol descriptor 接管，不再是 compiler 常量。
 
 ### 11.5 建立 ProtocolRegistry
 
@@ -336,8 +336,8 @@ JSON 生成并正确转义，upstream response 不参与重包。
 
 独立 CTest 注册了不支持 Usage 的 synthetic `echo`/`PUT` protocol，并在不修改 router、
 worker 或 transport 的情况下得到可路由 snapshot；同时验证 registry copy 不受后续外部
-注册影响、Messages envelope、capability 与 specialized rule 适用性。生产 server 仍未
-接线，因此本工作包不声称 Messages 网络转发已经交付。
+注册影响、Messages envelope、capability 与 specialized rule 适用性。在 11.5 提交中
+生产 server 尚未接线，因此该工作包本身没有声称 Messages 网络转发已经交付。
 
 ### 11.6 建立 RuleRegistry 与编译 Pipeline
 
@@ -411,8 +411,8 @@ bytes。`remove_tool` 在 candidate DOM 的 tools array 上稳定原地删除并
 reference，不为日志保留 body 或 tool value。benchmark 分别输出 total、parse、rules 和
 serialize 时间，后续 11.7/11.9 可直接用来定位回归。
 
-当前生产 `Server` 仍使用旧 findcg transform；将其删除并让真实请求执行 compiled
-pipeline 属于 11.7 的原子 host 切换，11.6 不引入中间兼容分支。
+在 11.6 提交中生产 `Server` 仍使用旧 findcg transform；11.7 已通过原子 host 切换
+删除该生产特判，并让真实请求执行 compiled pipeline，没有引入中间兼容分支。
 
 ### 11.7 Server 切换为单 Listener
 
@@ -445,6 +445,26 @@ Review 重点：启动原子性、exclusive bind、overload、method error、que
 
 完成标准：一个端口同时完成多 profile Responses、Chat、Messages 与各自 Usage；
 旧 endpoint enum 和双 listener 配置不再参与生产路径。
+
+阶段 11.7 已完成。生产 `cli_main` 只使用 v2 ConfigStore/RuntimeCompiler；Windows 配置根
+按 `%USERPROFILE%/.ccs-trans/` 解析。Server 只创建一个 exclusive listener，ClientJob、
+admission、FIFO queue、worker 和 RuntimeMetrics 不再携带 endpoint enum。每个请求从所持
+generation 的 RouteTable 做一次 method/path lookup；Request Route 执行 compiled pipeline，
+Usage Route 直接使用自己的 upstream。
+
+生产日志标签已切为 `profile_id`、`protocol`、`route_kind` 和有界 rule trace；固定
+Responses/Chat metrics 已删除，只保留全局资源指标。Responses/Chat 使用 OpenAI 本地
+error envelope，Messages 使用 Anthropic envelope；上游 response 不重包。旧 v1 parser、
+task/router 和 findcg transform 源文件仍为 11.9 清理与旧单测保留，但 `rg` 已确认它们
+不再被 host、Server、AppService、Logger 或 RuntimeMetrics 引用。
+
+Release 端到端测试在同一端口覆盖 Responses、Chat、Messages、三组 Usage、findcg
+`remove_tool`、透明 body bytes、SSE、取消、timeout、body limit、overload 与日志链。
+Windows system-proxy A/B、PAC、bypass、dead proxy、407 和失败不 direct 专项矩阵通过。
+
+相同机器当前单次回归结果：`desktop-8` 新增 TTFB p50 为 `8.939 ms`，`mixed-16` 为
+`7.285 ms`，均零失败、无 logger backpressure，低于阶段 11 基线 `10.619 ms` /
+`9.474 ms`。原始结果仍只保存在 ignored `benchmark-results/`。
 
 ### 11.8 Reload、日志与指标收口
 

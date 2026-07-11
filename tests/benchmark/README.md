@@ -73,19 +73,19 @@ Interpret changes using repeated Release runs from the same machine and build
 settings. Correctness, bounded resources, and the median of comparable runs take
 priority over one isolated latency percentile.
 
-## Refactor Baseline
+## Single-Listener Baseline
 
-The current harness is the comparison baseline for the planned single-listener,
-multi-Profile refactor. Before the server cutover, preserve a result set from
-the current commit and executable hash. After cutover, update request paths and
-profile labels without changing stream counts, mock delays, logging mode, or
-timeout values.
+The harness drives the production single-listener, multi-Profile runtime. Keep
+stream counts, mock delays, logging mode, and timeout values unchanged when
+comparing a new build with the frozen pre-cutover baseline.
 
 The active stage 11 baseline uses commit
 `c5d9f212e1910d1d92ef68f70b75fd47a824467a` and executable SHA-256
 `88E4A880F33C2303584B1D44B26E25627E64E93A17675F0244C4298545F21821`.
 Its three-run medians and acceptance interpretation are recorded in
-`docs/DevelopmentPlan.md`; raw runs remain under ignored `benchmark-results/`.
+`docs/DevelopmentPlan.md`. Post-cutover runs use the same workload through the
+configured Profile paths; raw results remain under ignored
+`benchmark-results/`.
 
 Rule-pipeline work must also compare empty, 1, 8, and 32-rule pipelines. Empty
 pipelines must avoid JSON parsing; non-empty pipelines must parse at most once

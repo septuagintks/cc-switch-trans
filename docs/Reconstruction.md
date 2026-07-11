@@ -359,7 +359,7 @@ pipeline 才进入 JSON 解析路径。
 JSON request body 和 `remove_tool` 专用 rule capability。Responses/Chat 使用 OpenAI
 本地错误 envelope，Messages 使用 Anthropic envelope；这只应用于命中 profile 后由
 本地产生的协议错误，上游 status/header/body 不重包。Messages 在 11.5 不执行任何
-专用 rewrite，透明传输由 11.7 server 接线验证。
+专用 rewrite；阶段 11.7 已把三个 handler 与透明普通响应/SSE/Usage 接入生产 Server。
 
 Registry 对未知/重复 protocol、非法 method、Usage capability 和已知 specialized rule
 不适用组合在 snapshot 发布前失败。未知 generic rule 不由 protocol 层猜测，交给
@@ -449,7 +449,8 @@ rewrite_thinking
 `remove_tool` 的三个首批实现已编译进 registry：Responses 检查 root tool 的 `name`
 或 `namespace`，Chat 检查 `function.name`，Messages 检查 root `name`。root 必须是
 object；`tools` 缺失或不是 array 时保持透明；匹配项按原顺序稳定删除，全部删除后保留
-空 array。生产请求切换到该 pipeline、移除旧 host 特判仍由 11.7 完成。
+空 array。阶段 11.7 已让生产 Request Route 执行该 pipeline，并移除 Server 中的
+findcg host/transform 名称特判。
 
 ### Rule 日志
 
@@ -567,8 +568,9 @@ CLI 细节固定为：
   字段拼写；
 - 修改先作用于文档副本，完整校验和 `ConfigStore` 原子保存成功后才发布结果。
 
-`config_cli` parser/executor 在 11.3 独立完成，但生产 host 不提前接线。host 与 v2
-runtime 在单 listener 切换时一起启用，避免管理命令写 v2 而旧 `run` 只读 v1。
+`config_cli` parser/executor 在 11.3 独立完成，并在 11.7 与 v2 runtime、单 listener
+一起进入生产 host。CLI 保存前会对所有 enabled Profile/Rule 执行 ProtocolRegistry 与
+RuleRegistry 语义校验；disabled 未知 Rule 仍可作为未来草稿保存。
 
 ## Schema 切换
 

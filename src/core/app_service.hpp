@@ -1,6 +1,6 @@
 #pragma once
 
-#include "config/config.hpp"
+#include "runtime/runtime_snapshot.hpp"
 
 #include <condition_variable>
 #include <memory>
@@ -22,15 +22,14 @@ enum class ServiceState {
 
 class AppService {
 public:
-    explicit AppService(AppConfig config);
-    explicit AppService(ConfigSnapshot config);
+    explicit AppService(RuntimeSnapshotPtr snapshot);
     ~AppService();
 
     AppService(const AppService&) = delete;
     AppService& operator=(const AppService&) = delete;
 
     bool start(std::string& error);
-    bool reload(ConfigSnapshot config, std::string& error);
+    bool reload(RuntimeSnapshotPtr snapshot, std::string& error);
     void stop();
     int wait();
     ServiceState status() const;
@@ -38,7 +37,7 @@ public:
 private:
     bool start_impl(std::string& error);
 
-    ConfigSnapshot config_;
+    RuntimeSnapshotPtr snapshot_;
     mutable std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_cv_;
     bool wait_in_progress_ = false;

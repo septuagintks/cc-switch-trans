@@ -1,11 +1,11 @@
 #include "config/app_paths.hpp"
 
 #include <system_error>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <shlobj.h>
 #else
 #include <pwd.h>
 #include <sys/types.h>
@@ -18,14 +18,25 @@ namespace {
 
 bool resolve_home_directory(std::filesystem::path& home, std::string& error) {
 #ifdef _WIN32
-    PWSTR raw_path = nullptr;
-    const HRESULT result = SHGetKnownFolderPath(FOLDERID_Profile, KF_FLAG_DEFAULT, nullptr, &raw_path);
-    if (FAILED(result) || raw_path == nullptr) {
-        error = "failed to resolve the current user profile directory";
+    const DWORD required = GetEnvironmentVariableW(L"USERPROFILE", nullptr, 0);
+    if (required == 0) {
+        error = "USERPROFILE is not set";
         return false;
     }
-    home = std::filesystem::path(raw_path);
-    CoTaskMemFree(raw_path);
+    std::vector<wchar_t> buffer(required);
+    const DWORD written = GetEnvironmentVariableW(
+        L"USERPROFILE",
+        buffer.data(),
+        static_cast<DWORD>(buffer.size()));
+    if (written == 0 || written >= buffer.size()) {
+        error = "failed to read USERPROFILE";
+        return false;
+    }
+    home = std::filesystem::path(buffer.data());
+    if (!home.is_absolute()) {
+        error = "USERPROFILE must be an absolute path";
+        return false;
+    }
     return true;
 #else
     const passwd* account = getpwuid(getuid());
