@@ -85,6 +85,7 @@ cc-switch-trans/
       README.md
       mock_upstream.py
       run_benchmark.py
+      run_windows_direct_benchmark.py
       rule_pipeline_benchmark.cpp
 
   tools/

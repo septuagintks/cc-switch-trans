@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <climits>
@@ -14,6 +15,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <sstream>
 #include <stdexcept>
@@ -262,17 +264,64 @@ void append_body_fields(
     fields.push_back(field_bool("body_truncated", body.size() > limit));
 }
 
+class InvalidHttpRequest final : public std::runtime_error {
+public:
+    explicit InvalidHttpRequest(std::string message)
+        : std::runtime_error(std::move(message)) {}
+};
+
+bool is_header_name_char(unsigned char ch) {
+    return std::isalnum(ch) != 0
+        || ch == '!'
+        || ch == '#'
+        || ch == '$'
+        || ch == '%'
+        || ch == '&'
+        || ch == '\''
+        || ch == '*'
+        || ch == '+'
+        || ch == '-'
+        || ch == '.'
+        || ch == '^'
+        || ch == '_'
+        || ch == '`'
+        || ch == '|'
+        || ch == '~';
+}
+
 std::size_t content_length(const Headers& headers) {
+    std::optional<std::size_t> result;
     for (const auto& [name, value] : headers) {
-        if (lower_copy(name) == "content-length") {
-            try {
-                return static_cast<std::size_t>(std::stoull(trim(value)));
-            } catch (...) {
-                return 0;
-            }
+        const auto normalized_name = lower_copy(name);
+        if (normalized_name == "transfer-encoding") {
+            throw InvalidHttpRequest("request Transfer-Encoding is not supported");
         }
+        if (normalized_name != "content-length") {
+            continue;
+        }
+        if (result) {
+            throw InvalidHttpRequest("request contains duplicate Content-Length headers");
+        }
+        const auto normalized_value = trim(value);
+        if (normalized_value.empty()
+            || !std::all_of(
+                normalized_value.begin(), normalized_value.end(), [](unsigned char ch) {
+                    return ch >= '0' && ch <= '9';
+                })) {
+            throw InvalidHttpRequest("request Content-Length is invalid");
+        }
+        std::size_t parsed = 0;
+        const auto parsed_result = std::from_chars(
+            normalized_value.data(),
+            normalized_value.data() + normalized_value.size(),
+            parsed);
+        if (parsed_result.ec != std::errc{}
+            || parsed_result.ptr != normalized_value.data() + normalized_value.size()) {
+            throw InvalidHttpRequest("request Content-Length is invalid");
+        }
+        result = parsed;
     }
-    return 0;
+    return result.value_or(0);
 }
 
 bool has_json_content_type(const Headers& headers) {
@@ -302,13 +351,13 @@ HttpRequest parse_request(const std::string& raw, const std::string& client_ip) 
 
     const auto header_end = raw.find("\r\n\r\n");
     if (header_end == std::string::npos) {
-        throw std::runtime_error("invalid HTTP request");
+        throw InvalidHttpRequest("request is missing the HTTP header terminator");
     }
 
     std::istringstream stream(raw.substr(0, header_end));
     std::string line;
     if (!std::getline(stream, line)) {
-        throw std::runtime_error("missing HTTP request line");
+        throw InvalidHttpRequest("request is missing the HTTP request line");
     }
     if (!line.empty() && line.back() == '\r') {
         line.pop_back();
@@ -316,8 +365,13 @@ HttpRequest parse_request(const std::string& raw, const std::string& client_ip) 
 
     std::istringstream request_line(line);
     request_line >> request.method >> request.target >> request.version;
-    if (request.method.empty() || request.target.empty() || request.version.empty()) {
-        throw std::runtime_error("malformed HTTP request line");
+    std::string extra_request_line_token;
+    if (request.method.empty()
+        || request.target.empty()
+        || request.version.empty()
+        || (request_line >> extra_request_line_token)
+        || (request.version != "HTTP/1.1" && request.version != "HTTP/1.0")) {
+        throw InvalidHttpRequest("request line is malformed or uses an unsupported HTTP version");
     }
 
     while (std::getline(stream, line)) {
@@ -325,10 +379,20 @@ HttpRequest parse_request(const std::string& raw, const std::string& client_ip) 
             line.pop_back();
         }
         const auto colon = line.find(':');
-        if (colon == std::string::npos) {
-            continue;
+        if (colon == std::string::npos || colon == 0) {
+            throw InvalidHttpRequest("request contains a malformed HTTP header");
         }
-        request.headers.emplace_back(trim(line.substr(0, colon)), trim(line.substr(colon + 1)));
+        const auto name = line.substr(0, colon);
+        const auto value = trim(line.substr(colon + 1));
+        if (!std::all_of(name.begin(), name.end(), [](unsigned char ch) {
+                return is_header_name_char(ch);
+            })
+            || std::any_of(value.begin(), value.end(), [](unsigned char ch) {
+                return (ch < 0x20 && ch != '\t') || ch == 0x7f;
+            })) {
+            throw InvalidHttpRequest("request contains a malformed HTTP header");
+        }
+        request.headers.emplace_back(name, value);
     }
 
     split_target(request);
@@ -341,16 +405,6 @@ std::string build_response_head(HttpResponse response, bool include_content_leng
         response.reason = reason_phrase(response.status_code);
     }
 
-    bool has_content_type = false;
-    for (const auto& [name, _] : response.headers) {
-        if (lower_copy(name) == "content-type") {
-            has_content_type = true;
-            break;
-        }
-    }
-    if (!has_content_type) {
-        response.headers.emplace_back("Content-Type", "application/json");
-    }
     if (include_content_length) {
         response.headers.emplace_back("Content-Length", std::to_string(response.body.size()));
     }
@@ -536,6 +590,49 @@ void close_socket(SOCKET socket) {
     }
 }
 
+class ClientConnectionRegistry {
+public:
+    explicit ClientConnectionRegistry(std::size_t capacity) {
+        sockets_.reserve(capacity);
+    }
+
+    ~ClientConnectionRegistry() {
+        close_all();
+    }
+
+    bool add(SOCKET socket) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closing_) {
+            return false;
+        }
+        sockets_.push_back(socket);
+        return true;
+    }
+
+    void close_registered(SOCKET socket) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto entry = std::find(sockets_.begin(), sockets_.end(), socket);
+        if (entry != sockets_.end()) {
+            sockets_.erase(entry);
+            close_socket(socket);
+        }
+    }
+
+    void close_all() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        closing_ = true;
+        for (const auto socket : sockets_) {
+            close_socket(socket);
+        }
+        sockets_.clear();
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<SOCKET> sockets_;
+    bool closing_ = false;
+};
+
 class BoundListener {
 public:
     explicit BoundListener(const ListenerSettings& settings)
@@ -632,13 +729,46 @@ bool send_all(SOCKET socket, const std::string& data) {
     return true;
 }
 
-std::string recv_request(SOCKET socket, std::size_t max_body_size) {
+class ClientReadStopped final : public std::runtime_error {
+public:
+    ClientReadStopped()
+        : std::runtime_error("server stopped while reading request") {}
+};
+
+int recv_with_stop(
+    SOCKET socket,
+    char* buffer,
+    int buffer_size,
+    const std::function<bool()>& stopping) {
+    while (true) {
+        if (stopping()) {
+            throw ClientReadStopped();
+        }
+        const int received = recv(socket, buffer, buffer_size, 0);
+        if (received != SOCKET_ERROR) {
+            if (received == 0 && stopping()) {
+                throw ClientReadStopped();
+            }
+            return received;
+        }
+        if (stopping()) {
+            throw ClientReadStopped();
+        }
+        return SOCKET_ERROR;
+    }
+}
+
+std::string recv_request(
+    SOCKET socket,
+    std::size_t max_body_size,
+    const std::function<bool()>& stopping) {
     std::string buffer;
     char temp[8192];
     std::size_t header_end = std::string::npos;
 
     while (header_end == std::string::npos) {
-        const int received = recv(socket, temp, sizeof(temp), 0);
+        const int received = recv_with_stop(
+            socket, temp, static_cast<int>(sizeof(temp)), stopping);
         if (received <= 0) {
             if (buffer.empty()) {
                 throw std::runtime_error("client disconnected before request");
@@ -650,6 +780,10 @@ std::string recv_request(SOCKET socket, std::size_t max_body_size) {
             throw std::runtime_error("request too large");
         }
         header_end = buffer.find("\r\n\r\n");
+        if ((header_end == std::string::npos && buffer.size() > kHeaderLimit)
+            || (header_end != std::string::npos && header_end + 4 > kHeaderLimit)) {
+            throw std::runtime_error("request headers too large");
+        }
     }
 
     const HttpRequest partial = parse_request(buffer, "");
@@ -660,7 +794,8 @@ std::string recv_request(SOCKET socket, std::size_t max_body_size) {
 
     const std::size_t body_start = header_end + 4;
     while (buffer.size() < body_start + expected_body) {
-        const int received = recv(socket, temp, sizeof(temp), 0);
+        const int received = recv_with_stop(
+            socket, temp, static_cast<int>(sizeof(temp)), stopping);
         if (received <= 0) {
             throw std::runtime_error("failed to read request body");
         }
@@ -690,16 +825,17 @@ std::string peer_ip(sockaddr_storage& storage) {
     return host;
 }
 
-template <typename ProcessRequest>
+template <typename ProcessRequest, typename ReportError>
 void handle_client(
     SOCKET client,
-    const Server* server,
     ClientCancellationMonitor& cancellation_monitor,
     std::size_t max_body_size,
     std::string client_ip,
-    ProcessRequest&& process_request) {
+    const std::function<bool()>& stopping,
+    ProcessRequest&& process_request,
+    ReportError&& report_error) {
     try {
-        const auto raw = recv_request(client, max_body_size);
+        const auto raw = recv_request(client, max_body_size, stopping);
         CancellationSource cancellation_source;
         SocketWatch watch(cancellation_monitor, client, cancellation_source);
         process_request(
@@ -714,27 +850,38 @@ void handle_client(
             },
             cancellation_source.token());
         watch.stop();
+    } catch (const ClientReadStopped&) {
+        return;
+    } catch (const InvalidHttpRequest& ex) {
+        report_error(400, "invalid_request_error", ex.what());
+        HttpResponse response;
+        response.status_code = 400;
+        response.reason = reason_phrase(400);
+        response.headers.emplace_back("Content-Type", "application/json");
+        response.body = error_json(ex.what(), "invalid_request_error");
+        send_all(client, build_response(std::move(response)));
     } catch (const std::exception& ex) {
         if (std::strcmp(ex.what(), "client disconnected before request") == 0) {
-            close_socket(client);
             return;
         }
-        const bool too_large = std::strcmp(ex.what(), "request body too large") == 0
+        const bool headers_too_large = std::strcmp(ex.what(), "request headers too large") == 0;
+        const bool too_large = headers_too_large
+            || std::strcmp(ex.what(), "request body too large") == 0
             || std::strcmp(ex.what(), "request too large") == 0;
-        const std::string message = too_large
-            ? "request body too large"
-            : "internal server error";
+        const std::string message = headers_too_large
+            ? "request headers too large"
+            : too_large ? "request body too large" : "internal server error";
         const int status = too_large ? 413 : 500;
-        server->log_request_error(
+        report_error(
             status, too_large ? "invalid_request_error" : "server_error", message);
         HttpResponse response;
         response.status_code = status;
         response.reason = reason_phrase(status);
+        response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json(message, status == 413 ? "invalid_request_error" : "server_error");
         const auto raw_response = build_response(response);
         send_all(client, raw_response);
     }
-    close_socket(client);
 }
 
 void reject_overloaded_client(SOCKET client, const Server* server) {
@@ -743,6 +890,7 @@ void reject_overloaded_client(SOCKET client, const Server* server) {
         HttpResponse response;
         response.status_code = 503;
         response.reason = reason_phrase(503);
+        response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json("server is at connection capacity", "server_overloaded");
         send_all(client, build_response(std::move(response)));
         shutdown(client, SD_SEND);
@@ -829,7 +977,14 @@ void Server::log_request_error(
     int status_code,
     const std::string& type,
     const std::string& message) const {
-    const auto generation = current_generation();
+    log_request_error(current_generation(), status_code, type, message);
+}
+
+void Server::log_request_error(
+    const std::shared_ptr<RequestGeneration>& generation,
+    int status_code,
+    const std::string& type,
+    const std::string& message) const {
     generation->logger->log("error", "request_error", {
         field_string("request_id", make_request_id()),
         field_number("generation_id", static_cast<long long>(generation->id)),
@@ -841,6 +996,14 @@ void Server::log_request_error(
 
 void Server::request_stop() {
     stop_requested_.store(true, std::memory_order_release);
+    std::function<void()> shutdown_clients;
+    {
+        std::lock_guard<std::mutex> lock(client_shutdown_mutex_);
+        shutdown_clients = client_shutdown_;
+    }
+    if (shutdown_clients) {
+        shutdown_clients();
+    }
 }
 
 ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
@@ -1182,9 +1345,9 @@ bool Server::process_with_generation(
                 },
                 cancellation);
         } catch (const ProxyError& ex) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
             if (ex.type() == "client_cancelled") {
-                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - started);
                 generation->logger->log("info", "request_cancelled", {
                     field_string("request_id", request.request_id),
                     field_number("generation_id", static_cast<long long>(generation->id)),
@@ -1192,6 +1355,9 @@ bool Server::process_with_generation(
                     field_string("protocol", protocol_id),
                     field_string("route_kind", route_kind),
                     field_number("duration_ms", elapsed.count()),
+                    field_bool("streaming", streamed),
+                    field_number("stream_chunk_count", static_cast<long long>(stream_chunk_count)),
+                    field_number("streamed_body_size", static_cast<long long>(streamed_body_size)),
                 });
                 return false;
             }
@@ -1205,6 +1371,10 @@ bool Server::process_with_generation(
                 field_string("message", ex.what()),
                 field_string("type", ex.type()),
                 field_number("status_code", ex.status_code()),
+                field_number("duration_ms", elapsed.count()),
+                field_bool("streaming", streamed),
+                field_number("stream_chunk_count", static_cast<long long>(stream_chunk_count)),
+                field_number("streamed_body_size", static_cast<long long>(streamed_body_size)),
             });
             if (streamed) {
                 return true;
@@ -1256,14 +1426,34 @@ bool Server::process_with_generation(
             return true;
         }
         return sender(build_response(std::move(response)));
+    } catch (const InvalidHttpRequest& ex) {
+        generation->logger->log("error", "request_error", {
+            field_string("request_id", request_id),
+            field_number("generation_id", static_cast<long long>(generation->id)),
+            field_string("profile_id", profile_id),
+            field_string("protocol", protocol_id),
+            field_string("route_kind", route_kind),
+            field_string("message", ex.what()),
+            field_string("type", "invalid_request_error"),
+            field_number("status_code", 400),
+        });
+        HttpResponse response;
+        response.status_code = 400;
+        response.reason = reason_phrase(400);
+        response.headers.emplace_back("Content-Type", "application/json");
+        response.body = error_json(ex.what(), "invalid_request_error");
+        return sender(build_response(std::move(response)));
     } catch (const ProxyError& ex) {
         if (ex.type() == "client_cancelled") {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
             generation->logger->log("info", "request_cancelled", {
                 field_string("request_id", request_id),
                 field_number("generation_id", static_cast<long long>(generation->id)),
                 field_string("profile_id", profile_id),
                 field_string("protocol", protocol_id),
                 field_string("route_kind", route_kind),
+                field_number("duration_ms", elapsed.count()),
             });
             return false;
         }
@@ -1285,7 +1475,7 @@ bool Server::process_with_generation(
             : HttpResponse{
                   500,
                   reason_phrase(500),
-                  {},
+                  {{"Content-Type", "application/json"}},
                   error_json("internal server error", "server_error"),
               };
         return sender(build_response(response));
@@ -1418,6 +1608,7 @@ HttpResponse Server::handle_local_route_error(const RouteLookup& route) const {
         response.body = error_json("unsupported route", "invalid_request_error");
     }
     response.reason = reason_phrase(response.status_code);
+    response.headers.emplace_back("Content-Type", "application/json");
     return response;
 }
 
@@ -1511,6 +1702,14 @@ int Server::run(const StartupCallback& startup_callback) {
         std::size_t active_worker_count = 0;
         bool accepting_done = false;
         ClientCancellationMonitor cancellation_monitor(metrics_);
+        auto client_connections = std::make_shared<ClientConnectionRegistry>(
+            static_cast<std::size_t>(application.runtime.max_connections));
+        {
+            std::lock_guard<std::mutex> lock(client_shutdown_mutex_);
+            client_shutdown_ = [client_connections]() {
+                client_connections->close_all();
+            };
+        }
 
         std::vector<std::thread> workers;
         const auto worker_limit = static_cast<std::size_t>(application.runtime.worker_threads);
@@ -1535,15 +1734,19 @@ int Server::run(const StartupCallback& startup_callback) {
                         client_queue.size(),
                         static_cast<std::uint64_t>(queue_wait.count()));
                 }
+                std::shared_ptr<RequestGeneration> request_generation;
                 try {
-                    const auto request_generation = current_generation();
+                    request_generation = current_generation();
                     handle_client(
                         job.client,
-                        this,
                         cancellation_monitor,
                         static_cast<std::size_t>(request_generation
                                 ->runtime.application.runtime.max_request_body_size),
                         std::move(job.client_ip),
+                        [this]() {
+                            return stop_requested_.load(std::memory_order_acquire)
+                                || console_shutdown_requested().load(std::memory_order_acquire);
+                        },
                         [this, request_generation](
                             const std::string& raw,
                             const std::string& client_ip,
@@ -1551,15 +1754,30 @@ int Server::run(const StartupCallback& startup_callback) {
                             const CancellationToken& cancellation) {
                             return process_with_generation(
                                 request_generation, raw, client_ip, sender, cancellation);
+                        },
+                        [this, request_generation](
+                            int status_code,
+                            const std::string& type,
+                            const std::string& message) {
+                            log_request_error(
+                                request_generation, status_code, type, message);
                         });
                 } catch (...) {
-                    close_socket(job.client);
                     try {
-                        log_request_error(
-                            500, "worker_error", "request worker failed unexpectedly");
+                        if (request_generation) {
+                            log_request_error(
+                                request_generation,
+                                500,
+                                "worker_error",
+                                "request worker failed unexpectedly");
+                        } else {
+                            log_request_error(
+                                500, "worker_error", "request worker failed unexpectedly");
+                        }
                     } catch (...) {
                     }
                 }
+                client_connections->close_registered(job.client);
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex);
                     --active_worker_count;
@@ -1635,6 +1853,8 @@ int Server::run(const StartupCallback& startup_callback) {
                 bool queued = false;
                 bool queue_failed = false;
                 bool worker_scale_failed = false;
+                bool registered = false;
+                bool registration_stopped = false;
                 std::size_t worker_count_after_scale = 0;
                 std::string client_ip;
                 try {
@@ -1648,37 +1868,50 @@ int Server::run(const StartupCallback& startup_callback) {
                         && open_connections < current_generation()
                             ->runtime.application.runtime.max_connections) {
                         try {
-                            client_queue.push(ClientJob{
-                                client,
-                                std::move(client_ip),
-                                std::chrono::steady_clock::now(),
-                            });
-                            ++open_connections;
-                            metrics_->connection_accepted(
-                                open_connections, client_queue.size());
-                            const auto required_workers = std::min(
-                                worker_limit,
-                                active_worker_count + client_queue.size());
-                            try {
-                                grow_workers(required_workers);
-                            } catch (...) {
-                                worker_scale_failed = true;
+                            if (!client_connections->add(client)) {
+                                registration_stopped = true;
+                            } else {
+                                registered = true;
+                                client_queue.push(ClientJob{
+                                    client,
+                                    std::move(client_ip),
+                                    std::chrono::steady_clock::now(),
+                                });
+                                ++open_connections;
+                                metrics_->connection_accepted(
+                                    open_connections, client_queue.size());
+                                const auto required_workers = std::min(
+                                    worker_limit,
+                                    active_worker_count + client_queue.size());
+                                try {
+                                    grow_workers(required_workers);
+                                } catch (...) {
+                                    worker_scale_failed = true;
+                                }
+                                worker_count_after_scale = workers.size();
+                                queued = true;
                             }
-                            worker_count_after_scale = workers.size();
-                            queued = true;
                         } catch (...) {
                             queue_failed = true;
                         }
                     }
                 }
                 if (queue_failed) {
-                    close_socket(client);
+                    if (registered) {
+                        client_connections->close_registered(client);
+                    } else {
+                        close_socket(client);
+                    }
                     stop_requested_.store(true, std::memory_order_release);
                     try {
                         log_request_error(
                             500, "listener_queue_error", "failed to queue accepted connection");
                     } catch (...) {
                     }
+                    return;
+                }
+                if (registration_stopped) {
+                    close_socket(client);
                     return;
                 }
                 if (worker_scale_failed) {
@@ -1732,6 +1965,7 @@ int Server::run(const StartupCallback& startup_callback) {
             acceptor.join();
         }
         listener.close();
+        client_connections->close_all();
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
             accepting_done = true;
@@ -1741,6 +1975,10 @@ int Server::run(const StartupCallback& startup_callback) {
             if (worker.joinable()) {
                 worker.join();
             }
+        }
+        {
+            std::lock_guard<std::mutex> lock(client_shutdown_mutex_);
+            client_shutdown_ = {};
         }
         reporter.stop();
         log_performance_snapshot("server_stop");

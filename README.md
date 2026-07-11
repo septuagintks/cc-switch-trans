@@ -167,10 +167,18 @@ Unmodified requests retain their exact original bytes.
 
 ## Runtime Behavior
 
+- The local listener accepts HTTP/1.0 or HTTP/1.1 requests with strict
+  `Content-Length` framing. Request headers are limited to 64 KiB; duplicate or
+  invalid lengths and request `Transfer-Encoding` are rejected locally.
 - `method + canonical local path` selects one immutable Route entry.
 - Unknown paths return 404; known paths with a wrong method return 405.
 - Query strings are preserved and appended to the configured upstream path.
+- End-to-end request headers, upstream status/reason, and end-to-end response
+  headers are preserved. Hop-by-hop and proxy-authentication headers are never
+  forwarded, and a missing upstream `Content-Type` is not invented locally.
 - Client disconnects cancel only the corresponding upstream request.
+- Service stop cancels incomplete reads and active upstream requests before
+  joining workers and draining the logger.
 - Resolve, connect, send, response-header, SSE-idle, and total timeouts are
   independent.
 - Request bodies and buffered responses have independent size limits.

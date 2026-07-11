@@ -182,6 +182,14 @@ single exclusive listener
 队列。客户端断开只取消对应 upstream handle。停止过程停止 accept、处理/取消现有请求、
 join worker/reporting/watcher 线程并 drain logger。
 
+listener 只接收 HTTP/1.0/1.1 的单一有效 Content-Length framing，header 上限 64 KiB；
+重复/非法 Content-Length、request Transfer-Encoding 和畸形 header 不进入 RouteTable 或
+upstream。accept 后的 socket 进入有界 registry；stop 将 registry 置为 closing 并关闭全部
+已登记 socket，以唤醒半包读取并触发在途请求 cancellation。stop 后拒绝新登记，worker
+只关闭仍归 registry 所有的 socket，避免句柄复用后的二次关闭。普通客户端 cancellation
+只影响自身。长生命周期 cancellation token 必须回收 inactive callback，内存上界由并发
+请求数决定而不是进程累计请求数。
+
 8-16 路 SSE 是正常桌面负载；50 路只验证有界排队、拒绝和资源释放，不承诺常规延迟。
 
 ## UpstreamTransport
@@ -198,6 +206,12 @@ proxy_mode()
 handle。Windows 实现在 `transport/windows/WinHttpTransport`；macOS 后续实现位于
 `transport/macos`，链接系统 libcurl。
 
+平台实现必须删除标准 hop-by-hop header、`Connection` nominated header、
+`Proxy-Authorization` 与 `Proxy-Authenticate`；Authorization 等 end-to-end header 保留。
+upstream status、reason phrase、end-to-end headers 和 body 不重包，尤其不能为缺少类型的
+response 自行添加 `Content-Type`。请求 write 必须处理 partial progress；response read
+使用有界 chunk，并在为非流式 body 分配前检查限制。
+
 Windows 合约：当前用户手动 proxy、bypass 与显式 PAC 可用；WPAD-only 不执行自动发现；
 系统选定 proxy 后失败不 direct fallback；407 映射为不支持代理认证。macOS 合约：只
 继承启动环境中的代理变量，不读取或激活系统代理。
@@ -211,6 +225,8 @@ failure 触发 Server 停止和非零退出。
 并存 generation 使用 active-writer 计数；旧 writer 退出或候选 writer 打开失败不会把
 当前 writer 标为不健康。SSE 只记录连续 `chunk_sequence`、大小和可选有界 chunk body，
 不累计完整流。Usage summary 不记录 request headers、query、body 或 client IP。
+已发送 headers 后中断的 SSE 在错误事件中记录 duration、chunk count 和累计字节，不能
+尝试发送第二个 HTTP error response。
 
 `redact_sensitive` 遮盖已知敏感 headers，但不会清理 JSON body。启用 body logging 可能
 记录完整模型上下文，日志必须按敏感数据处理。

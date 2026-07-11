@@ -6,6 +6,7 @@
 #include "core/url.hpp"
 #include "logging/logger.hpp"
 #include "server/server.hpp"
+#include "transport/header_filter.hpp"
 #include "transport/upstream_transport.hpp"
 
 #include <nlohmann/json.hpp>
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -131,6 +133,50 @@ void test_url_and_transport_boundary() {
     require(std::string(transport->proxy_mode()) == "unsupported",
         "unsupported platform transport remains explicit");
 #endif
+}
+
+void test_hop_by_hop_header_filtering() {
+    const ccs::Headers request = {
+        {"Host", "127.0.0.1"},
+        {"Content-Length", "2"},
+        {"Connection", "keep-alive, X-Remove"},
+        {"Keep-Alive", "timeout=5"},
+        {"Proxy-Connection", "keep-alive"},
+        {"Proxy-Authorization", "Basic secret"},
+        {"TE", "trailers"},
+        {"Trailer", "X-Checksum"},
+        {"Upgrade", "websocket"},
+        {"X-Remove", "connection-scoped"},
+        {"Authorization", "Bearer upstream-token"},
+        {"X-Keep", "request-value"},
+    };
+    require(
+        ccs::filter_request_headers(request)
+            == ccs::Headers({
+                {"Authorization", "Bearer upstream-token"},
+                {"X-Keep", "request-value"},
+            }),
+        "request forwarding strips standard and Connection-nominated hop-by-hop headers");
+
+    const ccs::Headers response = {
+        {"Content-Length", "2"},
+        {"Connection", "close, X-Remove"},
+        {"Keep-Alive", "timeout=5"},
+        {"Proxy-Connection", "close"},
+        {"Proxy-Authenticate", "Basic realm=proxy"},
+        {"Trailer", "X-Checksum"},
+        {"Upgrade", "websocket"},
+        {"X-Remove", "connection-scoped"},
+        {"Content-Type", "application/json"},
+        {"X-Keep", "response-value"},
+    };
+    require(
+        ccs::filter_response_headers(response)
+            == ccs::Headers({
+                {"Content-Type", "application/json"},
+                {"X-Keep", "response-value"},
+            }),
+        "response forwarding strips standard and Connection-nominated hop-by-hop headers");
 }
 
 void test_logger_durability_and_generation_metrics() {
@@ -408,6 +454,14 @@ void test_server_local_protocol_errors() {
         "known path with wrong method returns 405");
     require(send("POST", "/unknown", "{}").find("HTTP/1.1 404") == 0,
         "unknown path returns 404");
+    const auto malformed_http = server.process_raw_request(
+            "POST /v1/responses HTTP/1.1\r\nMalformed-Header\r\n\r\n",
+            "127.0.0.1");
+    require(
+        malformed_http.find("HTTP/1.1 400") == 0
+            && response_body(malformed_http)["error"]["message"]
+                == "request contains a malformed HTTP header",
+        "malformed HTTP syntax is classified as a client error");
 }
 
 void test_cancellation() {
@@ -423,6 +477,31 @@ void test_cancellation() {
     auto immediate = token.on_cancel([&]() { ++immediate_count; });
     (void)immediate;
     require(immediate_count == 1, "late callback runs immediately");
+
+    ccs::CancellationSource long_lived_source;
+    const auto long_lived_token = long_lived_source.token();
+    std::vector<std::weak_ptr<int>> retired_callbacks;
+    for (int index = 0; index < 128; ++index) {
+        auto lifetime = std::make_shared<int>(index);
+        retired_callbacks.emplace_back(lifetime);
+        {
+            auto transient = long_lived_token.on_cancel([lifetime]() {});
+            (void)transient;
+        }
+    }
+    require(
+        std::all_of(
+            retired_callbacks.begin(),
+            std::prev(retired_callbacks.end()),
+            [](const std::weak_ptr<int>& lifetime) { return lifetime.expired(); }),
+        "inactive callbacks are reclaimed while a cancellation token remains alive");
+    require(long_lived_source.cancel(), "long-lived source cancels once");
+    require(
+        std::all_of(
+            retired_callbacks.begin(),
+            retired_callbacks.end(),
+            [](const std::weak_ptr<int>& lifetime) { return lifetime.expired(); }),
+        "cancellation releases the final registered callback");
 }
 
 } // namespace
@@ -430,6 +509,7 @@ void test_cancellation() {
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"URL and transport boundary", test_url_and_transport_boundary},
+        {"hop-by-hop header filtering", test_hop_by_hop_header_filtering},
         {"logger durability and generation metrics", test_logger_durability_and_generation_metrics},
         {"logger backpressure", test_logger_backpressure},
         {"runtime metrics", test_runtime_metrics},

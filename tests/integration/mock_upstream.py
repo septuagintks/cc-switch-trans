@@ -73,22 +73,35 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(encoded)
             return
 
+        if query.get("no_content_type", [""])[0] == "1":
+            encoded = b"opaque-response"
+            self.send_response(200)
+            self.send_header("X-Mock-Upstream", "yes")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
+
         payload = {
             "mock": True,
             "path": self.path,
             "method": "POST",
             "server_port": self.server.server_address[1],
             "headers": dict(self.headers.items()),
-            "body": body,
             "body_size": len(body_bytes),
             "body_sha256": hashlib.sha256(body_bytes).hexdigest().upper(),
-            "body_base64": base64.b64encode(body_bytes).decode("ascii"),
         }
+        if query.get("summary_only", [""])[0] != "1":
+            payload["body"] = body
+            payload["body_base64"] = base64.b64encode(body_bytes).decode("ascii")
+        if query.get("status", [""])[0] == "201":
+            self._send_json(payload, 201, "Synthetic Created")
+            return
         self._send_json(payload)
 
-    def _send_json(self, payload):
+    def _send_json(self, payload, status=200, reason=None):
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status, reason)
         self.send_header("Content-Type", "application/json")
         self.send_header("X-Mock-Upstream", "yes")
         self.send_header("Content-Length", str(len(encoded)))

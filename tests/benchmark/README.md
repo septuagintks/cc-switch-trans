@@ -37,6 +37,25 @@ python tests/benchmark/run_benchmark.py \
   --output benchmark-results/windows-x64-current.json
 ```
 
+On Windows, if the current-user manual proxy does not bypass loopback, use the
+explicit direct wrapper to isolate local mock traffic from that proxy. It
+reuses the system-proxy integration backup/notification/restore path and
+restores the original settings after each run:
+
+```text
+python tests/benchmark/run_windows_direct_benchmark.py \
+  --confirm-system-proxy-mutation -- \
+  --exe build-release/ccs-trans.exe \
+  --profiles smoke desktop-8 desktop-16 mixed-16 stress-50 \
+  --log-body false \
+  --source-ref HEAD \
+  --output benchmark-results/windows-x64-direct-current.json
+```
+
+The wrapper leaves its ignored `tmp/` backup in place if restoration fails.
+System-proxy correctness and proxy-path latency remain the responsibility of
+the separate opt-in integration matrix.
+
 Run body-logging comparisons separately:
 
 ```text

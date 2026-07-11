@@ -52,6 +52,11 @@ private:
     class RequestGeneration;
 
     std::shared_ptr<RequestGeneration> current_generation() const;
+    void log_request_error(
+        const std::shared_ptr<RequestGeneration>& generation,
+        int status_code,
+        const std::string& type,
+        const std::string& message) const;
     bool process_with_generation(
         const std::shared_ptr<RequestGeneration>& generation,
         const std::string& raw,
@@ -73,6 +78,8 @@ private:
     mutable std::shared_ptr<RequestGeneration> generation_;
     mutable std::shared_mutex generation_mutex_;
     mutable std::mutex reload_mutex_;
+    std::mutex client_shutdown_mutex_;
+    std::function<void()> client_shutdown_;
     std::atomic_bool fatal_error_{false};
     std::atomic_bool stop_requested_{false};
 };

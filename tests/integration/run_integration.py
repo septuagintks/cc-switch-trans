@@ -70,6 +70,59 @@ def raw_extra_separator_request(port, path, body):
     return int(header.split(b" ", 2)[1]), data
 
 
+def oversized_header_request(port, path):
+    request_bytes = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        "Content-Length: 0\r\n"
+        "X-Oversized: "
+    ).encode("ascii") + (b"x" * (64 * 1024)) + b"\r\n\r\n"
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(request_bytes)
+        chunks = []
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    raw = b"".join(chunks)
+    header, _, data = raw.partition(b"\r\n\r\n")
+    return int(header.split(b" ", 2)[1]), data
+
+
+def raw_status_line_request(port, path):
+    body = b"{}"
+    request_bytes = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii") + body
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(request_bytes)
+        chunks = []
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    return b"".join(chunks).split(b"\r\n", 1)[0].decode("ascii")
+
+
+def raw_http_status(port, request_bytes):
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(request_bytes)
+        chunks = []
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    status_line = b"".join(chunks).split(b"\r\n", 1)[0]
+    return int(status_line.split(b" ", 2)[1])
+
+
 def fire_and_disconnect(port, path):
     body = b"{}"
     request_bytes = (
@@ -253,13 +306,51 @@ def main():
             "POST",
             "/responses/v1/responses/?trace=integration",
             body="abcdef",
-            headers={"Authorization": "Bearer secret", "Content-Type": "text/plain"},
+            headers={
+                "Authorization": "Bearer secret",
+                "Proxy-Authorization": "Basic local-proxy-secret",
+                "Connection": "X-Remove",
+                "X-Remove": "connection-scoped-secret",
+                "Content-Type": "text/plain",
+            },
         )
         payload = json.loads(data)
         assert_true(status == 200, "Responses status")
         assert_true(payload["path"] == "/v1/responses/?trace=integration", "Responses query/path")
         assert_true(payload["body"] == "abcdef", "Responses transparent body")
         assert_true(payload["server_port"] == responses_port, "Responses upstream selected")
+        upstream_headers = {key.lower(): value for key, value in payload["headers"].items()}
+        assert_true(
+            upstream_headers.get("authorization") == "Bearer secret",
+            "end-to-end Authorization forwarding",
+        )
+        assert_true(
+            "proxy-authorization" not in upstream_headers
+            and "x-remove" not in upstream_headers,
+            "end-to-end hop-by-hop header filtering",
+        )
+
+        assert_true(
+            raw_status_line_request(
+                proxy_port, "/responses/v1/responses?status=201"
+            )
+            == "HTTP/1.1 201 Synthetic Created",
+            "upstream status reason is forwarded",
+        )
+
+        status, headers, data = request(
+            proxy_port,
+            "POST",
+            "/responses/v1/responses?no_content_type=1",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert_true(
+            status == 200
+            and data == b"opaque-response"
+            and "Content-Type" not in headers,
+            "proxy does not invent an upstream response Content-Type",
+        )
 
         status, _, data = request(
             proxy_port,
@@ -284,6 +375,22 @@ def main():
         assert_true(payload["body_sha256"] == hashlib.sha256(transparent_body).hexdigest().upper(), "transparent fixture digest")
         assert_true(payload["body_base64"] == base64.b64encode(transparent_body).decode("ascii"), "transparent fixture bytes")
 
+        large_body = b"x" * (2 * 1024 * 1024 + 17)
+        status, _, data = request(
+            proxy_port,
+            "POST",
+            "/responses/v1/responses?summary_only=1",
+            body=large_body,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        payload = json.loads(data)
+        assert_true(
+            status == 200
+            and payload["body_size"] == len(large_body)
+            and payload["body_sha256"] == hashlib.sha256(large_body).hexdigest().upper(),
+            "multi-megabyte request body is forwarded completely",
+        )
+
         whitespace_body = "\r\n\r\n{\"ok\":true}"
         status, _, data = request(
             proxy_port,
@@ -298,6 +405,43 @@ def main():
             proxy_port, "/responses/v1/responses", "{\"raw\":true}"
         )
         assert_true(status == 200 and json.loads(data)["body"] == "{\"raw\":true}", "extra HTTP separator normalized")
+
+        status, data = oversized_header_request(
+            proxy_port, "/responses/v1/responses"
+        )
+        assert_true(
+            status == 413
+            and json.loads(data)["error"]["message"] == "request headers too large",
+            "listener enforces the 64 KiB request header limit",
+        )
+
+        malformed_requests = (
+            (
+                b"POST /responses/v1/responses HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\nContent-Length: invalid\r\n\r\n"
+            ),
+            (
+                b"POST /responses/v1/responses HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\nContent-Length: 0\r\n"
+                b"Content-Length: 0\r\n\r\n"
+            ),
+            (
+                b"POST /responses/v1/responses HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+            ),
+            (
+                b"POST /responses/v1/responses HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\nMalformed-Header\r\n\r\n"
+            ),
+            (
+                b"POST /responses/v1/responses HTTP/2.0\r\n"
+                b"Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
+            ),
+        )
+        assert_true(
+            all(raw_http_status(proxy_port, raw) == 400 for raw in malformed_requests),
+            "malformed request framing is rejected locally",
+        )
 
         findcg_body = json.dumps(
             {
@@ -456,7 +600,12 @@ def main():
             body="{}",
             headers={"Content-Type": "application/json"},
         )
-        assert_true(status == 200 and b"chunk-0" in idle_data, "stream idle timeout preserves prefix")
+        assert_true(
+            status == 200
+            and b"chunk-0" in idle_data
+            and b"HTTP/1.1" not in idle_data,
+            "stream idle timeout preserves prefix without a second HTTP response",
+        )
         status, _, total_data = request(
             proxy_port,
             "POST",
@@ -464,7 +613,12 @@ def main():
             body="{}",
             headers={"Content-Type": "application/json"},
         )
-        assert_true(status == 200 and b"chunk-0" in total_data, "total timeout preserves prefix")
+        assert_true(
+            status == 200
+            and b"chunk-0" in total_data
+            and b"HTTP/1.1" not in total_data,
+            "total timeout preserves prefix without a second HTTP response",
+        )
 
         time.sleep(0.3)
         events = read_json_lines(log_path)
@@ -553,6 +707,23 @@ def main():
         assert_true(len([event for event in events if event.get("event") == "request_cancelled"]) >= 2, "cancellation logged")
         timeout_types = {event.get("type") for event in errors if event.get("status_code") == 504}
         assert_true({"upstream_response_header_timeout", "upstream_stream_idle_timeout", "upstream_total_timeout"}.issubset(timeout_types), "timeout phases classified")
+        interrupted_streams = [
+            event
+            for event in errors
+            if event.get("type")
+            in {"upstream_stream_idle_timeout", "upstream_total_timeout"}
+            and event.get("streaming") is True
+        ]
+        assert_true(
+            len(interrupted_streams) >= 2
+            and all(
+                event.get("stream_chunk_count", 0) > 0
+                and event.get("streamed_body_size", 0) > 0
+                and event.get("duration_ms", 0) > 0
+                for event in interrupted_streams
+            ),
+            "interrupted SSE logs retain bounded progress and duration",
+        )
 
         snapshots = [event for event in events if event.get("event") == "performance_snapshot"]
         assert_true(snapshots, "performance snapshot logged")

@@ -1,5 +1,6 @@
 #include "core/cancellation.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace ccs {
@@ -49,6 +50,14 @@ CancellationRegistration CancellationToken::on_cancel(std::function<void()> call
         if (state_->cancelled.load(std::memory_order_acquire)) {
             invoke_now = true;
         } else {
+            state_->callbacks.erase(
+                std::remove_if(
+                    state_->callbacks.begin(),
+                    state_->callbacks.end(),
+                    [](const auto& registered) {
+                        return !registered->active.load(std::memory_order_acquire);
+                    }),
+                state_->callbacks.end());
             state_->callbacks.push_back(callback_state);
         }
     }

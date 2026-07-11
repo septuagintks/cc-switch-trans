@@ -367,6 +367,111 @@ bool try_compile(
     return compiler.compile(document, {}, snapshot, error);
 }
 
+void test_stop_with_incomplete_request() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path()
+        / ("ccs-trans-incomplete-request-" + std::to_string(nonce));
+    const auto paths = ccs::make_app_paths(root);
+    const auto proxy_port = free_port();
+    std::string error;
+    require(ccs::ensure_app_directories(paths, error), error);
+
+    auto document = make_document(
+        proxy_port,
+        paths.default_log_file,
+        "http://127.0.0.1:1");
+    ccs::AppService service(compile(document, paths.root));
+    require(service.start(error), "incomplete-request service start failed: " + error);
+
+    SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    require(client != INVALID_SOCKET, "failed to create incomplete-request client");
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(proxy_port);
+    require(
+        connect(client, reinterpret_cast<const sockaddr*>(&address), sizeof(address))
+            != SOCKET_ERROR,
+        "failed to connect incomplete-request client");
+    send_all(
+        client,
+        "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Content-Length: 100\r\nConnection: close\r\n\r\n{");
+    std::this_thread::sleep_for(100ms);
+
+    service.stop();
+    auto waiter = std::async(std::launch::async, [&]() { return service.wait(); });
+    const auto stopped = waiter.wait_for(2s) == std::future_status::ready;
+    if (!stopped) {
+        shutdown(client, SD_BOTH);
+        close_socket(client);
+        waiter.wait();
+        throw std::runtime_error(
+            "service stop remained blocked by an incomplete client request");
+    }
+    close_socket(client);
+    require(waiter.get() == 0, "service with incomplete request did not stop cleanly");
+
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+}
+
+void test_stop_cancels_active_upstream_request() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path()
+        / ("ccs-trans-stop-active-request-" + std::to_string(nonce));
+    const auto paths = ccs::make_app_paths(root);
+    std::string error;
+    require(ccs::ensure_app_directories(paths, error), error);
+
+    MockUpstream upstream("stop", true);
+    const auto proxy_port = free_port();
+    auto document = make_document(
+        proxy_port,
+        paths.default_log_file,
+        "http://127.0.0.1:" + std::to_string(upstream.port()));
+    ccs::AppService service(compile(document, paths.root));
+    require(service.start(error), "active-request service start failed: " + error);
+
+    auto request = std::async(std::launch::async, [&]() {
+        return proxy_request(proxy_port, "stop-active");
+    });
+    upstream.wait_until_received();
+
+    service.stop();
+    auto waiter = std::async(std::launch::async, [&]() { return service.wait(); });
+    const auto stopped = waiter.wait_for(2s) == std::future_status::ready;
+    if (!stopped) {
+        upstream.release();
+        waiter.wait();
+        try {
+            (void)request.get();
+        } catch (...) {
+        }
+        throw std::runtime_error(
+            "service stop remained blocked by an active upstream request");
+    }
+    require(waiter.get() == 0, "service with an active request did not stop cleanly");
+    require(
+        request.wait_for(2s) == std::future_status::ready,
+        "cancelled client request did not finish after service stop");
+    try {
+        (void)request.get();
+    } catch (...) {
+    }
+    upstream.release();
+
+    const auto events = read_log_events(paths.default_log_file);
+    require(
+        std::any_of(events.begin(), events.end(), [](const nlohmann::json& event) {
+            return event.value("event", "") == "request_cancelled";
+        }),
+        "service-stop cancellation is recorded in the request log chain");
+
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+}
+
 void test_reload_generation_and_profile_io() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path()
@@ -572,6 +677,8 @@ void test_reload_generation_and_profile_io() {
 int main() {
     try {
         WinsockScope winsock;
+        test_stop_with_incomplete_request();
+        test_stop_cancels_active_upstream_request();
         test_reload_generation_and_profile_io();
         std::cout << "reload integration ok\n";
         return 0;

@@ -79,9 +79,9 @@ std::wstring build_header_block(const Headers& headers) {
     return widen(out.str());
 }
 
-Headers parse_raw_headers(const std::wstring& raw_headers) {
+Headers parse_raw_headers(const std::string& raw_headers) {
     Headers headers;
-    std::istringstream stream(narrow(raw_headers));
+    std::istringstream stream(raw_headers);
     std::string line;
     bool first = true;
     while (std::getline(stream, line)) {
@@ -101,6 +101,20 @@ Headers parse_raw_headers(const std::wstring& raw_headers) {
         }
     }
     return filter_response_headers(headers);
+}
+
+std::string parse_status_text(const std::string& raw_headers) {
+    const auto line_end = raw_headers.find("\r\n");
+    const auto status_line = raw_headers.substr(0, line_end);
+    const auto code_separator = status_line.find(' ');
+    if (code_separator == std::string::npos) {
+        return {};
+    }
+    const auto reason_separator = status_line.find(' ', code_separator + 1);
+    if (reason_separator == std::string::npos) {
+        return {};
+    }
+    return status_line.substr(reason_separator + 1);
 }
 
 bool is_event_stream(const Headers& headers) {
@@ -356,10 +370,19 @@ std::string read_body(
             break;
         }
 
-        std::string chunk(available, '\0');
+        if (!on_chunk) {
+            const auto remaining = max_buffered_size
+                - std::min(max_buffered_size, body.size());
+            if (static_cast<std::size_t>(available) > remaining) {
+                throw ProxyError(502, "upstream_response_too_large", "upstream response body too large");
+            }
+        }
+        constexpr DWORD kReadChunkSize = 64 * 1024;
+        const DWORD requested = std::min(available, kReadChunkSize);
+        std::string chunk(requested, '\0');
         DWORD read = 0;
         operation_deadline.arm(operation_timeout_ms);
-        if (!WinHttpReadData(request->get(), chunk.data(), available, &read)) {
+        if (!WinHttpReadData(request->get(), chunk.data(), requested, &read)) {
             if (total_deadline.timed_out()) {
                 throw ProxyError(504, "upstream_total_timeout", "upstream request total timeout exceeded");
             }
@@ -377,6 +400,9 @@ std::string read_body(
             }
             throw ProxyError(502, "upstream_error", winhttp_error_message("failed to read upstream response data"));
         }
+        if (read == 0) {
+            break;
+        }
         chunk.resize(read);
         if (metrics) {
             metrics->upstream_bytes_received(chunk.size());
@@ -389,9 +415,6 @@ std::string read_body(
                 break;
             }
             continue;
-        }
-        if (chunk.size() > max_buffered_size - std::min(max_buffered_size, body.size())) {
-            throw ProxyError(502, "upstream_response_too_large", "upstream response body too large");
         }
         body += chunk;
     }
@@ -956,32 +979,35 @@ HttpResponse WinHttpTransport::forward_streaming(
         }
         throw ProxyError(502, "upstream_error", winhttp_error_message("failed to send upstream request"));
     }
-    DWORD body_written = 0;
-    if (body_size > 0
-        && !WinHttpWriteData(
-            upstream_request->get(),
-            request.body.data(),
-            body_size,
-            &body_written)) {
-        if (total_deadline.timed_out()) {
-            throw ProxyError(504, "upstream_total_timeout", "upstream request total timeout exceeded");
-        }
-        if (cancellation.is_cancelled()) {
-            throw ProxyError(499, "client_cancelled", "client disconnected");
-        }
-        if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
-            if (metrics_) {
-                metrics_->upstream_timeout(UpstreamTimeoutPhase::Send);
+    DWORD total_body_written = 0;
+    while (total_body_written < body_size) {
+        DWORD body_written = 0;
+        if (!WinHttpWriteData(
+                upstream_request->get(),
+                request.body.data() + total_body_written,
+                body_size - total_body_written,
+                &body_written)) {
+            if (total_deadline.timed_out()) {
+                throw ProxyError(504, "upstream_total_timeout", "upstream request total timeout exceeded");
             }
-            throw ProxyError(504, "upstream_send_timeout", "upstream request send timed out");
+            if (cancellation.is_cancelled()) {
+                throw ProxyError(499, "client_cancelled", "client disconnected");
+            }
+            if (GetLastError() == ERROR_WINHTTP_TIMEOUT) {
+                if (metrics_) {
+                    metrics_->upstream_timeout(UpstreamTimeoutPhase::Send);
+                }
+                throw ProxyError(504, "upstream_send_timeout", "upstream request send timed out");
+            }
+            throw ProxyError(502, "upstream_error", winhttp_error_message("failed to write upstream request body"));
         }
-        throw ProxyError(502, "upstream_error", winhttp_error_message("failed to write upstream request body"));
-    }
-    if (body_written != body_size) {
-        throw ProxyError(502, "upstream_error", "incomplete upstream request body write");
-    }
-    if (metrics_) {
-        metrics_->upstream_bytes_sent(body_written);
+        if (body_written == 0) {
+            throw ProxyError(502, "upstream_error", "upstream request body write made no progress");
+        }
+        total_body_written += body_written;
+        if (metrics_) {
+            metrics_->upstream_bytes_sent(body_written);
+        }
     }
 
     request_context->phase.store(RequestPhase::ResponseHeaders, std::memory_order_release);
@@ -1025,7 +1051,9 @@ HttpResponse WinHttpTransport::forward_streaming(
             "proxy_authentication_unsupported",
             "system proxy requires authentication, which ccs-trans does not support");
     }
-    response.headers = parse_raw_headers(query_raw_headers(upstream_request->get()));
+    const auto raw_headers = narrow(query_raw_headers(upstream_request->get()));
+    response.reason = parse_status_text(raw_headers);
+    response.headers = parse_raw_headers(raw_headers);
     const bool streaming = is_event_stream(response.headers);
     request_context->phase.store(
         streaming ? RequestPhase::StreamIdle : RequestPhase::ResponseBody,
