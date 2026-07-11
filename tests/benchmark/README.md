@@ -59,3 +59,17 @@ request errors, logger writer failures, or logger backpressure.
 Interpret changes using repeated Release runs from the same machine and build
 settings. Correctness, bounded resources, and the median of comparable runs take
 priority over one isolated latency percentile.
+
+## Refactor Baseline
+
+The current harness is the comparison baseline for the planned single-listener,
+multi-Profile refactor. Before the server cutover, preserve a result set from
+the current commit and executable hash. After cutover, update request paths and
+profile labels without changing stream counts, mock delays, logging mode, or
+timeout values.
+
+Rule-pipeline work must also compare empty, 1, 8, and 32-rule pipelines. Empty
+pipelines must avoid JSON parsing; non-empty pipelines must parse at most once
+and serialize at most once regardless of rule count. Messages traffic is added
+as a separate profile only after its protocol handler passes the same ordinary
+response, SSE, cancellation, and Usage assertions.

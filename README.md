@@ -90,6 +90,12 @@ Keys use the long option name without `--`. `run --profile <name>` selects a
 profile for one run, while explicit run options override profile values without
 writing them back.
 
+In the current release, a persistent profile represents one complete runtime
+configuration override. The planned generalized architecture changes Profile
+to mean one simultaneously enabled proxy chain. That schema and CLI transition
+is documented in [docs/Reconstruction.md](docs/Reconstruction.md); it is not
+part of the current executable behavior.
+
 The persistent root is:
 
 ```text
@@ -199,6 +205,7 @@ under the ignored `benchmark-results/` directory.
 ## Repository
 
 ```text
+assets/icons/          Canonical cross-platform icon source
 docs/                  Design and development documentation
 src/config/            CLI, persistent profiles, and configuration snapshots
 src/core/              Service lifecycle, routing types, metrics, and transforms
@@ -213,6 +220,23 @@ tests/benchmark/       Synthetic load and transform benchmarks
 third_party/nlohmann/  Pinned nlohmann/json single-header dependency
 ```
 
+## Development Direction
+
+The next work replaces fixed protocol endpoint groups with one application
+listener and multiple exact-path proxy Profiles. Each Profile will select a
+Responses, Chat, or Messages protocol handler, its own upstream, and an ordered
+request Rule pipeline. Application-level worker, timeout, logging, and resource
+settings remain shared. The current synchronous worker, WinHTTP transport,
+logging, cancellation, and snapshot-generation behavior stay in place while
+the business model is changed.
+
+After that refactor, the planned hosts are a Windows tray executable with
+double-click background startup and a real current-user startup toggle, then a
+macOS menu bar application with login-item control. The canonical 512 px PNG is
+`assets/icons/ccs-trans-512.png`; Windows will derive a multi-resolution ICO
+with ImageMagick, while the macOS menu bar will use PNG assets.
+
 See [docs/Design.md](docs/Design.md),
+[docs/Reconstruction.md](docs/Reconstruction.md),
 [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md), and
 [docs/ProjectStructure.md](docs/ProjectStructure.md).

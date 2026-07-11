@@ -1,0 +1,575 @@
+# ccs-trans 通用化重构设计
+
+## 文档定位
+
+本文是下一轮重构的目标模型和架构决策，不代表当前代码已经实现。当前稳定行为见
+[Design.md](Design.md)，具体构建顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)。
+
+重构目标不是增加另一条特殊规则，而是把 `ccs-trans` 明确定义为：
+
+> LLM API Request Transformation Proxy
+
+它只负责接收请求、根据配置执行请求转换、转发上游并返回响应。Agent、模型供应商
+选择、API key 管理和故障转移仍由 cc-switch 或其他上层工具负责。
+
+## 为什么需要重构
+
+当前实现已经具备稳定的转发、SSE、取消、日志、profile 存储和 reload，但业务模型
+仍绑定在两个固定端点上：
+
+- `EndpointGroupKind` 只有 Responses 和 Chat；
+- `ApiTaskKind` 固定列出两个主任务和两个 Usage 任务；
+- `AppConfig` 为每种协议保存一组专用字段；
+- `Server` 为两个 listener、两个 router 和 findcg transform 保留显式分支；
+- 当前持久 profile 表示“一整套 AppConfig 覆盖”，不能同时描述多条代理链；
+- transform 通过字符串名称和 `Server` 中的硬编码对象连接，不能由配置组合。
+
+在这个模型上增加 Messages、新 Provider 或多条同协议链路，会同时修改 config、CLI、
+task enum、router、server、日志字段和测试矩阵。问题不在某个类太长，而在核心业务
+概念没有稳定下来。
+
+## 核心决策
+
+重构后的系统围绕三个概念组织：
+
+| 概念 | 含义 | 生命周期 |
+| --- | --- | --- |
+| Profile | 一条完整代理链：本地路由、协议、上游和有序规则 | 配置级 |
+| Protocol | 解释协议结构和协议专用规则 | 进程级 registry |
+| Rule | 一项可验证、可排序、可独立记录的请求转换 | snapshot 编译级 |
+
+同时明确以下决策：
+
+1. 一个进程只使用一个应用级 HTTP listener。
+2. 所有 enabled profile 同时装入同一张路由表。
+3. listener、worker、连接容量、timeout、body limit、logging 和 metrics 是应用级
+   配置，不复制到每个 profile。
+4. profile 只拥有协议、本地路径、上游和规则。
+5. 请求按 method + canonical local path 精确选择 profile，不猜 header 或 body。
+6. protocol handler 负责协议知识，worker 和 transport 不关心协议。
+7. rule 在配置加载时完成校验和编译，请求路径只执行不可变 pipeline。
+8. 当前只改写请求；上游响应继续透明转发。
+9. 保留同步按需 worker 和 WinHTTP 实现，业务重构不与网络栈重写绑定。
+10. 当前配置 schema 与新 profile 含义不兼容，新 schema 不保留运行时兼容层。
+
+## 应用级与 Profile 级边界
+
+原草案把 listener/runtime 同时放在根和 profile 中，这会造成冲突。最终边界固定为：
+
+```text
+Application
+  listener
+  runtime
+  timeouts
+  logging
+  profiles[]
+
+Profile
+  enabled
+  protocol
+  local routes
+  upstream target/routes
+  ordered rules[]
+```
+
+原因：一个 listener 和一个共享 worker pool 无法为不同 profile 同时兑现不同线程数
+或监听端口。把这些字段放在 profile 中只会产生“选哪个值”的隐式优先级。需要
+隔离资源时应启动第二个进程和第二份配置，而不是在一个进程中伪装多套 runtime。
+
+## 配置文档
+
+目标 schema：
+
+```json
+{
+  "schema_version": "ccs-trans.config/v2",
+  "listener": {
+    "host": "127.0.0.1",
+    "port": 15723
+  },
+  "runtime": {
+    "worker_threads": 32,
+    "max_connections": 64,
+    "max_request_body_size": 104857600,
+    "max_response_body_size": 104857600,
+    "metrics_interval_ms": 0
+  },
+  "timeouts": {
+    "resolve_ms": 300000,
+    "connect_ms": 300000,
+    "send_ms": 300000,
+    "response_header_ms": 300000,
+    "stream_idle_ms": 300000,
+    "total_ms": 0
+  },
+  "logging": {
+    "path": "logs/ccs-trans.log",
+    "level": "info",
+    "body": true,
+    "redact_sensitive": false,
+    "body_limit": 1048576,
+    "queue_capacity": 16777216,
+    "flush_interval_ms": 100
+  },
+  "profiles": {
+    "findcg": {
+      "enabled": true,
+      "protocol": "responses",
+      "local": {
+        "request_path": "/findcg/v1/responses",
+        "usage_path": "/findcg/v1/usage"
+      },
+      "upstream": {
+        "base_url": "https://www.findcg.com",
+        "request_path": "/v1/responses",
+        "usage_path": "/v1/usage"
+      },
+      "rules": [
+        {
+          "id": "remove-image-gen",
+          "enabled": true,
+          "type": "remove_tool",
+          "tool": "image_gen"
+        }
+      ]
+    }
+  }
+}
+```
+
+字段名在 JSON 中使用 `snake_case`。CLI key 使用稳定的点路径，例如
+`listener.port`、`runtime.worker-threads`、`local.request-path`。CLI 表示不改变
+JSON 的类型约束。
+
+### 配置约束
+
+1. profile 名和 rule id 在各自作用域内唯一且稳定，用于日志和 CLI，不使用数组
+   下标作为永久标识。
+2. enabled profile 必须拥有完整 protocol、request route 和 upstream target。
+3. disabled profile 可以作为草稿保存，但字段仍需满足类型和局部格式校验。
+4. rule 默认按数组顺序执行；id 只用于定位，不改变顺序。
+5. enabled rule 必须通过 type、参数和 protocol 适用性校验。
+6. Usage route 可选；缺失时该 profile 不注册 Usage。
+7. 所有 enabled route 的 method + canonical path 必须全局唯一。
+8. 本地路径禁止 query、fragment、`..`、重复分隔歧义和保留管理路径。
+9. upstream base URL 只接受 `http`/`https`，路径与 query 分开保存。
+10. 初始上限固定为：配置文档 4 MiB、128 个 profile、256 条 route、每 profile
+    64 条 rule。修改上限必须同时 review 内存、reload 时间和 metrics cardinality。
+
+### cc-switch 路径用法
+
+如果 cc-switch 会在 endpoint 后追加 `/v1/responses` 和 `/v1/usage`，可把 Provider
+endpoint 配成：
+
+```text
+http://127.0.0.1:15723/findcg
+```
+
+实际请求将命中：
+
+```text
+/findcg/v1/responses
+/findcg/v1/usage
+```
+
+因此 profile 保存的是最终精确路径，而不是一个需要运行时模糊匹配的 path prefix。
+不同客户端路径行为可通过显式 local route 配置适配。
+
+## Profile 语义
+
+一个 profile 表示一条代理链，而不是一套进程配置：
+
+```text
+local request
+    -> profile
+    -> protocol handler
+    -> ordered rule pipeline
+    -> profile upstream
+    -> transparent response
+```
+
+例如同一个进程可同时装载：
+
+| Profile | Protocol | Local request | Upstream request |
+| --- | --- | --- | --- |
+| `findcg` | `responses` | `/findcg/v1/responses` | `https://www.findcg.com/v1/responses` |
+| `openrouter` | `chat` | `/openrouter/v1/chat/completions` | `https://openrouter.ai/api/v1/chat/completions` |
+| `anthropic` | `messages` | `/anthropic/v1/messages` | `https://api.anthropic.com/v1/messages` |
+
+所有 enabled profile 默认同时生效。目标模型不再保存 `active_profile`，也不保留
+`profile use`，因为单 active profile 会让同端口多路由失去意义。
+
+`ccs-trans run --profile <name>` 保留为一次性诊断模式：只把指定 profile 编译进
+本次 runtime snapshot，不修改配置文件，也不改变其他 profile 的 enabled 状态。
+它可以选择 disabled profile，但该 profile 必须通过完整运行校验；这允许启用前测试
+一条已经配置完整的代理链。
+
+## 路由模型
+
+配置编译阶段生成不可变 route index：
+
+```text
+RouteKey = HTTP method + canonical path
+RouteEntry
+  profile id
+  route kind: request | usage
+  protocol handler
+  upstream target
+  compiled rule pipeline
+  logging policy
+```
+
+请求路径只做一次 query 分离和 canonicalization，再使用 hash lookup。不得每次线性
+扫描 profile，也不得根据协议枚举重复查表。
+
+路由规则：
+
+1. 主请求 method 由 protocol descriptor 定义，当前三种协议均为 `POST`。
+2. Usage method 默认 `GET`，但 route 是否存在由 profile 显式配置。
+3. query 原样附加到对应 upstream path。
+4. 路径存在但 method 错误时返回 405；完全未知路径返回 404。
+5. 配置阶段发现 route collision 时拒绝整个 snapshot，不使用声明顺序决定胜负。
+6. route 只持有 immutable/shared 数据，不引用可被配置编辑原地修改的对象。
+
+## Protocol Handler
+
+初始 registry 固定支持：
+
+```text
+responses
+chat
+messages
+```
+
+handler 负责：
+
+- protocol id、主请求 method 和协议能力声明；
+- 校验 profile 上游与本地 route 是否满足该协议要求；
+- 编译协议专用 rule；
+- 为 rule 提供协议字段定位和结构化辅助函数；
+- 生成稳定的协议错误分类。
+
+handler 不负责：
+
+- 接受 socket；
+- 选择 profile；
+- 创建 worker；
+- 读取或写入配置文件；
+- 执行 WinHTTP；
+- 聚合 SSE response body。
+
+透明 profile 不应因为选择了某个 handler 就自动解析 JSON。只有非空且需要 body 的
+pipeline 才进入 JSON 解析路径。
+
+## Rule Pipeline
+
+### Rule 定义
+
+每条 rule 至少包含：
+
+```text
+id
+enabled
+type
+typed options
+```
+
+配置加载时，`RuleRegistry` 根据 type 查找 factory，factory 校验参数和 protocol，
+然后生成只读 `CompiledRule`。未知 type、未知字段、错误类型和不支持的协议组合会
+在启动或 reload 前失败。
+
+请求执行过程：
+
+```text
+raw body
+  -> pipeline empty? -> reuse raw body
+  -> parse JSON once
+  -> Rule 1
+  -> Rule 2
+  -> ...
+  -> modified? serialize once : reuse raw body
+```
+
+一条 pipeline 中所有 JSON rule 共享一个 DOM。不能让每条 rule 各自 parse/dump。
+rule 返回统一结果：matched、modified、reason 和有界 summary；日志不保存第二份
+完整 body。
+
+### Generic Rule
+
+Generic rule 使用 RFC 6901 JSON Pointer 定位，不理解具体 LLM 协议。首批候选：
+
+```text
+set_field
+remove_field
+rename_field
+append_array
+insert_array
+merge_object
+```
+
+每种操作都必须定义：目标不存在时行为、类型冲突行为、数组越界行为以及是否允许
+创建中间对象。默认采用严格失败，避免拼错路径后静默发送错误请求。
+
+### Specialized Rule
+
+Specialized rule 理解协议结构，例如：
+
+```text
+remove_tool
+replace_tool
+append_system
+rewrite_messages
+merge_consecutive_messages
+rewrite_thinking
+```
+
+同一个 rule type 可以为多个 protocol 注册实现，但不要求所有协议都支持。比如
+`remove_tool` 的 Responses、Chat 和 Messages 表示可能不同，适用矩阵在配置编译时
+验证，不在请求运行中 fallback。
+
+当前 findcg 行为迁移为普通配置：在 `findcg` profile 上启用
+`remove_tool(tool=image_gen)`。新 rule 不再硬编码 findcg host；是否应用由 profile
+的显式 pipeline 决定。
+
+### Rule 日志
+
+每条 rule 记录：
+
+```text
+request_id
+profile_id
+protocol
+rule_id
+rule_type
+matched
+modified
+reason
+bounded change summary
+duration_us
+```
+
+配置中的长文本、完整替换值和系统提示默认不写日志。必要时记录长度或 digest，避免
+把 profile 中的敏感业务文本复制到日志。
+
+## Runtime Snapshot 与 Reload
+
+目标 runtime generation：
+
+```text
+RuntimeSnapshot
+  validated application settings
+  immutable route index
+  compiled protocol handlers/references
+  compiled pipelines
+  transport/logging policies
+```
+
+构建流程：
+
+```text
+parse ConfigDocument
+  -> schema/type validation
+  -> profile/rule validation
+  -> compile route index and pipelines
+  -> validate topology
+  -> publish shared_ptr<const RuntimeSnapshot>
+```
+
+新请求只读取一次 snapshot。reload 原子交换 generation；in-flight 请求继续持有旧
+route、pipeline 和 upstream。listener 或 worker 拓扑变化沿用受控 restart 和失败
+回滚。profile、route、upstream 和 rule 变化应能对新请求热切换。
+
+配置编辑对象、JSON DOM 和 runtime snapshot 必须分开，不能为了 CLI set 在运行中
+原地修改已发布对象。
+
+## CLI 目标
+
+应用级配置：
+
+```text
+ccs-trans config show
+ccs-trans config set <key> <value>
+ccs-trans config unset <key>
+```
+
+代理链：
+
+```text
+ccs-trans profile list
+ccs-trans profile show <name>
+ccs-trans profile create <name>
+ccs-trans profile remove <name>
+ccs-trans profile enable <name>
+ccs-trans profile disable <name>
+ccs-trans profile set <name> <key> <value>
+ccs-trans profile unset <name> <key>
+```
+
+规则：
+
+```text
+ccs-trans rule list <profile>
+ccs-trans rule show <profile> <id>
+ccs-trans rule add <profile> <id> <type>
+ccs-trans rule remove <profile> <id>
+ccs-trans rule enable <profile> <id>
+ccs-trans rule disable <profile> <id>
+ccs-trans rule set <profile> <id> <key> <value>
+ccs-trans rule unset <profile> <id> <key>
+ccs-trans rule move <profile> <id> <position>
+```
+
+运行：
+
+```text
+ccs-trans run
+ccs-trans run --profile <name>
+ccs-trans run --log-level <level>
+ccs-trans run --log-path <path>
+```
+
+`profile create` 默认创建 disabled 草稿，`rule add` 默认创建 disabled rule。这样每个
+`set` 仍只修改一个字段，同时不会要求一条命令携带整组配置。enable 操作执行完整
+可运行性校验。
+
+`run` 不再接受其他配置覆盖。`--profile`、`--log-level` 和 `--log-path` 是仅有的
+一次性运行选项，不写回配置；长期设置通过 `config/profile/rule` 命令逐项修改。
+三个字段都只有上述一个规范名称，不增加短 alias 或同义命令。
+
+## Schema 切换
+
+新模型改变了 profile 的含义，无法把 `ccs-trans.config/v1` 当作同一结构继续读取。
+处理原则：
+
+1. runtime loader 只接受目标 schema；
+2. 遇到旧 schema 时明确报错并保持原文件不变；
+3. 不做字段 fallback、双模型常驻或静默自动迁移；
+4. 若真实配置数量证明有需要，可另做一次性离线转换命令，但转换器不进入请求路径；
+5. 首次写新 schema 前先通过临时文件完整验证，继续使用原子替换。
+
+这不是保留旧版兼容，而是保证不误毁用户已有配置。
+
+## 性能设计
+
+重构不能牺牲现有 8-16 路桌面负载。实现时保留以下不变量：
+
+- route index 在 snapshot 构建时完成，单请求不线性扫描 profile；
+- pipeline 和 rule 参数只编译一次；
+- 空 pipeline 不解析 JSON；
+- 非空 pipeline 最多 parse 一次、serialize 一次；
+- 未修改 body 继续复用原始 bytes；
+- 日志 summary 有界，不复制完整 DOM 或 SSE；
+- profile/rule 指标 label 来自有上限的配置集合；
+- 所有队列、配置大小、profile 数和 rule 数有上限；
+- worker、logger、WinHTTP session 继续进程级共享；
+- SSE、取消和 timeout 行为不因业务模型改变。
+
+先用当前同步模型完成重构并跑同一 benchmark。只有 8/16 路、`mixed-16` 或明确的
+目标平台数据证明执行层成为瓶颈时，才单独设计异步 listener/transport。不要同时
+改业务模型、配置 schema 和网络并发模型，否则无法定位回归来源。
+
+## 可观测性变化
+
+现有 endpoint label 改为：
+
+```text
+profile_id
+protocol
+route_kind
+```
+
+进程级 worker、连接、logger 和 transport 指标保持全局。profile 级只记录路由数、
+请求数、失败数、queue wait 和 rule 汇总，不为任意 JSON path 或动态 rule value
+创建 metrics label。
+
+Usage 继续采用最小日志策略。它记录 profile、protocol、target、status 和 duration，
+不进入 request body/rule pipeline。
+
+## 目录目标
+
+目录按稳定职责组织，不为每个小 rule 建一层空目录：
+
+```text
+src/
+  app/
+    app_service.*
+  config/
+    app_paths.*
+    config_document.*
+    config_store.*
+    runtime_compiler.*
+  core/
+    cancellation.*
+    http_types.hpp
+    request_id.*
+    runtime_metrics.*
+    timeouts.hpp
+    url.*
+  hosts/
+    cli_main.cpp
+  logging/
+    logger.*
+  protocols/
+    protocol_handler.*
+    protocol_registry.*
+    responses_handler.*
+    chat_handler.*
+    messages_handler.*
+  routing/
+    profile.hpp
+    route_table.*
+  rules/
+    rule.*
+    rule_registry.*
+    generic_json_rules.*
+    remove_tool_rule.*
+  runtime/
+    runtime_snapshot.*
+  server/
+    server.*
+  transport/
+    header_filter.*
+    upstream_transport.hpp
+    windows/
+      winhttp_transport.*
+```
+
+现有文件在对应接口工作包落地时移动，CMake、include 和测试同一提交更新。不会先
+创建空目录或做纯路径搬运。
+
+## 复用与替换边界
+
+直接复用并保持行为：
+
+- `AppService` 的启动、停止、wait、reload 和回滚语义；
+- cancellation、request id、HTTP types、URL parser 和 split timeout；
+- logger 的批写、错误 flush、背压和健康状态；
+- WinHTTP session、流式 callback、客户端取消和响应限制；
+- worker 预热/按需增长、连接总量限制和 benchmark harness。
+
+需要替换：
+
+- 两个固定 `EndpointGroupConfig`；
+- 当前“整套 AppConfig 覆盖”的 `ProfileStore`；
+- endpoint/task 枚举驱动的 `TaskRouter`；
+- `Server` 内两个 router 和 transform 名称判断；
+- findcg host 与 `image_gen` 规则绑定；
+- endpoint 固定维度的部分日志与 metrics。
+
+## 完成判据
+
+重构完成时必须同时满足：
+
+1. 一个 listener 可同时服务多个 enabled profile。
+2. Responses、Chat、Messages 分别通过 protocol registry 路由。
+3. Usage 精确跟随命中的 profile upstream。
+4. findcg 行为由 profile rule 表达，不再由 host 特判。
+5. 新增 profile 不修改 C++ enum 或 `Server` 分支。
+6. 新增 generic rule 不修改 router、transport 或 worker。
+7. route collision、未知 protocol/rule 和不完整 enabled profile 在启动前失败。
+8. reload 后旧请求保持旧 generation，新请求使用新 route/pipeline。
+9. 透明请求 body 字节不变，SSE、取消、timeout、日志和限制行为不退化。
+10. `desktop-8`、`desktop-16`、`mixed-16` 和 `stress-50` 使用同一口径回归。
+11. 文档、CLI help、schema fixture、目录和发布白名单保持一致。
+
+完成通用化重构后，再在这个稳定应用接口上实现 Windows tray 和 macOS 菜单栏宿主。
