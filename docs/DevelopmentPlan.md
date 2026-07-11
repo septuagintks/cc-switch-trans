@@ -242,6 +242,16 @@ help 与 schema key 一致、日志路径仍限制在应用根或显式绝对路
 完成标准：可以完全通过 CLI 建立两个同协议 profile 和一条有序 rule pipeline，
 show 输出与磁盘 JSON 一致。
 
+阶段 11.3 已完成模块实现。`config_cli` 严格解析全部目标命令，run 只接受三个批准的
+一次性 override；executor 在文档副本上执行单字段修改并通过 `ConfigStore` 原子保存。
+独立 CTest 已建立两个同时 enabled 的 Responses profile，完成 rule add/set/enable/
+disable/move/unset/remove，并逐项比较 show 与磁盘 typed JSON；错误参数、不完整 enable、
+跨字段冲突和 enabled profile 必填字段 unset 均保持文件字节不变。
+
+生产 `cli_main` 的接线明确延后到 11.7：当前 server 还不能消费 v2，提前让管理命令写
+v2 会制造“写 v2、run 读 v1”的不可启动中间态。parser/executor 不是 legacy fallback；
+切换提交会用它替换旧 CLI，届时同一可执行文件只接受 v2。
+
 ### 11.4 编译 RuntimeSnapshot 与路由表
 
 目的：把磁盘配置与请求热路径彻底分开。

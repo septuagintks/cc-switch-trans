@@ -513,6 +513,20 @@ ccs-trans run --log-path <path>
 一次性运行选项，不写回配置；长期设置通过 `config/profile/rule` 命令逐项修改。
 三个字段都只有上述一个规范名称，不增加短 alias 或同义命令。
 
+CLI 细节固定为：
+
+- `config unset` 把单个应用字段恢复为内建默认值；若与其他字段形成无效组合则失败；
+- `profile/rule enable` 不隐式补字段，候选文档必须先通过对应完整校验；
+- `rule move` 的 position 为 1-based，范围是当前 pipeline 的 `1..size`；
+- `rule set` 的 value 若是合法 JSON 则保留 boolean/number/object/array/null 类型，
+  否则作为字符串；看似 JSON 的字符串可显式传 JSON quoted string；
+- show/list 输出保持 JSON 类型，并由 canonical document serializer 派生，不维护第二套
+  字段拼写；
+- 修改先作用于文档副本，完整校验和 `ConfigStore` 原子保存成功后才发布结果。
+
+`config_cli` parser/executor 在 11.3 独立完成，但生产 host 不提前接线。host 与 v2
+runtime 在单 listener 切换时一起启用，避免管理命令写 v2 而旧 `run` 只读 v1。
+
 ## Schema 切换
 
 新模型改变了 profile 的含义，无法把 `ccs-trans.config/v1` 当作同一结构继续读取。

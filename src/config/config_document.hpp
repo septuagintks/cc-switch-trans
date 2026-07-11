@@ -110,5 +110,6 @@ bool is_valid_profile_id(const std::string& value);
 bool is_valid_protocol_id(const std::string& value);
 bool is_valid_rule_id(const std::string& value);
 bool is_valid_rule_type(const std::string& value);
+bool is_valid_rule_option_name(const std::string& value);
 
 } // namespace ccs

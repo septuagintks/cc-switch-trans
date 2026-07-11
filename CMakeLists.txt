@@ -7,6 +7,7 @@ include(CTest)
 add_library(ccs-trans-core STATIC
     src/config/app_paths.cpp
     src/config/config.cpp
+    src/config/config_cli.cpp
     src/config/config_document.cpp
     src/config/config_store.cpp
     src/config/profile_store.cpp
@@ -57,6 +58,12 @@ if(BUILD_TESTING)
         CCS_TRANS_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
     )
     add_test(NAME ccs-trans-config-document-tests COMMAND ccs-trans-config-document-tests)
+
+    add_executable(ccs-trans-config-cli-tests
+        tests/unit/config_cli_tests.cpp
+    )
+    target_link_libraries(ccs-trans-config-cli-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-config-cli-tests COMMAND ccs-trans-config-cli-tests)
 
     if(WIN32)
         add_executable(ccs-trans-reload-integration

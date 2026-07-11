@@ -110,7 +110,7 @@ bool valid_stable_id(
     return true;
 }
 
-bool valid_rule_option_name(const std::string& value) {
+bool valid_rule_option_name_impl(const std::string& value) {
     if (value.empty() || value.size() > 64 || value.front() < 'a' || value.front() > 'z') {
         return false;
     }
@@ -412,7 +412,7 @@ bool parse_rule(
         if (it.key() == "id" || it.key() == "enabled" || it.key() == "type") {
             continue;
         }
-        if (!valid_rule_option_name(it.key())) {
+        if (!is_valid_rule_option_name(it.key())) {
             error = path + " contains an invalid rule option name: " + it.key();
             return false;
         }
@@ -811,6 +811,13 @@ bool is_valid_rule_type(const std::string& value) {
     return valid_stable_id(value, true, false) && value.find('-') == std::string::npos;
 }
 
+bool is_valid_rule_option_name(const std::string& value) {
+    return value != "id"
+        && value != "enabled"
+        && value != "type"
+        && valid_rule_option_name_impl(value);
+}
+
 bool validate_profile_definition(
     const std::string& profile_id,
     const ProfileDefinition& profile,
@@ -865,8 +872,7 @@ bool validate_profile_definition(
             return false;
         }
         for (const auto& [key, value] : rule.options) {
-            if (key == "id" || key == "enabled" || key == "type"
-                || !valid_rule_option_name(key)) {
+            if (!is_valid_rule_option_name(key)) {
                 error = label + " rule " + rule.id.value + " has an invalid option name: " + key;
                 return false;
             }

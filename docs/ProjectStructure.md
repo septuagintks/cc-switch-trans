@@ -31,6 +31,7 @@ cc-switch-trans/
     config/
       app_paths.hpp/.cpp
       config.hpp/.cpp
+      config_cli.hpp/.cpp
       config_document.hpp/.cpp
       config_store.hpp/.cpp
       profile_store.hpp/.cpp
@@ -65,6 +66,7 @@ cc-switch-trans/
         findcg-transform-cases.json
         transparent-request-body.json
     unit/
+      config_cli_tests.cpp
       config_document_tests.cpp
       core_tests.cpp
     integration/
@@ -91,7 +93,7 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 
 | 目录 | 当前职责 | 已知重构点 |
 | --- | --- | --- |
-| `src/config` | v2 editable document/store、旧 CLI/AppConfig/ProfileStore、用户路径 | 11.3 起逐步移除旧模型 |
+| `src/config` | v2 CLI/document/store、旧生产 CLI/AppConfig/ProfileStore、用户路径 | 11.7 一次切换 host/runtime |
 | `src/core` | AppService、任务枚举、router 基础、取消、指标、transform 接口 | app/routing/runtime 职责混合 |
 | `src/hosts` | CLI 入口 | 将增加 Windows tray 和 macOS menu bar |
 | `src/logging` | JSON Lines、批写、flush、背压、writer health | 保持独立，仅调整标签 |
@@ -271,6 +273,7 @@ core -> C++ standard library
 
 ```text
 tests/unit/
+  config_cli_tests.cpp
   config_document_tests.cpp
   route_table_tests.cpp
   protocol_tests.cpp
