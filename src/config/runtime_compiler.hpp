@@ -2,6 +2,7 @@
 
 #include "config/config_document.hpp"
 #include "protocols/protocol_registry.hpp"
+#include "rules/rule_registry.hpp"
 #include "runtime/runtime_snapshot.hpp"
 
 #include <filesystem>
@@ -18,7 +19,8 @@ class RuntimeCompiler {
 public:
     explicit RuntimeCompiler(
         std::filesystem::path application_root,
-        std::shared_ptr<const ProtocolRegistry> protocols = builtin_protocol_registry());
+        std::shared_ptr<const ProtocolRegistry> protocols = builtin_protocol_registry(),
+        std::shared_ptr<const RuleRegistry> rules = builtin_rule_registry());
 
     bool compile(
         const ConfigDocument& document,
@@ -29,6 +31,7 @@ public:
 private:
     std::filesystem::path application_root_;
     std::shared_ptr<const ProtocolRegistry> protocols_;
+    std::shared_ptr<const RuleRegistry> rules_;
 };
 
 } // namespace ccs

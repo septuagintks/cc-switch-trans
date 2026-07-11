@@ -399,6 +399,12 @@ raw body
 rule 返回统一结果：matched、modified、reason 和有界 summary；日志不保存第二份
 完整 body。
 
+阶段 11.6 已实现上述编译和执行核心。`RuntimeSnapshot` 同时持有 immutable
+`ProtocolRegistry` 与 `RuleRegistry` generation，每个 `RuntimeProfile` 持有编译后的
+只读 pipeline。空 pipeline 对任意 body 都保持零 parse；非空 pipeline 最多一次 parse
+和一次 serialize。rule 失败时 candidate DOM 整体废弃，调用方只能继续使用原始 body，
+不会看到部分修改。
+
 ### Generic Rule
 
 Generic rule 使用 RFC 6901 JSON Pointer 定位，不理解具体 LLM 协议。首批候选：
@@ -414,6 +420,10 @@ merge_object
 
 每种操作都必须定义：目标不存在时行为、类型冲突行为、数组越界行为以及是否允许
 创建中间对象。默认采用严格失败，避免拼错路径后静默发送错误请求。
+
+首批已实现 `set_field` 与 `remove_field`。两者都只定位已存在目标，不创建中间层；
+`set_field` 允许空 pointer 替换 root，相同值记为 matched 但不序列化；`remove_field`
+禁止 root。array token 使用严格十进制 index，不接受 `-`、前导零、非数字或越界值。
 
 ### Specialized Rule
 
@@ -435,6 +445,11 @@ rewrite_thinking
 当前 findcg 行为迁移为普通配置：在 `findcg` profile 上启用
 `remove_tool(tool=image_gen)`。新 rule 不再硬编码 findcg host；是否应用由 profile
 的显式 pipeline 决定。
+
+`remove_tool` 的三个首批实现已编译进 registry：Responses 检查 root tool 的 `name`
+或 `namespace`，Chat 检查 `function.name`，Messages 检查 root `name`。root 必须是
+object；`tools` 缺失或不是 array 时保持透明；匹配项按原顺序稳定删除，全部删除后保留
+空 array。生产请求切换到该 pipeline、移除旧 host 特判仍由 11.7 完成。
 
 ### Rule 日志
 

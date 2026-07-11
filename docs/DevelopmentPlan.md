@@ -390,6 +390,30 @@ DOM 复制、日志敏感值和 protocol capability。
 完成标准：findcg 实测等价；同一 profile 可按顺序运行多条 rule；新增 generic rule
 不修改 `Server` 或 transport。
 
+阶段 11.6 已完成。`RuleRegistry` 在 `RuntimeCompiler` 构造时复制为 immutable snapshot，
+只编译 enabled rule；disabled 的未来 rule type 可以保留为草稿，enabled 的未知 type、
+错误 option 和不适用 protocol 会阻止新 snapshot 发布。`RuntimeProfile` 只持有
+`shared_ptr<const CompiledPipeline>`，不再把可编辑 `RuleDefinition` 带入请求路径。
+
+首批语义固定如下：
+
+- `set_field(path, value)` 要求目标已经存在，不创建中间对象；空 pointer 可以替换 root；
+- `remove_field(path)` 要求目标已经存在，禁止删除 root；
+- array index 禁止 `-`、前导零、非数字和越界，pointer 只接受 RFC 6901 `~0`/`~1`；
+- `remove_tool(tool)` 在 Responses 匹配 root `name`/`namespace`，Chat 匹配
+  `function.name`，Messages 匹配 root `name`；缺失或非 array 的 root `tools` 保持透明；
+- 任一 rule 失败时丢弃本次 DOM，绝不发布部分修改；可预期的输入错误映射 400，
+  未预期实现错误映射 500。
+
+新增独立 rule CTest 和 0/1/8/32-rule microbenchmark。pipeline 为空时不解析，非空时
+只 parse 一次，共享一个 DOM，只有发生修改才 dump 一次；未修改请求继续复用原 body
+bytes。`remove_tool` 在 candidate DOM 的 tools array 上稳定原地删除并直接比较 string
+reference，不为日志保留 body 或 tool value。benchmark 分别输出 total、parse、rules 和
+serialize 时间，后续 11.7/11.9 可直接用来定位回归。
+
+当前生产 `Server` 仍使用旧 findcg transform；将其删除并让真实请求执行 compiled
+pipeline 属于 11.7 的原子 host 切换，11.6 不引入中间兼容分支。
+
 ### 11.7 Server 切换为单 Listener
 
 目的：用 profile route table 接管真实请求，移除固定双端点编排。

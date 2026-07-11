@@ -377,8 +377,10 @@ failure 或未预期的 backpressure。
 
 - 上游 transport 和 listener 仍是 Windows 实现。
 - Windows 自动系统代理已实现；macOS system-libcurl transport 尚未实现。
-- 当前协议模型固定为 Responses、Chat Completions 及各自 Usage。
-- 当前 transform 注册方式足以承载已实现规则，但通用规则配置仍未实现。
+- 当前生产协议模型仍固定为 Responses、Chat Completions 及各自 Usage；v2 runtime 已能
+  编译 Responses、Chat、Messages handler，尚待 11.7 接入生产 Server。
+- v2 runtime 已实现配置期 RuleRegistry、generic JSON Pointer 和三协议 `remove_tool`
+  pipeline；当前生产 Server 仍运行旧 transform，尚未执行 compiled pipeline。
 - tray、开机自启、双击后台运行和 macOS 菜单栏宿主尚未实现。
 
 已批准的演进方向是：

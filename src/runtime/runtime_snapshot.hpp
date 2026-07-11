@@ -4,6 +4,7 @@
 #include "protocols/protocol_registry.hpp"
 #include "routing/profile.hpp"
 #include "routing/route_table.hpp"
+#include "rules/rule_registry.hpp"
 
 #include <filesystem>
 #include <map>
@@ -16,6 +17,7 @@ struct RuntimeSnapshot {
     ApplicationSettings application;
     std::filesystem::path log_path;
     std::shared_ptr<const ProtocolRegistry> protocols;
+    std::shared_ptr<const RuleRegistry> rules;
     std::map<std::string, std::shared_ptr<const RuntimeProfile>> profiles;
     RouteTable routes;
 };

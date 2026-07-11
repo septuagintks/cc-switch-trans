@@ -6,6 +6,8 @@
 #include "routing/route_table.hpp"
 #include "runtime/runtime_snapshot.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -57,6 +59,7 @@ ccs::ConfigDocument multi_protocol_document() {
     auto disabled_rule = enabled_rule;
     disabled_rule.id.value = "disabled-rule";
     disabled_rule.enabled = false;
+    disabled_rule.type = "future_rule";
     responses.rules.push_back(disabled_rule);
     document.profiles.emplace("findcg", std::move(responses));
     document.profiles.emplace(
@@ -212,8 +215,15 @@ void test_runtime_compiler_multi_profile() {
     require(responses.status == ccs::RouteLookupStatus::Matched, "Responses route lookup");
     require(responses.entry->profile->id == "findcg", "Responses profile ownership");
     require(responses.entry->profile->handler->id() == "responses", "Responses protocol ownership");
-    require(responses.entry->profile->request_pipeline.size() == 1, "only enabled rules enter runtime pipeline");
-    require(responses.entry->profile->request_pipeline[0].id.value == "enabled-rule", "rule order retained");
+    require(responses.entry->profile->request_pipeline != nullptr,
+        "runtime profile owns a compiled pipeline");
+    require(responses.entry->profile->request_pipeline->size() == 1,
+        "only enabled rules enter runtime pipeline");
+    const auto transformed = responses.entry->profile->request_pipeline->apply(
+        R"({"tools":[{"name":"image_gen"},{"name":"web_search"}]})");
+    require(transformed.ok && transformed.modified && transformed.traces.size() == 1,
+        "compiled Responses rule executes");
+    require(transformed.traces[0].rule_id == "enabled-rule", "rule order retained");
     require(responses.entry->upstream.base_url == "https://responses.example.com", "Responses upstream ownership");
 
     const auto usage = snapshot->routes.lookup("GET", "/findcg/usage");
@@ -309,8 +319,13 @@ void test_snapshot_ownership_and_concurrent_lookup() {
     require(retained.status == ccs::RouteLookupStatus::Matched, "snapshot route survives source mutation");
     require(retained.entry->upstream.base_url == "https://responses.example.com", "snapshot upstream is owned");
     require(retained.entry->profile == original_profile, "route shares immutable runtime profile");
-    require(retained.entry->profile->request_pipeline[0].options.at("tool") == "image_gen",
-        "snapshot rule options are owned");
+    const auto retained_transform = retained.entry->profile->request_pipeline->apply(
+        R"({"tools":[{"name":"image_gen"},{"name":"mutated"}]})");
+    require(retained_transform.ok
+            && retained_transform.modified
+            && retained_transform.rewritten_body
+            && nlohmann::json::parse(*retained_transform.rewritten_body)["tools"].size() == 1,
+        "snapshot compiled rule options are owned");
 
     std::atomic_bool failed{false};
     std::vector<std::thread> readers;

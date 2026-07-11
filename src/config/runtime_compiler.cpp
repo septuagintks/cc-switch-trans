@@ -8,10 +8,14 @@ namespace ccs {
 
 RuntimeCompiler::RuntimeCompiler(
     std::filesystem::path application_root,
-    std::shared_ptr<const ProtocolRegistry> protocols)
+    std::shared_ptr<const ProtocolRegistry> protocols,
+    std::shared_ptr<const RuleRegistry> rules)
     : application_root_(std::move(application_root))
     , protocols_(protocols
               ? std::make_shared<const ProtocolRegistry>(*protocols)
+              : nullptr)
+    , rules_(rules
+              ? std::make_shared<const RuleRegistry>(*rules)
               : nullptr) {}
 
 bool RuntimeCompiler::compile(
@@ -26,6 +30,10 @@ bool RuntimeCompiler::compile(
     }
     if (!protocols_) {
         error = "runtime compiler requires a protocol registry";
+        return false;
+    }
+    if (!rules_) {
+        error = "runtime compiler requires a rule registry";
         return false;
     }
     if (!validate_config_document(document, error)) {
@@ -59,6 +67,7 @@ bool RuntimeCompiler::compile(
     RuntimeSnapshot candidate;
     candidate.application = document.application;
     candidate.protocols = protocols_;
+    candidate.rules = rules_;
     if (!resolve_application_log_path(
             document.application,
             application_root_,
@@ -82,10 +91,13 @@ bool RuntimeCompiler::compile(
         mutable_profile->id = profile_id;
         mutable_profile->handler = handler;
         mutable_profile->source_enabled = definition->enabled;
-        for (const auto& rule : definition->rules) {
-            if (rule.enabled) {
-                mutable_profile->request_pipeline.push_back(rule);
-            }
+        if (!rules_->compile_pipeline(
+                definition->rules,
+                handler,
+                mutable_profile->request_pipeline,
+                error)) {
+            error = "profile " + profile_id + ": " + error;
+            return false;
         }
         std::shared_ptr<const RuntimeProfile> profile = std::move(mutable_profile);
         candidate.profiles.emplace(profile_id, profile);

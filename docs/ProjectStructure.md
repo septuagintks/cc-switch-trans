@@ -60,6 +60,11 @@ cc-switch-trans/
     routing/
       profile.hpp
       route_table.hpp/.cpp
+    rules/
+      generic_json_rules.hpp/.cpp
+      remove_tool_rule.hpp/.cpp
+      rule.hpp/.cpp
+      rule_registry.hpp/.cpp
     runtime/
       runtime_snapshot.hpp
     server/
@@ -82,6 +87,7 @@ cc-switch-trans/
       config_document_tests.cpp
       core_tests.cpp
       protocol_tests.cpp
+      rule_pipeline_tests.cpp
       route_table_tests.cpp
     integration/
       mock_upstream.py
@@ -92,6 +98,7 @@ cc-switch-trans/
       README.md
       mock_upstream.py
       run_benchmark.py
+      rule_pipeline_benchmark.cpp
       transform_benchmark.cpp
 
   third_party/
@@ -111,15 +118,16 @@ macOS bundle 资源都从它生成，不能反向编辑派生文件。
 | `src/core` | AppService、任务枚举、router 基础、取消、指标、transform 接口 | app/routing/runtime 职责混合 |
 | `src/hosts` | CLI 入口 | 将增加 Windows tray 和 macOS menu bar |
 | `src/logging` | JSON Lines、批写、flush、背压、writer health | 保持独立，仅调整标签 |
-| `src/protocols` | Responses/Chat/Messages descriptor、registry、local error envelope | 11.6 接 rule factories |
-| `src/routing` | immutable RuntimeProfile + handler、两级 hash RouteTable、404/405 lookup | 11.7 接生产 server |
-| `src/runtime` | v2 RuntimeSnapshot generation 数据模型 | 11.6 接 compiled pipeline |
+| `src/protocols` | Responses/Chat/Messages descriptor、registry、local error envelope | 11.7 接生产 server |
+| `src/routing` | immutable RuntimeProfile + handler/compiled pipeline、两级 hash RouteTable、404/405 lookup | 11.7 接生产 server |
+| `src/rules` | RuleRegistry、共享 DOM pipeline、generic JSON Pointer 与三协议 remove_tool | 11.7 接生产 server/logging |
+| `src/runtime` | v2 RuntimeSnapshot、protocol/rule registry generation 数据模型 | 11.7 接 AppService/reload |
 | `src/server` | 双 listener、worker、路由编排、reload | 改为单 listener + RouteTable |
-| `src/transforms` | findcg Responses 特定规则 | 改为通用 RuleRegistry/Pipeline |
+| `src/transforms` | 生产 Server 仍使用的旧 findcg Responses 规则 | 11.7 切换 pipeline 后删除 |
 | `src/transport` | headers、WinHTTP system proxy、streaming、cancel、timeout | 后续拆平台实现 |
-| `tests/unit` | 配置、路由、URL、日志和 transform | 按新领域模块拆 fixture |
+| `tests/unit` | 配置、路由、protocol/rule registry、JSON Pointer、日志和旧 transform | 11.7 扩展生产 host 覆盖 |
 | `tests/integration` | 双上游、协议、reload generation | 扩展多 profile/Messages/rules |
-| `tests/benchmark` | 8/16/50 路和 transform 微基准 | 扩展 profile/rule 维度 |
+| `tests/benchmark` | 8/16/50 路、旧 transform 与 0/1/8/32-rule 微基准 | 11.7 接真实 profile 请求路径 |
 | `tests/fixtures` | 纯合成、可跨测试层复用的协议/config 输入 | v2 schema 与新 rule cases |
 
 ## 阶段 11 目标目录

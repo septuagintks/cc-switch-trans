@@ -229,9 +229,27 @@ void test_specialized_rule_applicability() {
         "known specialized rule rejected for unsupported protocol");
 
     document.profiles.at("echo-profile").rules[0].type = "set_field";
-    require(compiler.compile(document, {}, snapshot, error), error);
-    require(snapshot->profiles.at("echo-profile")->request_pipeline.size() == 1,
-        "unknown-to-protocol generic rule is deferred to RuleRegistry");
+    document.profiles.at("echo-profile").rules[0].options.clear();
+    document.profiles.at("echo-profile").rules[0].options["path"] = "/model";
+    document.profiles.at("echo-profile").rules[0].options["value"] = "rewritten";
+    require(!compiler.compile(document, {}, snapshot, error)
+            && error.find("does not declare a JSON request body") != std::string::npos,
+        "generic JSON rule rejects a non-JSON protocol");
+
+    auto json_registry = std::make_shared<ccs::ProtocolRegistry>();
+    auto json_descriptor = synthetic_descriptor("json_echo");
+    json_descriptor.request_body_is_json = true;
+    require(json_registry->register_handler(
+                std::make_shared<SyntheticHandler>(std::move(json_descriptor)), error),
+        error);
+    document.profiles.at("echo-profile").protocol = ccs::ProtocolId{"json_echo"};
+    ccs::RuntimeCompiler json_compiler(
+        std::filesystem::temp_directory_path() / "ccs-trans-protocol-test",
+        immutable(json_registry));
+    require(json_compiler.compile(document, {}, snapshot, error), error);
+    require(snapshot->profiles.at("echo-profile")->request_pipeline
+            && snapshot->profiles.at("echo-profile")->request_pipeline->size() == 1,
+        "generic JSON rule compiles without a protocol-specific router branch");
 }
 
 } // namespace

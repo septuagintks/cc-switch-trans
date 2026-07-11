@@ -27,6 +27,10 @@ add_library(ccs-trans-core STATIC
     src/protocols/protocol_registry.cpp
     src/protocols/responses_handler.cpp
     src/routing/route_table.cpp
+    src/rules/generic_json_rules.cpp
+    src/rules/remove_tool_rule.cpp
+    src/rules/rule.cpp
+    src/rules/rule_registry.cpp
     src/server/server.cpp
     src/transport/header_filter.cpp
     src/transport/proxy.cpp
@@ -84,6 +88,15 @@ if(BUILD_TESTING)
     target_link_libraries(ccs-trans-protocol-tests PRIVATE ccs-trans-core)
     add_test(NAME ccs-trans-protocol-tests COMMAND ccs-trans-protocol-tests)
 
+    add_executable(ccs-trans-rule-pipeline-tests
+        tests/unit/rule_pipeline_tests.cpp
+    )
+    target_link_libraries(ccs-trans-rule-pipeline-tests PRIVATE ccs-trans-core)
+    target_compile_definitions(ccs-trans-rule-pipeline-tests PRIVATE
+        CCS_TRANS_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    )
+    add_test(NAME ccs-trans-rule-pipeline-tests COMMAND ccs-trans-rule-pipeline-tests)
+
     if(WIN32)
         add_executable(ccs-trans-reload-integration
             tests/integration/reload_integration.cpp
@@ -97,4 +110,9 @@ if(BUILD_TESTING)
         tests/benchmark/transform_benchmark.cpp
     )
     target_link_libraries(ccs-trans-transform-benchmark PRIVATE ccs-trans-core)
+
+    add_executable(ccs-trans-rule-pipeline-benchmark
+        tests/benchmark/rule_pipeline_benchmark.cpp
+    )
+    target_link_libraries(ccs-trans-rule-pipeline-benchmark PRIVATE ccs-trans-core)
 endif()

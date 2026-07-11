@@ -10,7 +10,20 @@ cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release --clean-first
 ```
 
-This builds both `ccs-trans.exe` and the transform microbenchmark.
+This builds `ccs-trans.exe`, the legacy transform microbenchmark, and the
+compiled rule-pipeline microbenchmark.
+
+Run the rule matrix with its default 1 KiB, 100 KiB, and 1 MiB bodies:
+
+```text
+build-release/ccs-trans-rule-pipeline-benchmark.exe 100
+```
+
+The optional second argument runs one body size in bytes. Every JSON-line
+record identifies the empty, matched/modified, matched/unchanged, or unmatched
+case and reports total, parse, rule-stage, and serialize timings for 0, 1, 8,
+or 32 rules. It also asserts zero parse for an empty pipeline and at most one
+parse/serialize operation for every other case.
 
 ## Proxy Profiles
 
