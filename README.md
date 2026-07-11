@@ -1,22 +1,21 @@
 # ccs-trans
 
-`ccs-trans` is a local OpenAI-compatible HTTP forwarding tool.
+`ccs-trans` is a local OpenAI-compatible HTTP transformation proxy for Windows.
+The current release is `0.4.0`.
 
-## Status
+It exposes independent endpoint groups for OpenAI Responses and Chat
+Completions, forwards normal JSON and SSE responses, and records the complete
+request chain as structured JSON Lines logs. Responses requests sent to
+`findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations
+before forwarding. Requests that do not match that rule remain transparent.
 
-The current source reports version `0.4.0` and runs on Windows. This is the breaking phase 10 release: start it with `ccs-trans run`, use endpoint-prefixed options, and do not use removed shared or legacy options. Responses and Chat Completions have independent endpoint-group configuration, and each group owns its Usage route and upstream path.
+## Endpoints
 
-Phase 10 is complete. `127.0.0.1:15723` owns Responses plus its Usage route; `127.0.0.1:15724` owns Chat Completions plus its Usage route. Both listeners share one bounded connection limit, worker pool, logger, metrics set, and process-level transport session. Configuration, logs, and runtime state share the per-user `.ccs-trans` root. Validated immutable snapshots support in-process hot reload and graceful restart rollback for topology changes.
-
-Responses requests targeting `findcg.com` or `www.findcg.com` remove root-level `image_gen` tool declarations before forwarding. Other Responses targets and all Chat Completions requests remain transparent.
-
-The packaged `0.2.0` executable passed a real Codex -> ccs-trans -> findcg Responses regression on 2026-07-11: the targeted tool was removed, findcg returned HTTP 200, and both SSE streams completed with contiguous chunk sequences. `0.3.0` added cancellation, split timeouts, metrics, and benchmark coverage; `0.4.0` adds the canonical dual-endpoint CLI, persistent profiles, reliable asynchronous logging, immutable reload generations, and dual-endpoint performance coverage without changing the findcg rewrite rule.
-
-By default it listens on:
+The default listeners are:
 
 ```text
-http://127.0.0.1:15723  Responses endpoint
-http://127.0.0.1:15724  Chat endpoint
+127.0.0.1:15723  Responses and its Usage route
+127.0.0.1:15724  Chat Completions and its Usage route
 ```
 
 Supported local routes:
@@ -29,30 +28,30 @@ Supported local routes:
 15724: GET  /v1/usage
 ```
 
-Each `/v1/usage` is forwarded to the upstream owned by its receiving port. Usage omits headers and bodies from request-chain logs; a minimal `usage_completed` event records endpoint, task, target, forwarding status, HTTP status, and duration.
+Each Usage request is sent to the upstream owned by the receiving endpoint.
+The two listeners share one bounded connection limit, worker pool, logger,
+metrics set, and process-level WinHTTP session.
 
 ## Build
 
+Requirements: CMake 3.20 or newer, Ninja, and a C++17 compiler.
+
 ```text
-cmake -S . -B build -G Ninja
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The executable is:
-
-```text
-build/ccs-trans.exe
-```
+The Windows executable is `build/ccs-trans.exe`.
 
 ## Run
 
-Responses endpoint:
+Start only the Responses endpoint:
 
 ```text
 ccs-trans run --responses-upstream-url https://www.findcg.com
 ```
 
-Both endpoint groups:
+Start both endpoint groups:
 
 ```text
 ccs-trans run \
@@ -60,7 +59,10 @@ ccs-trans run \
   --chat-upstream-url https://chat.example.com
 ```
 
-Persistent profiles:
+Only canonical long options are accepted. A field has one option name, options
+cannot be repeated, and boolean values are written as `true` or `false`.
+
+## Persistent Profiles
 
 ```text
 ccs-trans profile create findcg
@@ -71,9 +73,24 @@ ccs-trans profile show findcg
 ccs-trans run
 ```
 
-`profile set` and `profile unset` change exactly one canonical key per command. Profile keys use the long option name without `--`. `run --profile <name>` selects a profile for one run without changing the active profile, and explicit run options override profile values without writing them back.
+Profile commands:
 
-The persistent layout is:
+```text
+ccs-trans profile list
+ccs-trans profile show <name>
+ccs-trans profile create <name>
+ccs-trans profile remove <name>
+ccs-trans profile use <name>
+ccs-trans profile set <name> <key> <value>
+ccs-trans profile unset <name> <key>
+```
+
+`profile set` and `profile unset` change one canonical field per invocation.
+Keys use the long option name without `--`. `run --profile <name>` selects a
+profile for one run, while explicit run options override profile values without
+writing them back.
+
+The persistent root is:
 
 ```text
 Windows: %USERPROFILE%/.ccs-trans/
@@ -84,111 +101,118 @@ logs/ccs-trans.log
 state/
 ```
 
-The program resolves the account home through the operating-system API, not `USERPROFILE`/`HOME` overrides. Relative `log-path` values resolve under `.ccs-trans` and cannot escape it with `..`; use an absolute path to place logs elsewhere. `config.json` uses schema `ccs-trans.config/v1`, typed JSON values, atomic replacement, and never accepts Authorization, API keys, cookies, or unknown fields.
+The account home is resolved through the operating-system account API. A
+relative `log-path` stays under `.ccs-trans`; use an absolute path to place the
+log elsewhere. `config.json` uses schema `ccs-trans.config/v1`, typed values,
+and atomic replacement. Credentials, cookies, and Authorization values are not
+valid profile fields and are never persisted.
 
-Common options:
+## Configuration
+
+Endpoint options:
 
 ```text
---responses-listen-host 127.0.0.1
---responses-listen-port 15723
---responses-upstream-url https://www.findcg.com
---responses-local-path /v1/responses/
---responses-upstream-path /v1/responses/
---responses-usage-local-path /v1/usage
---responses-usage-upstream-path /v1/usage
---chat-listen-host 127.0.0.1
---chat-listen-port 15724
---chat-upstream-url https://chat.example.com
---chat-local-path /v1/chat/completions
---chat-upstream-path /v1/chat/completions
---chat-usage-local-path /v1/usage
---chat-usage-upstream-path /v1/usage
---log-path %USERPROFILE%/.ccs-trans/logs/ccs-trans.log
---log-body true
---redact-sensitive false
---body-log-limit 1048576
---log-queue-capacity 16777216
---log-flush-interval-ms 100
---metrics-interval-ms 0
---resolve-timeout-ms 300000
---connect-timeout-ms 300000
---send-timeout-ms 300000
---response-header-timeout-ms 300000
---stream-idle-timeout-ms 300000
---total-timeout-ms 0
---worker-threads 32
---max-connections 64
---max-request-body-size 104857600
---max-response-body-size 104857600
+--responses-listen-host <host>
+--responses-listen-port <port>
+--responses-upstream-url <url>
+--responses-local-path <path>
+--responses-upstream-path <path>
+--responses-usage-local-path <path>
+--responses-usage-upstream-path <path>
+--chat-listen-host <host>
+--chat-listen-port <port>
+--chat-upstream-url <url>
+--chat-local-path <path>
+--chat-upstream-path <path>
+--chat-usage-local-path <path>
+--chat-usage-upstream-path <path>
 ```
 
-The parser rejects removed names with a migration hint. There are no short aliases, shared fallback options, or duplicate occurrences of the same option.
+Runtime options:
 
-## Migrate From 0.3.0
+```text
+--profile <name>
+--log-path <path>
+--log-level <trace|debug|info|warn|error>
+--log-body <true|false>
+--redact-sensitive <true|false>
+--body-log-limit <bytes>
+--log-queue-capacity <bytes>
+--log-flush-interval-ms <ms>
+--metrics-interval-ms <ms>
+--resolve-timeout-ms <ms>
+--connect-timeout-ms <ms>
+--send-timeout-ms <ms>
+--response-header-timeout-ms <ms>
+--stream-idle-timeout-ms <ms>
+--total-timeout-ms <ms>
+--max-request-body-size <bytes>
+--max-response-body-size <bytes>
+--worker-threads <count>
+--max-connections <count>
+```
 
-`0.4.0` intentionally has no runtime compatibility aliases. Add the `run` command and replace each old field explicitly:
+Run `ccs-trans --help` for defaults and command syntax.
 
-| 0.3.0 option | 0.4.0 replacement |
-| --- | --- |
-| `--upstream-url` | `--responses-upstream-url` and/or `--chat-upstream-url` |
-| `--listen-host` | `--responses-listen-host` and `--chat-listen-host` |
-| `--listen-port` | `--responses-listen-port` and `--chat-listen-port` |
-| `--responses-path` | `--responses-local-path` |
-| `--chat-path` | `--chat-local-path` |
-| `--usage-path` | `--responses-usage-local-path` and `--chat-usage-local-path` |
-| `--upstream-responses-path` | `--responses-upstream-path` |
-| `--upstream-chat-path` | `--chat-upstream-path` |
-| `--upstream-usage-path` | both endpoint-specific `*-usage-upstream-path` options |
-| `--timeout-ms` | the six stage-specific timeout options |
-| `--max-body-size` | `--max-request-body-size` |
-| `--concurrency` | `--worker-threads` and `--max-connections` |
-| `-h` | `--help` |
+## Runtime Behavior
 
-For a durable setup, create a profile and set one canonical key per command. Credentials remain request headers and are never persisted in `config.json`.
+- Startup is atomic: both configured listeners bind before request workers run.
+- Immutable configuration snapshots give each request a stable generation.
+- Hot-reloadable fields switch new requests without changing in-flight work.
+- Topology changes use a graceful restart and roll back if restart fails.
+- Client disconnects cancel the corresponding upstream WinHTTP request.
+- DNS, connect, send, response-header, SSE-idle, and total timeouts are separate.
+- Request bodies and buffered non-streaming responses have independent limits.
+- SSE chunks are forwarded and logged incrementally; the full stream is not
+  retained in memory for logging.
 
-With `--redact-sensitive false` and `--log-body true`, logs can contain live Authorization values, cookies, full Codex context, and response chunks. Treat them as credential-bearing files. Use synthetic data for tests and benchmarks, enable sensitive-header redaction before sharing logs, and review body content separately because header redaction does not sanitize JSON bodies.
+The worker pool prewarms 8 threads and grows on demand up to the configured
+`worker-threads` maximum, which defaults to 32. Aggregate 8-16 SSE connections
+are the normal desktop load; 50 connections are a bounded stress profile.
 
-Each timeout has one explicit option; there is no shared timeout fallback. Set `--metrics-interval-ms` to emit periodic `performance_snapshot` JSON Lines events. Client disconnects close the corresponding WinHTTP request so long-running SSE work releases its worker promptly.
+## Logging And Security
 
-The measured `0.4.0` profiles keep the synchronous worker model for the normal aggregate 8-16 SSE desktop load. `--worker-threads 32` is a maximum: the service prewarms 8 workers and grows on queue demand, preserving Usage headroom without paying the full thread cost while idle. Three Release runs completed with no request failures, logger failures, or backpressure. `mixed-16` kept both Usage groups near 25 ms p95 with endpoint queue wait below 0.5 ms. The 50-connection profile remains a stress test and queues near 2 seconds at the worker limit; it does not justify an asynchronous network-stack rewrite by itself.
+Normal events are written in batches with a default 100 ms window. Error events
+flush immediately. The queue is bounded and applies backpressure instead of
+silently dropping records. Metrics distinguish queue wait, batch wait, file
+write, flush, record age, backpressure, and writer failure.
+
+Usage requests omit headers, query strings, and bodies from the ordinary
+request-chain log. Their minimal completion event identifies the endpoint,
+task, upstream target, forwarding result, HTTP status, and duration.
+
+With `--redact-sensitive false` and `--log-body true`, logs can contain live
+credentials and complete model context. Treat logs as sensitive files. Header
+redaction does not sanitize secrets embedded inside JSON bodies.
 
 ## Verify
-
-Start the mock upstream:
-
-```text
-python tests/integration/mock_upstream.py 19080
-```
-
-Run integration tests:
 
 ```text
 ctest --test-dir build --output-on-failure
 python tests/integration/run_integration.py build/ccs-trans.exe
 ```
 
-Synthetic benchmarks are documented in [tests/benchmark/README.md](tests/benchmark/README.md). Generated results stay under ignored `benchmark-results/`.
+Synthetic load and transform benchmarks are documented in
+[tests/benchmark/README.md](tests/benchmark/README.md). Generated results remain
+under the ignored `benchmark-results/` directory.
 
-## Repository Layout
+## Repository
 
 ```text
-docs/                  Design, development plan, and repository structure
-src/config/            Configuration model and CLI parsing
-src/core/              Platform-neutral HTTP types and request IDs
+docs/                  Design and development documentation
+src/config/            CLI, persistent profiles, and configuration snapshots
+src/core/              Service lifecycle, routing types, metrics, and transforms
 src/hosts/             Executable entry points
-src/logging/           Structured logging
-src/server/            Local HTTP server and request orchestration
-src/transport/         Header filtering and upstream transport
-src/transforms/        Scoped request transforms
-tests/unit/            Core configuration, routing, URL, and transform tests
-tests/integration/     Mock upstream and end-to-end tests
-tests/benchmark/       Synthetic load runner and transform microbenchmark
-third_party/nlohmann/  Pinned nlohmann/json 3.11.3 single-header dependency
+src/logging/           Structured asynchronous logging
+src/server/            Local listeners and request orchestration
+src/transport/         Header filtering and WinHTTP forwarding
+src/transforms/        Scoped request transformations
+tests/unit/            Pure logic and configuration tests
+tests/integration/     End-to-end and reload-generation tests
+tests/benchmark/       Synthetic load and transform benchmarks
+third_party/nlohmann/  Pinned nlohmann/json single-header dependency
 ```
 
-`build/`, `build-release/`, `dist/`, `logs/`, and `tmp/` are generated local directories and are not source-of-truth inputs. See [docs/ProjectStructure.md](docs/ProjectStructure.md) for ownership and extension rules.
-
-Design documents:
-
-- [Design](docs/Design.md)
-- [Development plan](docs/DevelopmentPlan.md)
+See [docs/Design.md](docs/Design.md),
+[docs/DevelopmentPlan.md](docs/DevelopmentPlan.md), and
+[docs/ProjectStructure.md](docs/ProjectStructure.md).
