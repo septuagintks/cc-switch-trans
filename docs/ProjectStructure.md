@@ -89,6 +89,7 @@ cc-switch-trans/
       rule_pipeline_benchmark.cpp
 
   tools/
+    check_stage12_prerequisites.ps1
     package_windows.ps1
 
   third_party/
@@ -101,7 +102,7 @@ cc-switch-trans/
 
 | 目录 | 职责 |
 | --- | --- |
-| `src/app` | 进程无关的服务启动、停止、reload、rollback 与 wait 生命周期 |
+| `src/app` | 进程无关的服务启动、停止、reload、rollback 与后续宿主控制状态机 |
 | `src/config` | v2 文档、CLI 单字段命令、原子持久化、用户路径和 runtime 编译 |
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
 | `src/hosts` | CLI 及后续 tray/menu bar 的进程入口 |
@@ -119,7 +120,7 @@ cc-switch-trans/
 ## 依赖方向
 
 ```text
-hosts -> app + config commands
+hosts -> app controller + platform host adapter
 app -> runtime snapshot + server lifecycle
 config -> routing definitions + protocols + rules + JSON
 runtime compiler -> RouteTable + ProtocolRegistry + RuleRegistry
@@ -159,34 +160,58 @@ ccs-trans-rule-pipeline-benchmark
 创建静态库。Windows 只编译 `transport/windows`，macOS 阶段加入
 `transport/macos/curl_transport.*`。
 
+阶段 12 新增 GUI subsystem target `ccs-trans-tray`；阶段 13 新增 macOS app bundle target。
+两者只链接共享 core 和各自 host source，不能把 Win32/AppKit source 加入 console CLI。
+
 ## 后续扩展目录
 
 Windows tray 阶段按真实实现增加：
 
 ```text
-assets/icons/windows/
-  ccs-trans.ico
+src/app/
+  application_controller.hpp/.cpp
 src/hosts/windows/
   tray_main.cpp
-  tray_controller.hpp/.cpp
+  tray_app.hpp/.cpp
+  tray_window.hpp/.cpp
+  shell_actions.hpp/.cpp
   startup_registration.hpp/.cpp
   instance_coordinator.hpp/.cpp
+packaging/windows/
+  ccs-trans-tray.rc.in
 tools/
   generate_icons.ps1
+tests/unit/
+  application_controller_tests.cpp
 ```
+
+ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Windows host source
+只编译进 `ccs-trans-tray.exe`；`ApplicationController` 编译进共享 core，CLI 随后也使用它。
 
 macOS 阶段增加：
 
 ```text
-assets/icons/macos/
 src/hosts/macos/
+  menu_main.mm
+  menu_app.hpp/.mm
+  shell_actions.hpp/.mm
+  startup_registration.hpp/.mm
+src/server/platform/
+  local_socket.hpp
+  windows/local_socket.cpp
+  posix/local_socket.cpp
 src/transport/macos/
   curl_transport.hpp/.cpp
 packaging/macos/
+  Info.plist.in
+  ccs-trans.entitlements
+tools/
+  generate_macos_icons.sh
 ```
 
 `assets/icons/ccs-trans-512.png` 是唯一手工维护图标母版。ICO、menu bar PNG 和可能的
-ICNS 都从它派生，不能反向编辑生成物。
+ICNS 都从它派生到 build/package directory，不能反向编辑或提交生成物。实际 socket
+文件拆分可在保持上述依赖边界的前提下调整，不要求为每个 adapter 建静态库。
 
 ## 文档职责
 

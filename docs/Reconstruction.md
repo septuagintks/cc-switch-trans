@@ -231,6 +231,36 @@ failure 触发 Server 停止和非零退出。
 `redact_sensitive` 遮盖已知敏感 headers，但不会清理 JSON body。启用 body logging 可能
 记录完整模型上下文，日志必须按敏感数据处理。
 
+## 宿主扩展模型
+
+CLI、Windows tray 与 macOS menu bar 共享同一服务控制路径：
+
+```text
+host UI / CLI
+  -> ApplicationController
+       -> AppPaths + ConfigStore + RuntimeCompiler
+       -> AppService
+            -> Server
+```
+
+`ApplicationController` 以磁盘配置为命令边界：start/reload 每次重新 load 并完整 compile，
+候选失败不会影响当前 generation。它管理 stopped/starting/running/reloading/stopping/faulted
+状态、last error、exit code 和异常退出后的 thread 回收。AppService 继续只处理一个已编译
+snapshot 的运行、rollback 和停止，不感知 tray/menu bar。
+
+宿主平台 adapter 只负责打开配置/日志路径和用户级启动项。Windows 使用 ShellExecute 与
+HKCU Run，macOS 使用 Workspace/SMAppService；平台对象不进入 controller。UI command 在
+独立 control executor 串行执行，结果通过宿主 event loop 回传。UI 线程和 request worker
+之间没有任务队列共享、请求 body 复制或日志反向依赖。
+
+阶段 12 不建立通用 IPC 管理协议。tray 的第二实例通知仅用于唤起已有菜单；CLI 与 tray
+并发运行依靠 listener 绑定冲突确定所有权。若以后确有远程管理需求，应独立设计协议版本、
+认证、当前用户权限、超时和状态一致性，不能复用业务 API route 临时拼接。
+
+跨平台 listener 抽取只封装 socket 系统调用和 native error。HTTP framing、admission、
+worker、RouteTable、generation、Rule 与 logger 仍在共享 Server 中。macOS CurlTransport
+同样只实现 UpstreamTransport，不承担 Profile 或 proxy 策略之外的业务判断。
+
 ## 扩展合约
 
 新增能力不得破坏以下边界：
@@ -241,3 +271,5 @@ failure 触发 Server 停止和非零退出。
 4. 新增宿主只调用 app/config command，不复制 runtime 初始化。
 5. 新增平台 transport 不泄漏平台类型到公共 core/routing/rules header。
 6. 发布包使用白名单，不包含用户 `.ccs-trans`、日志、凭据或本机 benchmark。
+7. 新增 UI command 必须定义可重入/幂等语义、执行线程、失败状态与 shutdown 行为。
+8. 新增 local socket 平台实现不得复制 HTTP parser、worker queue 或 request orchestration。

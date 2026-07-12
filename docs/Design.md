@@ -84,6 +84,38 @@ UpstreamTransport -> HTTP types + cancellation + platform implementation
 `ccs-trans-core` 是未来 CLI、Windows tray 和 macOS menu bar 宿主的共享服务核心。
 新增宿主必须复用 `AppService`，不能复制初始化和停止顺序。
 
+## 已冻结的宿主扩展边界
+
+阶段 12 会在 `AppService` 上增加进程无关的 `ApplicationController`：
+
+```text
+CLI / Windows tray / macOS menu bar
+                 |
+                 v
+       ApplicationController
+        | load/compile config
+        | start/stop/reload/status
+        | reap service completion
+                 v
+             AppService
+                 v
+              Server
+```
+
+controller 负责“从磁盘构建可运行服务”的完整编排，宿主不再直接拼装 ConfigStore、
+RuntimeCompiler 与 AppService。它不包含 Win32、AppKit、注册表、SMAppService 或 shell
+类型。打开文件/目录和启动项由窄的平台 adapter 提供，UI 只消费 command result 和
+不可变 status snapshot。
+
+托盘/menu bar 生命周期与服务生命周期分离：服务可以 stopped/faulted，而宿主进程继续
+存在以允许查看日志和重新启动。全部 mutating command 在专用 control executor 串行执行；
+UI 线程不等待配置编译、listener bind、stop/join 或 logger drain。服务异常退出必须被
+非阻塞回收，不能因为遗留 joinable thread 阻止再次启动。
+
+阶段 12 不提供 CLI 到 tray 的 IPC 管理面。Windows tray 只保证本交互用户 session 单实例；
+CLI `run` 与 tray 的服务所有权冲突由 listener 独占绑定报告。这个约束避免在没有真实需求
+时引入认证、版本和并发语义未定义的本地控制协议。
+
 ## 配置与 CLI
 
 持久布局：
@@ -271,8 +303,9 @@ end-to-end response headers 原样返回；缺失的 `Content-Type` 不由代理
 direct。407 返回 `proxy_authentication_unsupported`，不提示或保存密码。仅启用自动
 检测但没有显式 PAC 时忽略 WPAD。
 
-macOS transport 尚未实现。目标是链接 system libcurl，只使用启动进程继承的 proxy
-环境，不读取或激活 macOS System Settings 代理。
+macOS transport 尚未实现。目标是链接 Xcode SDK 的 system libcurl，只使用启动进程继承
+的 proxy 环境，不读取或激活 macOS System Settings 代理。Terminal 启动时继承 shell
+proxy 变量；Finder/登录项启动通常没有这些变量，因此默认直连，这是明确的宿主语义。
 
 ## 日志与安全
 
@@ -308,3 +341,5 @@ benchmark 输出或临时目录。
 
 - listener 与 upstream transport 仍只有 Windows 实现；
 - tray、开机自启、双击后台运行和 macOS menu bar 尚未实现。
+- `ApplicationController` 与平台宿主 adapter 尚未实现；当前 CLI 仍直接完成配置编译和
+  AppService 编排。

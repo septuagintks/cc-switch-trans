@@ -27,6 +27,16 @@ powershell -ExecutionPolicy Bypass -File tools/package_windows.ps1
 
 The package is written under ignored `dist/` and includes a SHA-256 manifest.
 
+Before starting the Windows tray build work, audit its additional local tools
+and canonical icon with:
+
+```text
+powershell -ExecutionPolicy Bypass -File tools/check_stage12_prerequisites.ps1
+```
+
+The current CLI build does not require ImageMagick. The planned tray resource
+build will require `magick` and a Windows resource compiler.
+
 ## Configuration Root
 
 ```text
@@ -282,7 +292,8 @@ src/transport/         Cross-platform interface, header policy, Windows WinHTTP
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-The next implementation work starts Windows tray hosting, background launch,
-the click menu, and per-user startup registration. macOS system-libcurl
-transport, menu bar hosting, login item support, and packaging follow. See
+The next implementation work first adds the shared application controller,
+then Windows tray hosting, background launch, the click menu, and per-user
+startup registration. The Apple Silicon macOS system-libcurl transport, menu
+bar host, login item, and packaging follow. See
 [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

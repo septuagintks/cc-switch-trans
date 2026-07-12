@@ -2,7 +2,7 @@
 
 ## 当前基线
 
-通用化重构已经完成，当前生产模型只有一套：
+当前版本为 `0.4.0`，生产路径已经收敛为一套通用模型：
 
 ```text
 ConfigDocument
@@ -13,129 +13,129 @@ ConfigDocument
   -> platform UpstreamTransport
 ```
 
-Windows CLI 已支持同端口多 Profile 的 Responses、Chat Completions、Messages 及各自
-Usage；findcg 的 `image_gen` 删除由普通 `remove_tool` Rule 表达。源码、测试、benchmark
-与构建目标只保留当前通用模型。
+源码使用 ISO C++20。Windows 基线为 Windows 11 21H2 x64，使用 WinHTTP 和当前用户
+系统代理；macOS 尚未实现。配置根固定为 Windows `%USERPROFILE%/.ccs-trans/` 与 macOS
+`~/.ccs-trans/`。默认 worker 上限 32、预热 8；8-16 路 SSE 是桌面常规负载，50 路是
+有界压力测试。
 
-当前稳定约束：
-
-1. 源码语言基线为 ISO C++20，全部目标禁用编译器语言扩展。
-2. Windows 最低版本为 Windows 11 21H2 x64。
-3. Windows WinHTTP 跟随当前用户手动系统代理、bypass 与显式 PAC；选定代理失败不直连。
-4. 不支持代理账号或密码，不读取、提示或保存代理凭据。
-5. macOS 后续链接系统 libcurl，只继承启动进程环境，不读取或激活系统代理。
-6. 配置根为 Windows `%USERPROFILE%/.ccs-trans/`、macOS `~/.ccs-trans/`。
-7. 正常日志约 100 ms 批写，error 立即 flush；SSE 使用连续序号的增量 chunk 日志。
-8. 默认 worker 上限 32、预热 8；8-16 路 SSE 是桌面常规负载，50 路是压力测试。
-9. reload 对新请求原子生效，in-flight 请求保持旧 generation。
-10. listener 严格执行 64 KiB header 与 Content-Length framing；服务停止取消半包和在途
-   upstream，请求/响应只过滤 hop-by-hop header，不改写 end-to-end metadata。
-
-阶段 11 全量 review 后的 Windows Release 基线使用受控 direct wrapper：每轮临时关闭
-当前用户系统代理，完成后恢复并验证原设置。三轮中位数如下：
-
-| Profile | absolute proxy TTFB p50 / p95 | added TTFB p50 / p95 | queue wait max | peak working set |
-| --- | --- | --- | --- | --- |
-| `desktop-8` | `36.755 / 40.630 ms` | `14.868 / 18.312 ms` | `103 us` | `12.69 MiB` |
-| `desktop-16` | `50.078 / 51.404 ms` | `27.874 / 28.059 ms` | `485 us` | `13.66 MiB` |
-| `mixed-16` | `40.492 / 41.209 ms` | `18.153 / 17.993 ms` | `514 us` | `14.20 MiB` |
-
-三轮均零请求失败、零 writer failure、零 backpressure；`mixed-16` 的 Responses/Chat
-Usage 各 36/36 成功并全部在 SSE 期间完成。相同 wrapper 下，相比 review 前 executable，
-`desktop-8` 与 `mixed-16` absolute p50/p95 均下降；`desktop-16` p50 上升 13.3%，p95
-下降 16.2%，未触发异步网络栈阈值。added TTFB 容易受同轮 direct mock 抖动影响，因此
-同时保留 absolute、queue wait 和资源指标。原始结果只保存在 ignored
-`benchmark-results/`，不进入发布包。
+后续阶段不再修改 Profile/Protocol/Rule 的通用业务模型，除非平台接入暴露了已被测试
+证明的接口缺口。
 
 ## 开发规则
 
-后续每个工作包必须独立完成：
+每个工作包按以下顺序完成：
 
-1. 先写边界测试，再接生产宿主；
-2. review 生命周期、线程、取消、配置原子性、日志敏感信息和平台所有权；
+1. 先冻结边界、状态和失败语义，再写单元或集成测试；
+2. 接生产实现后 review 生命周期、线程、取消、配置原子性、日志敏感信息和平台所有权；
 3. 运行相关 unit、CTest 与 Python integration；
-4. 涉及请求路径、日志、worker 或 transport 时运行可比 benchmark；
-5. 同步 README、Design、ProjectStructure 和用户可见 help；
-6. 使用签名 commit，验证后再推送并进入下一包。
+4. 涉及请求路径、worker、日志、listener 或 transport 时运行可比 benchmark；
+5. 同步 README、Design、ProjectStructure、help 与发布白名单；
+6. 使用签名 commit，验证并推送后才进入下一工作包。
 
-禁止为未来宿主复制 config/runtime/server/logger 初始化。CLI、tray 和 menu bar 必须调用
-同一应用服务接口。
+宿主 UI 不复制 config/runtime/server/logger 初始化，不在 UI 线程运行配置编译、服务停止、
+网络请求或磁盘操作。没有 benchmark 证据时，不把同步 listener + 有界 FIFO worker 改写为
+全异步网络栈。
 
-## 阶段 11.10：C++20 语言基线
+## 阶段 12 准备状态
 
-本阶段只提升语言与工具链基线，不改变运行时行为：
+本阶段开始前的审计结论已经冻结：
 
-1. `ccs-trans-core` 的公开 compile feature 固定为 `cxx_std_20`，使 CLI、tests 和
-   benchmark 目标继承同一要求；
-2. 全局关闭 C++ compiler extensions，Windows 使用 `-std=c++20` 而不是 `gnu++20`；
-3. 不在本阶段引入 `jthread`、`stop_token`、`atomic<shared_ptr>`、ranges 或 format 重构；
-4. Windows 使用 GCC 16 严格警告构建和完整回归；macOS 在阶段 13 固定支持 C++20 的
-   Apple Clang/Xcode 最低版本。
+1. `AppService` 已有 start/stop/reload/status，但构造时必须提供 snapshot，且 `wait()` 是
+   面向前台 CLI 的阻塞终态接口。托盘需要在它上方增加可反复启动、停止、重载并回收异常
+   退出线程的应用控制器；不能让托盘直接持有 `Server`。
+2. `cli_main.cpp` 仍直接执行路径解析、ConfigStore、RuntimeCompiler 和 AppService 编排。
+   阶段 12 先抽出共享控制器，再让 CLI 与托盘调用同一入口。
+3. 阶段 12 不增加跨进程管理协议。托盘菜单只管理本托盘进程中的服务；CLI `run` 与托盘
+   同时启动时，由 listener 独占绑定返回明确的端口所有权冲突。
+4. Windows 宿主使用原生 Win32；macOS 宿主使用 Objective-C++/AppKit。平台 UI 类型不得
+   进入 `src/app`、routing、rules、protocols 或 transport 公共 header。
+5. 图标母版 `assets/icons/ccs-trans-512.png` 已确认是 512x512、32-bit ARGB PNG，SHA-256
+   为 `FB40BC4B30BFD403CDDFB0E867C0CA700753E077ACB7473E1F879698A83BBA6D`。
+6. 当前 Windows 工具链已有 CMake、Ninja、GCC 16 和 GNU windres；ImageMagick 尚未安装。
+   开始 12.3 前必须让 `magick` 可由 PATH 调用。
 
-验收要求：Release 与 warnings-as-errors 构建、CTest、Python integration、Windows system
-proxy 矩阵、Rule benchmark、可比代理负载和发布包白名单全部保持通过。生成物不得因语言
-模式切换产生行为、资源或协议差异。
-
-Windows 验收已经完成：GCC 16 使用 `-std=c++20` 完成两个 clean build，CTest 均为 7/7，
-两个构建的 Python integration 与 system proxy 矩阵通过；Rule benchmark 保持既定
-parse/serialize 上界。受控负载中 `mixed-16` 的两组 Usage 均为 12/12 且在 SSE 期间完成，
-`stress-50` 为 50/50 成功。C++20 Release 与升级前 Release executable 的大小和 SHA-256
-完全相同。
+`tools/check_stage12_prerequisites.ps1` 是阶段 12 的只读环境检查入口。准备工作完成不代表
+tray 已实现；当前发布物仍只有 console CLI。
 
 ## 阶段 12：Windows Tray 与后台宿主
 
-### 12.1 图标资产与构建工具
+### 12.1 共享应用控制器
 
-唯一手工维护母版：
+新增进程无关的 `ApplicationController`，拥有 AppPaths、当前 AppService 和最后一次运行
+结果，提供以下语义稳定的操作：
 
 ```text
-assets/icons/ccs-trans-512.png
+start    每次从磁盘重新 load + validate + compile，再启动服务
+stop     请求停止、等待线程与 logger drain，托盘进程继续存在
+reload   从磁盘编译完整候选；成功后原子应用，失败时保持当前 generation
+status   返回真实状态、监听地址、last error/exit code
+shutdown 停止服务并结束控制器，不允许后续命令
 ```
 
-新增 `tools/generate_icons.ps1`，检查 ImageMagick 后生成 Windows 多尺寸 ICO：
+状态模型为 `stopped / starting / running / reloading / stopping / faulted`。`faulted` 表示
+服务意外退出或 durability failure，保留 last error/exit code；用户仍可在修复配置或环境后
+再次 start。控制器必须能非阻塞发现并回收已退出 AppService，避免 thread 仍 joinable 时
+下一次 start 误报 already running。
+
+所有 mutating command 串行执行。重复 stop 幂等；running 时 start、stopped 时 reload 返回
+可展示的确定错误。候选配置在编译成功前不影响当前服务。CLI `run` 改用同一 snapshot
+加载入口，但仍以前台方式等待服务退出。
+
+测试先覆盖：首次启动、停止后重启、异常退出后回收、并发命令串行化、reload 热交换、
+restart reload rollback、配置文件缺失/损坏、端口冲突以及 shutdown 后拒绝命令。
+
+### 12.2 宿主平台操作
+
+定义不含 Win32/Cocoa 类型的宿主平台接口，承载：
+
+```text
+open config file
+open logs directory
+read startup registration
+enable startup registration
+disable startup registration
+```
+
+Windows 实现使用 `ShellExecuteW` 和
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不要求管理员权限，不支持机器级
+启动项。注册表 value 使用固定名称和带引号的 tray executable 绝对路径：
+
+- 查询只有在 value 存在且目标路径等于当前 executable 时才显示已启用；
+- enable 创建或修正 value，重复执行幂等；
+- disable 只删除本应用固定 value，重复执行幂等；
+- 安装目录变化后菜单显示未启用，再次勾选更新为新路径。
+
+打开配置前确保应用目录存在；若 `config.json` 不存在，以 ConfigStore 原子写入默认 v2
+文档后再打开。打开日志只确保目录存在，不伪造日志文件。平台调用失败必须返回原始系统
+错误和目标路径，供 UI 记录与精简展示。
+
+### 12.3 图标、资源与构建
+
+新增 `tools/generate_icons.ps1`，使用 ImageMagick 从唯一母版生成构建目录内的多尺寸 ICO：
 
 ```text
 256, 128, 64, 48, 32, 24, 20, 16 px
 ```
 
-ICO 同时用于 executable resource 与 tray。必须实测 100%/125%/150%/200% DPI、浅色与
-深色任务栏；若黑色母版在深色任务栏不可辨识，从同一母版生成 Windows 专用描边变体，
-不手工维护另一套源图。
+生成脚本校验源尺寸、alpha、输出帧尺寸和非空像素；缺少 `magick` 时立即给出安装/Path
+错误。ICO 和 `.rc` 中间文件不提交，由 CMake custom command 生成。Windows tray target
+启用 RC language，并把同一 ICO 写入 executable resource 和 `Shell_NotifyIconW`。
 
-### 12.2 应用命令接口
+图标必须在 100%/125%/150%/200% DPI、浅色/深色任务栏和通知区域 overflow 中实测。
+若黑色母版在深色任务栏不可辨识，由脚本从同一 PNG 生成带浅色轮廓的 Windows 变体；
+不得手工维护第二份源图。
 
-在接 UI 前收敛宿主可调用命令：
+### 12.4 原生 Tray 宿主
 
-```text
-start
-stop
-reload
-status
-open config
-open logs
-get/set startup registration
-shutdown
-```
+新增 Windows GUI subsystem target `ccs-trans-tray.exe`，保留 `ccs-trans.exe` console CLI。
+tray 使用隐藏顶层窗口、`Shell_NotifyIconW`、`NOTIFYICON_VERSION_4`、`TrackPopupMenu` 和
+`TaskbarCreated` 恢复通知区图标。双击 executable 不显示控制台，启动全部 enabled
+Profiles；左键或右键点击图标均打开菜单。
 
-命令层只编排 `AppService`、`ConfigStore` 和平台 shell 操作，不暴露 Server、socket 或
-WinHTTP handle。所有操作串行化，状态来自真实服务和系统启动项，不使用 UI 缓存猜测。
-
-### 12.3 Tray 宿主与单实例
-
-新增 Windows GUI subsystem 的 `ccs-trans-tray.exe`，保留现有 console CLI：
-
-1. 双击 tray executable 不显示控制台并隐式启动全部 enabled Profiles；
-2. 当前用户作用域命名 mutex 保证 tray 单实例；
-3. 第二次启动通知已有实例并退出；
-4. CLI `run` 与 tray 同时占用 listener 时返回明确的所有权冲突；
-5. 配置查询和编辑命令不受 tray 单实例锁影响。
-
-### 12.4 点击菜单
-
-菜单至少包含：
+菜单固定包含：
 
 ```text
-运行状态
+运行状态（只读）
 启动
 停止
 重新加载配置
@@ -145,74 +145,172 @@ WinHTTP handle。所有操作串行化，状态来自真实服务和系统启动
 退出
 ```
 
-启动/reload 失败显示简短错误与日志位置。退出、用户注销和系统关机执行有界 stop、请求
-取消、线程 join 与 logger drain。
+菜单打开时读取最新 controller 和注册表状态。Starting/Reloading/Stopping 期间禁用冲突
+命令；状态变化通过 `WM_APP` 消息回到 UI。配置 load/compile、start/stop/reload、注册表
+与 Shell 操作在一个专用 control executor 串行执行，窗口线程不阻塞等待。
 
-### 12.5 开机自启
+宿主从进程启动起维护独立 JSON Lines 日志
+`%USERPROFILE%/.ccs-trans/logs/ccs-trans-host.log`，记录命令、状态转换、单实例、启动项和 UI
+错误，不记录请求 headers/body。它不得与 Server 的 `ccs-trans.log` 或自定义 runtime log
+共享 writer。失败通知只显示动作、短原因和日志目录；完整系统错误写 host log。host log
+本身无法写入时使用 `OutputDebugStringW` 并显示错误，不能静默失败。Explorer 重启后恢复
+图标但不重启服务。
 
-使用当前用户级注册，不要求管理员权限。启动项指向 tray host 的明确后台模式；菜单
-每次打开都读取实际注册值。启用、禁用和重复操作必须幂等，且开机自启与双击启动互不
-绑定。
+### 12.5 单实例、异常退出与关机
 
-### 12.6 Windows 验收与打包
+tray 使用当前交互用户 session 作用域的命名 mutex 保证单实例。第二实例通过已注册窗口
+消息请求现有实例显示菜单，然后退出；本阶段不借此实现任意 CLI 控制或远程管理。
 
-- tray 与 CLI 的配置校验、路由、Rule、reload、日志和错误映射完全一致；
-- 终端关闭不影响 tray 管理的服务；
-- 图标在目标 DPI/主题清晰，菜单文本不截断；
-- 单实例、CLI/tray 冲突、开机自启和关机 drain 有自动或可重复本机测试；
-- 发布白名单加入 `ccs-trans-tray.exe` 与 ICO resource，不包含用户 `.ccs-trans`。
+正常 Exit 的顺序固定为：禁用新命令、移除 tray icon、controller shutdown、等待请求取消
+与 logger drain、销毁窗口。用户注销和系统关机走相同 request-stop 路径，并记录是否在
+系统给定时间内完成。禁止 detach 服务线程或在仍写日志时直接 `TerminateProcess`。
+
+服务自身异常退出时 tray 保持运行、状态转为 faulted，并允许查看日志和重新启动。配置
+错误、端口占用、系统代理失败与 upstream 请求失败必须保持不同错误层级；普通 upstream
+失败不能把整个 tray 标为 faulted。
+
+### 12.6 Windows 自动验证
+
+自动验证分四层：
+
+1. ApplicationController 单测：状态机、命令串行化、重启、reload/rollback、异常回收；
+2. 平台 adapter 单测：路径 quoting、注册值判定和幂等操作，默认使用 fake registry；
+3. 子进程集成：无控制台启动、单实例、端口冲突、服务 stop/start、Explorer 消息恢复；
+4. 现有 CTest、Python integration、Windows system proxy matrix 与完整 benchmark 回归。
+
+真实 HKCU startup 写入测试必须显式 opt-in，并在 finally 中恢复原 value。UI 手工矩阵还要
+覆盖键盘菜单、DPI、浅/深色、Explorer 重启、终端关闭、休眠唤醒、注销和安装目录含空格。
+
+请求路径性能验收沿用当前口径：三轮中位数下，8-16 路常规负载 added TTFB p50/p95
+不得回退超过 15%/20%，Usage 不得被 SSE 饥饿，50 路必须保持连接、线程、logger queue
+和内存有界。tray idle 状态不得持续轮询磁盘或产生高频日志。
+
+### 12.7 Windows 打包与退出条件
+
+阶段 12 发布版本计划为 `0.5.0`。固定白名单加入：
+
+```text
+ccs-trans.exe
+ccs-trans-tray.exe
+README.md
+docs/
+THIRD_PARTY_LICENSES/
+SHA256SUMS.txt
+```
+
+ImageMagick 只作为构建工具，不进入发布包。SHA256SUMS 同时覆盖两个 executable。发布包
+不得包含用户 `.ccs-trans`、生成日志、PDB、ICO 中间文件、benchmark 输出或构建机状态。
+
+只有以下条件全部满足才进入阶段 13：console 与 tray 回归通过；双击后台常驻、菜单全部
+命令、开机自启、单实例和退出 drain 实测通过；Windows 包从空目录可运行；文档和 help
+与 executable 一致；签名 commit 已推送。
 
 ## 阶段 13：macOS CLI、菜单栏与打包
 
-### 13.1 平台基线
+### 13.1 平台和工具链基线
 
-先固定最低 macOS 版本、Xcode/Clang 与系统 libcurl 能力。首个目标为 Apple Silicon
-`arm64`；是否提供 `x86_64` 或 Universal 2 由实际需求决定。若登录项采用
-`SMAppService`，最低系统版本必须与该 API 的支持范围一致。
+macOS 支持线冻结为 macOS 13 Ventura 至 macOS 26、仅 Apple Silicon `arm64`。以 macOS 26
+SDK、Xcode 26 或更新版本和 Apple Clang C++20 构建，`CMAKE_OSX_DEPLOYMENT_TARGET` 固定为
+`13.0`。不构建或测试 Intel `x86_64` 与 Universal 2。
 
-### 13.2 macOS 网络实现
+版本下限由实际 API 边界决定，而不是为了扩大兼容面：计划使用的 NSStatusItem、template
+image、POSIX socket 和 system libcurl 在更早系统已存在，登录项所需
+`SMAppService.mainAppService` 从 macOS 13 开始可用。13-26 因此只保留一条实现路径，不为
+macOS 12 及更早系统增加 legacy login item 或条件分支。自动/手工 release matrix 至少验证
+macOS 13 与 macOS 26 两端；中间版本只接受同实现路径，不增加版本专用功能。
 
-在现有 `UpstreamTransport` 下新增 `src/transport/macos/curl_transport.*`：
+开发必须在真实 macOS 或受支持的 macOS runner 上完成。阶段开始先建立 clean configure、
+warnings-as-errors、CTest 和 package smoke；Windows 仍在同一提交上完整回归。
 
-1. 链接系统 libcurl，不打包私有 curl；
-2. 继承 terminal/tray 启动环境中的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 与
-   `NO_PROXY` 语义；
-3. 不读取或修改 macOS System Settings 代理；
-4. 实现普通响应、SSE callback、取消、DNS/connect/send/header/idle/total timeout 与
-   response body limit；
-5. 与 Windows 使用同一 mock upstream、fixture 和错误分类断言。
+### 13.2 本地 Listener 平台化
 
-本地 listener 通过平台实现接入现有 Server 编排。公共 header 不得泄漏 WinSock、
-WinHTTP、CFNetwork 或 curl 类型。
+当前 `Server` 内含 WinSock listener、socket registry、poll 和 cancellation monitor。先抽出
+窄的 local socket adapter，并新增 POSIX 实现；HTTP parse、RouteTable、admission、worker、
+generation 和日志编排继续只有一份。
 
-### 13.3 菜单栏宿主
+adapter 只表达 bind/listen/accept、bounded receive/send、poll disconnect、shutdown/close
+和 native error 转换。平台 handle 不进入 routing/rules/protocols；热路径不增加逐字节虚
+调用。Windows 抽取前后必须二进制行为和 benchmark 等价，之后再接 kqueue/poll 可验证的
+POSIX 实现。
 
-macOS menu bar 提供与 Windows 相同的应用命令集合，并确认有菜单栏图标。菜单栏图标由
-`assets/icons/ccs-trans-512.png` 派生 PNG，以 template image 验证浅色/深色模式。
+POSIX 测试覆盖 `SO_REUSEADDR`/独占语义差异、SIGPIPE 抑制、EINTR、partial send/receive、
+半包 stop、客户端断开、端口冲突、IPv4 loopback 和文件描述符回收。
 
-菜单包含运行状态、启动/停止、reload、打开配置、打开日志、登录时启动勾选和退出。
-登录项读取系统真实状态；优先使用目标最低版本支持的 `SMAppService`。
+### 13.3 system libcurl Transport
 
-### 13.4 macOS 发布
+新增 macOS `CurlTransport`，使用 Xcode SDK 自带 header 并链接系统 `libcurl`，不查找、
+复制或运行时加载 Homebrew/MacPorts curl。发布验收使用 `otool -L` 确认依赖来自系统。
 
-1. 先验证 CLI，再建立 `.app` bundle；
-2. 根据分发方式完成 codesign、公证及 ZIP/DMG；
-3. 发布说明写明架构、最低版本、签名和公证状态；
-4. Finder app icon 与 menu bar template image 分开处理；
-5. 包内不含用户配置、日志、真实请求、benchmark 或构建机状态。
+实现必须覆盖普通响应、SSE callback、取消、DNS/connect/send/header/idle/total timeout、
+request/response limit、partial callback、status/reason/header 透明转发和统一错误分类。
+每个并发请求独占 easy handle；transport 使用上限受 worker 数约束的可复用 handle pool，
+保留连接缓存但不让 SSE 独占导致 Usage 无 handle 可用。是否改用 curl multi 只由负载结果
+决定，不作为首版前提。
+
+不显式设置代理时让 libcurl 使用进程继承的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`
+和 `NO_PROXY`。不读取、激活或同步 macOS System Settings 代理。Terminal 启动的 CLI/app
+继承该 Terminal 环境；Finder 或登录项启动通常没有 shell proxy 变量，因此默认直连，
+这是预期行为，不做隐藏补偿。
+
+### 13.4 macOS CLI
+
+先让现有 `ccs-trans` CLI 在 macOS 编译和运行，保持相同 config schema、命令、exact route、
+日志和错误 envelope。配置根使用当前用户 home 下的 `~/.ccs-trans/`，目录权限保持仅用户
+可访问。用同一 mock upstream fixture 验证 Responses/Chat/Messages、Usage、SSE、Rules、
+reload、取消、limits 和代理环境矩阵。
+
+### 13.5 AppKit 菜单栏宿主
+
+新增 Objective-C++ `.app` host，使用 `NSApplication`、`NSStatusItem` 与原生 `NSMenu`，复用
+阶段 12 的 ApplicationController 和同一命令集合。AppKit 对象只存在于主线程；服务命令
+在 control executor 执行，结果派发回 main queue。
+
+菜单内容与 Windows 一致，将“开机自启”显示为“登录时启动”。图标从 512px 母版派生为
+template PNG，验证浅色/深色、Retina 和辅助功能尺寸；Finder app icon 另行生成 ICNS，
+不能把 template icon 当作 app icon。
+
+### 13.6 登录项、签名与发布
+
+使用 `SMAppService.mainAppService` 读取真实状态并 register/unregister；菜单不缓存猜测。
+拒绝、需要用户批准和系统错误都必须可见并记录。登录项只启动 `.app` menu host，不启动
+第二份 CLI 服务。
+
+阶段 13 发布版本计划为 `0.6.0`，先生成 arm64 ZIP，内容为签名 `.app`、签名 CLI、README、
+docs、licenses 和 checksum。随后完成 Developer ID codesign、notarization、staple 与干净
+机器 Gatekeeper 验证；证书和公证凭据只从 CI secret/keychain 获取，不进入仓库或日志。
+DMG 是可选发布外壳，不阻塞首个 ZIP。
+
+进入最终加固前必须满足：Windows/macOS 同配置 fixture 行为一致；macOS CLI 与菜单栏均可
+长期运行；登录项、Finder 启动和 Terminal 启动的环境差异有实测；包内无私有 curl、用户
+数据或构建路径泄漏。
+
+## 阶段 14：跨平台加固与发布纪律
+
+1. 运行 Windows/macOS 8-16 SSE 桌面负载、50 SSE 压力、mixed Usage 与 Rule benchmark；
+2. 分别执行 8 小时 idle、2 小时 mixed soak，记录 working set/RSS、handle/fd、线程、logger
+   queue、连接复用和失败计数趋势；
+3. 验证睡眠/唤醒、网络切换、代理变化、Explorer/Finder 重启、注销、系统关机和磁盘写满；
+4. 建立 Windows 11 x64 与 macOS 13/macOS 26 arm64 的 clean-machine release matrix；
+5. 固定版本号、配置 schema、最低系统、签名、公证、checksum 和回滚说明模板；
+6. 每个平台从发布 archive 而不是 build tree 完成一次端到端 smoke。
+
+内存、线程、handle/fd 或 logger queue 随累计请求持续增长即视为失败。平台差异必须留在
+adapter/host 内；不得用 Provider 特判或复制 Server 来修复平台问题。
 
 ## 性能与架构取舍
 
-继续保留同步 listener + 有界 FIFO worker 模型，原因是当前桌面负载和压力测试均无证据
-要求全异步重写。以下任一现象才单独立项异步网络栈：
-
-- 8-16 路 SSE 出现持续 queue wait 或 Usage 饥饿；
-- 50 路压力下出现无界内存/线程增长或无法及时停止；
-- 同机三轮中位数显示常规负载附加 TTFB p50/p95 退化超过 15%/20%；
-- 平台 transport 无法在现有 callback/cancellation 接口下正确实现。
-
-Rule pipeline 保持空 pipeline 零 parse，非空 pipeline 最多一次 parse/serialize。日志不能
-为 SSE 或非流式响应额外保留第二份完整 body。平台 UI 不得把请求处理搬到 UI 线程。
+- 保留同步 listener + 有界 FIFO worker。只有常规负载持续 queue wait、Usage 饥饿、50 路
+  资源失控，或平台 transport 无法满足取消/timeout 合约时才评估异步重写。
+- Rule pipeline 保持 empty 零 parse、non-empty 最多一次 parse/serialize；宿主状态展示不
+  读取或复制请求 body。
+- UI/control executor 与请求 worker 完全分离。状态刷新使用事件或低频 timer，不进入
+  request logger，不让任务栏操作影响 TTFB。
+- POSIX socket 抽取保持批量 buffer 和现有 admission 边界，不为了“跨平台”增加每次
+  send/receive 的堆分配或通用动态多态链。
+- WinHTTP session 与 curl easy handle 都按 generation/并发边界复用。连接池有上限，配置
+  reload 后旧 generation 随 in-flight 请求自然释放。
+- 日志继续约 100 ms 批写、error 立即 flush、SSE 增量 chunk，不为 UI、重试或发布诊断
+  保留第二份完整 response body。
 
 ## 暂不进入范围
 
@@ -220,5 +318,7 @@ Rule pipeline 保持空 pipeline 零 parse，非空 pipeline 最多一次 parse/
 - Provider/API key/模型管理；
 - 自动故障转移或负载均衡；
 - response transformation pipeline；
-- 远程管理接口；
-- 没有需求依据的 Universal 2 或全异步重写。
+- CLI 到 tray 的远程控制协议或 HTTP 管理接口；
+- 自动更新器；
+- Intel `x86_64` 与 Universal 2 构建；
+- 没有 benchmark 依据的全异步网络栈。
