@@ -1,5 +1,7 @@
 #include "config/config_cli.hpp"
 
+#include "core/version.hpp"
+
 #include "config/runtime_compiler.hpp"
 #include "protocols/protocol_registry.hpp"
 #include "rules/rule_registry.hpp"
@@ -896,7 +898,7 @@ bool execute_config_cli(
 
 void print_config_cli_help(std::ostream& output) {
     output
-        << "ccs-trans 0.4.0\n\n"
+        << "ccs-trans " << kVersion << "\n\n"
         << "Usage:\n"
         << "  ccs-trans config show\n"
         << "  ccs-trans config set <key> <value>\n"
@@ -937,7 +939,7 @@ void print_config_cli_help(std::ostream& output) {
 }
 
 void print_config_cli_version(std::ostream& output) {
-    output << "ccs-trans 0.4.0\n";
+    output << "ccs-trans " << kVersion << "\n";
 }
 
 } // namespace ccs

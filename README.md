@@ -1,7 +1,7 @@
 # ccs-trans
 
 `ccs-trans` is a local LLM API request transformation proxy. The current
-release is `0.4.0` and supports Windows 11 21H2 x64 or newer.
+release is `0.5.0` and supports Windows 11 21H2 x64 or newer.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
@@ -28,6 +28,16 @@ powershell -ExecutionPolicy Bypass -File tools/package_windows.ps1
 ```
 
 The package is written under ignored `dist/` and includes a SHA-256 manifest.
+Verify the fixed whitelist, both executable hashes, reported versions, and an
+extracted tray lifecycle with:
+
+```text
+powershell -ExecutionPolicy Bypass -File tools/verify_windows_package.ps1
+```
+
+Before promoting the candidate to a release, run the opt-in startup, system
+proxy, desktop UI, lifecycle, and soak checks in
+`docs/WindowsValidationChecklist.md` on a disposable Windows VM.
 
 Before building Windows tray resources, audit the additional local tools and
 canonical icon with:

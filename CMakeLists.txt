@@ -1,12 +1,19 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(ccs_trans VERSION 0.4.0 LANGUAGES CXX)
+project(ccs_trans VERSION 0.5.0 LANGUAGES CXX)
 
 include(CTest)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CCS_TRANS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(
+    src/core/version.hpp.in
+    "${CCS_TRANS_GENERATED_DIR}/include/core/version.hpp"
+    @ONLY
+)
 
 set(CCS_TRANS_PLATFORM_SOURCES)
 if(WIN32)
@@ -52,7 +59,11 @@ add_library(ccs-trans-core STATIC
 )
 
 target_compile_features(ccs-trans-core PUBLIC cxx_std_20)
-target_include_directories(ccs-trans-core PUBLIC src third_party)
+target_include_directories(ccs-trans-core PUBLIC
+    src
+    third_party
+    "${CCS_TRANS_GENERATED_DIR}/include"
+)
 
 if(WIN32)
     target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp shell32 ole32 advapi32)
@@ -65,7 +76,6 @@ add_executable(ccs-trans
 target_link_libraries(ccs-trans PRIVATE ccs-trans-core)
 
 if(WIN32)
-    set(CCS_TRANS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     set(CCS_TRANS_WINDOWS_ICON "${CCS_TRANS_GENERATED_DIR}/icons/ccs-trans.ico")
     add_custom_command(
         OUTPUT "${CCS_TRANS_WINDOWS_ICON}"

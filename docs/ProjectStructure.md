@@ -18,6 +18,7 @@ cc-switch-trans/
     DevelopmentPlan.md
     ProjectStructure.md
     Reconstruction.md
+    WindowsValidationChecklist.md
 
   src/
     app/
@@ -108,6 +109,7 @@ cc-switch-trans/
     check_stage12_prerequisites.ps1
     generate_icons.ps1
     package_windows.ps1
+    verify_windows_package.ps1
 
   packaging/
     windows/
@@ -237,6 +239,7 @@ ICNS 都从它派生到 build/package directory，不能反向编辑或提交生
 | `docs/Design.md` | 当前实现、不变量和平台边界 |
 | `docs/Reconstruction.md` | Profile/Protocol/Rule 通用架构与扩展合约 |
 | `docs/DevelopmentPlan.md` | tray、macOS 的构建顺序和验收门槛 |
+| `docs/WindowsValidationChecklist.md` | Windows 候选包的 VM 手工矩阵和证据记录 |
 | `docs/ProjectStructure.md` | 当前目录、依赖、target 与扩展位置 |
 | `tests/benchmark/README.md` | 可重复性能命令和结果解释 |
 
@@ -256,6 +259,6 @@ benchmark-results/
 .vscode/
 ```
 
-发布包必须使用白名单。当前允许 `ccs-trans.exe`、`SHA256SUMS.txt`、README、四篇 docs
+发布包必须使用白名单。当前允许两个 executable、`SHA256SUMS.txt`、README、五篇 docs
 和 `THIRD_PARTY_LICENSES/nlohmann-json.MIT`；始终禁止用户 config/state/log、凭据、
 真实 body、benchmark 输出、PDB、CMake/Ninja 中间文件和 Python cache。

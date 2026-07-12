@@ -1,0 +1,7 @@
+#pragma once
+
+namespace ccs {
+
+inline constexpr char kVersion[] = "@PROJECT_VERSION@";
+
+} // namespace ccs

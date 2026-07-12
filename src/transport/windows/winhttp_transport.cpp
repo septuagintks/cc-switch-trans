@@ -1,5 +1,7 @@
 #include "transport/windows/winhttp_transport.hpp"
 
+#include "core/version.hpp"
+
 #include "core/url.hpp"
 #include "transport/header_filter.hpp"
 
@@ -555,8 +557,10 @@ std::shared_ptr<WinHttpSession> open_system_proxy_session(
             : settings.bypass.c_str();
     }
 
+    std::wstring user_agent = L"ccs-trans/";
+    user_agent.append(kVersion, kVersion + sizeof(kVersion) - 1);
     WinHttpHandle handle(WinHttpOpen(
-        L"ccs-trans/0.4.0",
+        user_agent.c_str(),
         access_type,
         proxy_name,
         proxy_bypass,

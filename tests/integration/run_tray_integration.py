@@ -9,6 +9,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import winreg
 
 
 WM_CLOSE = 0x0010
@@ -17,6 +18,9 @@ WM_COMMAND = 0x0111
 MENU_START = 1001
 MENU_STOP = 1002
 MENU_RELOAD = 1003
+MENU_STARTUP = 1006
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_VALUE = "ccs-trans"
 
 
 def require(condition: bool, message: str) -> None:
@@ -116,11 +120,51 @@ def wait_for_host_command(path: Path, command: str, timeout: float = 10.0) -> No
     raise RuntimeError(f"tray command did not complete successfully: {command}")
 
 
+def read_startup_value() -> tuple[str, int] | None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, value_type = winreg.QueryValueEx(key, RUN_VALUE)
+            return str(value), int(value_type)
+    except FileNotFoundError:
+        return None
+
+
+def delete_startup_value() -> None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, RUN_VALUE)
+    except FileNotFoundError:
+        pass
+
+
+def restore_startup_value(backup: tuple[str, int] | None) -> None:
+    if backup is None:
+        delete_startup_value()
+        return
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+    ) as key:
+        winreg.SetValueEx(key, RUN_VALUE, 0, backup[1], backup[0])
+
+
+def wait_for_startup_value(expected: str | None, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = read_startup_value()
+        if expected is None and current is None:
+            return
+        if expected is not None and current is not None and current[0] == expected:
+            return
+        time.sleep(0.05)
+    raise RuntimeError(f"startup value did not become {expected!r}; found {read_startup_value()!r}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tray", type=Path, required=True)
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--with-tray-icon", action="store_true")
+    parser.add_argument("--confirm-startup-mutation", action="store_true")
     args = parser.parse_args()
 
     tray = args.tray.resolve()
@@ -152,8 +196,16 @@ def main() -> int:
         run_cli(cli, env, "profile", "set", "tray-test", "upstream.request-path", "/v1/responses")
         run_cli(cli, env, "profile", "enable", "tray-test")
 
+        startup_backup = read_startup_value() if args.confirm_startup_mutation else None
+        if args.confirm_startup_mutation:
+            delete_startup_value()
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        process = subprocess.Popen([str(tray)], env=env, creationflags=creation_flags)
+        try:
+            process = subprocess.Popen([str(tray)], env=env, creationflags=creation_flags)
+        except Exception:
+            if args.confirm_startup_mutation:
+                restore_startup_value(startup_backup)
+            raise
         window = 0
         try:
             window = find_tray_window()
@@ -184,6 +236,14 @@ def main() -> int:
             post_message(window, WM_COMMAND, MENU_RELOAD)
             wait_for_host_command(host_log, "reload")
 
+            if args.confirm_startup_mutation:
+                expected_startup = f'"{tray}"'
+                post_message(window, WM_COMMAND, MENU_STARTUP)
+                wait_for_startup_value(expected_startup)
+                wait_for_host_command(host_log, "set_startup")
+                post_message(window, WM_COMMAND, MENU_STARTUP)
+                wait_for_startup_value(None)
+
             second = subprocess.run(
                 [str(tray)],
                 env=env,
@@ -199,18 +259,22 @@ def main() -> int:
             require(time.monotonic() - shutdown_started < 5.0, "tray shutdown exceeded 5 seconds")
             wait_for_port_closed(port)
         finally:
-            if process.poll() is None:
-                if window:
-                    try:
-                        post_message(window, WM_CANCELMODE)
-                        post_message(window, WM_CLOSE)
-                        process.wait(timeout=5)
-                    except Exception:
+            try:
+                if process.poll() is None:
+                    if window:
+                        try:
+                            post_message(window, WM_CANCELMODE)
+                            post_message(window, WM_CLOSE)
+                            process.wait(timeout=5)
+                        except Exception:
+                            process.terminate()
+                            process.wait(timeout=5)
+                    else:
                         process.terminate()
                         process.wait(timeout=5)
-                else:
-                    process.terminate()
-                    process.wait(timeout=5)
+            finally:
+                if args.confirm_startup_mutation:
+                    restore_startup_value(startup_backup)
 
         logs = home / ".ccs-trans" / "logs"
         host_events = read_events(logs / "ccs-trans-host.log")

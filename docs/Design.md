@@ -4,7 +4,7 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | `0.4.0` |
+| 实现基线 | `0.5.0` |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64 |
 | 本地入口 | 应用级单 listener，默认 `127.0.0.1:15723` |
@@ -342,11 +342,14 @@ benchmark 输出或临时目录。
 7. ApplicationController 启停/reload/端口冲突/shutdown，以及 HostPlatform 默认配置和
    fake startup registry 单测；
 8. Windows tray control executor/单实例单测，以及真实 GUI 子进程的自动启动、
-   Start/Stop/Reload、第二实例、日志 drain 和退出集成测试。
+   Start/Stop/Reload、第二实例、通知区图标、日志 drain 和退出集成测试；
+9. Windows 候选 ZIP 的固定白名单、双 executable hash、CLI/资源版本与解压后 tray
+   生命周期验证。
 
 当前边界：
 
 - listener 与 upstream transport 仍只有 Windows 实现；
-- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，尚未完成阶段 12.6 的
-  全手工矩阵与阶段 12.7 发布打包。
+- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现；`0.5.0` 候选包已通过
+  本机自动预检，真实 startup/system proxy、DPI/主题、Explorer/休眠/注销和 soak 矩阵
+  等待 disposable VM 实测后才能定为正式发布；
 - macOS listener/transport/menu bar 尚未实现；console CLI 继续保持前台生命周期。
