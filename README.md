@@ -10,7 +10,7 @@ pipeline. Ordinary responses and SSE streams are forwarded transparently.
 
 ## Build
 
-Requirements: CMake 3.20 or newer, Ninja, and a C++17 compiler.
+Requirements: CMake 3.20 or newer, Ninja, and an ISO C++20 compiler.
 
 ```text
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release

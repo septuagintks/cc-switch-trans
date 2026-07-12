@@ -4,6 +4,10 @@ project(ccs_trans VERSION 0.4.0 LANGUAGES CXX)
 
 include(CTest)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(CCS_TRANS_PLATFORM_SOURCES)
 if(WIN32)
     list(APPEND CCS_TRANS_PLATFORM_SOURCES
@@ -39,7 +43,7 @@ add_library(ccs-trans-core STATIC
     ${CCS_TRANS_PLATFORM_SOURCES}
 )
 
-target_compile_features(ccs-trans-core PUBLIC cxx_std_17)
+target_compile_features(ccs-trans-core PUBLIC cxx_std_20)
 target_include_directories(ccs-trans-core PUBLIC src third_party)
 
 if(WIN32)
