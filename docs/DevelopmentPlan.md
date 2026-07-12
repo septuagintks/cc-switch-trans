@@ -224,15 +224,13 @@ ImageMagick 只作为构建工具，不进入发布包。SHA256SUMS 同时覆盖
 
 ### 13.1 平台和工具链基线
 
-macOS 支持线冻结为 macOS 13 Ventura 至 macOS 26、仅 Apple Silicon `arm64`。以 macOS 26
-SDK、Xcode 26 或更新版本和 Apple Clang C++20 构建，`CMAKE_OSX_DEPLOYMENT_TARGET` 固定为
-`13.0`。不构建或测试 Intel `x86_64` 与 Universal 2。
+macOS 支持线冻结为仅 macOS 26、仅 Apple Silicon `arm64`。使用 macOS 26 SDK、Xcode 26
+或更新版本和 Apple Clang C++20 构建，`CMAKE_OSX_DEPLOYMENT_TARGET` 固定为 `26.0`。
+不构建或测试 Intel `x86_64` 与 Universal 2，也不支持 macOS 15 及更早版本。
 
-版本下限由实际 API 边界决定，而不是为了扩大兼容面：计划使用的 NSStatusItem、template
-image、POSIX socket 和 system libcurl 在更早系统已存在，登录项所需
-`SMAppService.mainAppService` 从 macOS 13 开始可用。13-26 因此只保留一条实现路径，不为
-macOS 12 及更早系统增加 legacy login item 或条件分支。自动/手工 release matrix 至少验证
-macOS 13 与 macOS 26 两端；中间版本只接受同实现路径，不增加版本专用功能。
+实现直接使用 macOS 26 上的 NSStatusItem、template image、POSIX socket、system libcurl 与
+`SMAppService.mainAppService`，不增加旧系统 availability guard、legacy login item、兼容
+分支或降级实现。release、性能和手工 UI 验证只以 macOS 26 arm64 环境为准。
 
 开发必须在真实 macOS 或受支持的 macOS runner 上完成。阶段开始先建立 clean configure、
 warnings-as-errors、CTest 和 package smoke；Windows 仍在同一提交上完整回归。
@@ -305,7 +303,7 @@ DMG 是可选发布外壳，不阻塞首个 ZIP。
 2. 分别执行 8 小时 idle、2 小时 mixed soak，记录 working set/RSS、handle/fd、线程、logger
    queue、连接复用和失败计数趋势；
 3. 验证睡眠/唤醒、网络切换、代理变化、Explorer/Finder 重启、注销、系统关机和磁盘写满；
-4. 建立 Windows 11 x64 与 macOS 13/macOS 26 arm64 的 clean-machine release matrix；
+4. 建立 Windows 11 x64 与 macOS 26 arm64 的 clean-machine release matrix；
 5. 固定版本号、配置 schema、最低系统、签名、公证、checksum 和回滚说明模板；
 6. 每个平台从发布 archive 而不是 build tree 完成一次端到端 smoke。
 

@@ -295,5 +295,5 @@ tests/                  Unit, integration, proxy-policy, and load tests
 The shared application controller and Windows host adapters are now present in
 the source tree. The next implementation work generates executable resources
 and adds the Windows tray host, background launch, and click menu. The Apple
-Silicon macOS system-libcurl transport, menu bar host, login item, and
+Silicon macOS 26 system-libcurl transport, menu bar host, login item, and
 packaging follow. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
