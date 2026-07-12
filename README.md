@@ -67,12 +67,25 @@ ccs-trans profile enable findcg
 ccs-trans run
 ```
 
-If cc-switch appends `/v1/responses` and `/v1/usage`, set its Provider endpoint
-to:
+When using this Profile with CC Switch, set the Provider base URL to:
 
 ```text
-http://127.0.0.1:15723/findcg
+http://127.0.0.1:15723/findcg/v1
 ```
+
+CC Switch does not insert `/v1` when the configured base URL has an explicit
+path after `host:port` beginning with `/` (including a `/*` path pattern). Its
+Responses forwarder appends `/responses` directly, so the URL above produces
+`/findcg/v1/responses`.
+
+Configure the custom Usage script to append `/usage` to the same base URL:
+
+```text
+url: "{{baseUrl}}/usage"
+```
+
+This produces `/findcg/v1/usage`. Both final paths exactly match the local
+routes configured above.
 
 Paths are exact after canonicalization; the profile prefix is configuration,
 not a hard-coded routing convention.
