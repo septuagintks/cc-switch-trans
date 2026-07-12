@@ -34,6 +34,7 @@ bool AppService::start_impl(std::string& error) {
     state_ = ServiceState::Starting;
     startup_complete_ = false;
     startup_succeeded_ = false;
+    thread_complete_ = false;
     startup_error_.clear();
     exit_code_ = 1;
     try {
@@ -62,12 +63,14 @@ bool AppService::start_impl(std::string& error) {
                 }
                 exit_code_ = code;
                 state_ = ServiceState::Stopped;
+                thread_complete_ = true;
             }
             state_cv_.notify_all();
         });
     } catch (const std::exception& ex) {
         server_.reset();
         state_ = ServiceState::Stopped;
+        thread_complete_ = true;
         error = ex.what();
         return false;
     }
@@ -196,6 +199,29 @@ int AppService::wait() {
     lifecycle_lock.unlock();
     lifecycle_cv_.notify_all();
     return result;
+}
+
+bool AppService::try_wait(int& exit_code) {
+    std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::try_to_lock);
+    if (!lifecycle_lock.owns_lock() || wait_in_progress_) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != ServiceState::Stopped || !thread_complete_) {
+            return false;
+        }
+    }
+
+    if (thread_.joinable()) {
+        thread_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        server_.reset();
+        exit_code = exit_code_;
+    }
+    return true;
 }
 
 ServiceState AppService::status() const {

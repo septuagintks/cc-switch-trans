@@ -63,7 +63,9 @@ Codex / cc-switch / other client
 ## 模块边界
 
 ```text
-CLI host -> ConfigStore + RuntimeCompiler -> AppService
+CLI management -> ConfigStore
+CLI run -> shared runtime loader -> AppService
+future tray/menu host -> ApplicationController -> AppService
 AppService -> Server
 Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + UpstreamTransport
 UpstreamTransport -> HTTP types + cancellation + platform implementation
@@ -86,7 +88,7 @@ UpstreamTransport -> HTTP types + cancellation + platform implementation
 
 ## 已冻结的宿主扩展边界
 
-阶段 12 会在 `AppService` 上增加进程无关的 `ApplicationController`：
+阶段 12 已在 `AppService` 上增加进程无关的 `ApplicationController`：
 
 ```text
 CLI / Windows tray / macOS menu bar
@@ -102,7 +104,7 @@ CLI / Windows tray / macOS menu bar
               Server
 ```
 
-controller 负责“从磁盘构建可运行服务”的完整编排，宿主不再直接拼装 ConfigStore、
+controller 负责“从磁盘构建可运行服务”的完整编排，后续宿主不再直接拼装 ConfigStore、
 RuntimeCompiler 与 AppService。它不包含 Win32、AppKit、注册表、SMAppService 或 shell
 类型。打开文件/目录和启动项由窄的平台 adapter 提供，UI 只消费 command result 和
 不可变 status snapshot。
@@ -336,10 +338,12 @@ benchmark 输出或临时目录。
    407 专项矩阵；
 6. `smoke`、`desktop-8`、`desktop-16`、`mixed-16`、`stress-50` 与 0/1/8/32 Rule
    microbenchmark。
+7. ApplicationController 启停/reload/端口冲突/shutdown，以及 HostPlatform 默认配置和
+   fake startup registry 单测。
 
 当前边界：
 
 - listener 与 upstream transport 仍只有 Windows 实现；
 - tray、开机自启、双击后台运行和 macOS menu bar 尚未实现。
-- `ApplicationController` 与平台宿主 adapter 尚未实现；当前 CLI 仍直接完成配置编译和
-  AppService 编排。
+- `ApplicationController` 与 Windows HostPlatform 已实现，但尚未接入 tray executable；
+  console CLI 只复用 runtime loader，不改变前台生命周期。

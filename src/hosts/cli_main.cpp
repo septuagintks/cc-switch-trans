@@ -1,7 +1,7 @@
 #include "config/app_paths.hpp"
 #include "config/config_cli.hpp"
 #include "config/config_store.hpp"
-#include "config/runtime_compiler.hpp"
+#include "app/application_controller.hpp"
 #include "app/app_service.hpp"
 
 #include <iostream>
@@ -49,13 +49,12 @@ int main(int argc, char** argv) {
         std::cerr << "error: " << error << "\n";
         return 1;
     }
-    ccs::ConfigStore store(paths);
-    if (!store.load(error)) {
-        std::cerr << "error: " << error << "\n";
-        return 1;
-    }
-
     if (parsed.command.kind != ccs::ConfigCliCommandKind::Run) {
+        ccs::ConfigStore store(paths);
+        if (!store.load(error)) {
+            std::cerr << "error: " << error << "\n";
+            return 1;
+        }
         std::string output;
         if (!ccs::execute_config_cli(parsed.command, store, output, error)) {
             std::cerr << "error: " << error << "\n";
@@ -65,24 +64,12 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    if (!ccs::ensure_app_directories(paths, error)) {
-        std::cerr << "error: " << error << "\n";
-        return 1;
-    }
-    auto document = store.document();
-    if (!parsed.command.run_log_level.empty()) {
-        document.application.logging.level = parsed.command.run_log_level;
-    }
-    if (!parsed.command.run_log_path.empty()) {
-        document.application.logging.path = parsed.command.run_log_path;
-    }
-    ccs::RuntimeCompileOptions options;
-    if (!parsed.command.run_profile.empty()) {
-        options.selected_profile = parsed.command.run_profile;
-    }
+    ccs::RuntimeLoadOptions options;
+    options.selected_profile = parsed.command.run_profile;
+    options.log_level = parsed.command.run_log_level;
+    options.log_path = parsed.command.run_log_path;
     ccs::RuntimeSnapshotPtr snapshot;
-    ccs::RuntimeCompiler compiler(paths.root);
-    if (!compiler.compile(document, options, snapshot, error)) {
+    if (!ccs::load_runtime_snapshot(paths, options, snapshot, error)) {
         std::cerr << "error: " << error << "\n";
         return 1;
     }

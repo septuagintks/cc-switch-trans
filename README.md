@@ -292,8 +292,8 @@ src/transport/         Cross-platform interface, header policy, Windows WinHTTP
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-The next implementation work first adds the shared application controller,
-then Windows tray hosting, background launch, the click menu, and per-user
-startup registration. The Apple Silicon macOS system-libcurl transport, menu
-bar host, login item, and packaging follow. See
-[docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
+The shared application controller and Windows host adapters are now present in
+the source tree. The next implementation work generates executable resources
+and adds the Windows tray host, background launch, and click menu. The Apple
+Silicon macOS system-libcurl transport, menu bar host, login item, and
+packaging follow. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

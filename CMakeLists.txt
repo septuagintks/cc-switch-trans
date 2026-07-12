@@ -11,11 +11,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CCS_TRANS_PLATFORM_SOURCES)
 if(WIN32)
     list(APPEND CCS_TRANS_PLATFORM_SOURCES
+        src/hosts/windows/startup_registration.cpp
+        src/hosts/windows/windows_error.cpp
+        src/hosts/windows/windows_host_platform.cpp
         src/transport/windows/winhttp_transport.cpp
     )
 endif()
 
 add_library(ccs-trans-core STATIC
+    src/app/application_controller.cpp
     src/app/app_service.cpp
     src/config/app_paths.cpp
     src/config/config_cli.cpp
@@ -26,6 +30,7 @@ add_library(ccs-trans-core STATIC
     src/core/request_id.cpp
     src/core/runtime_metrics.cpp
     src/core/url.cpp
+    src/hosts/host_platform.cpp
     src/logging/logger.cpp
     src/protocols/chat_handler.cpp
     src/protocols/messages_handler.cpp
@@ -47,7 +52,7 @@ target_compile_features(ccs-trans-core PUBLIC cxx_std_20)
 target_include_directories(ccs-trans-core PUBLIC src third_party)
 
 if(WIN32)
-    target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp shell32 ole32)
+    target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp shell32 ole32 advapi32)
 endif()
 
 add_executable(ccs-trans
@@ -101,6 +106,21 @@ if(BUILD_TESTING)
     add_test(NAME ccs-trans-rule-pipeline-tests COMMAND ccs-trans-rule-pipeline-tests)
 
     if(WIN32)
+        add_executable(ccs-trans-application-controller-tests
+            tests/unit/application_controller_tests.cpp
+        )
+        target_link_libraries(ccs-trans-application-controller-tests PRIVATE ccs-trans-core)
+        add_test(
+            NAME ccs-trans-application-controller-tests
+            COMMAND ccs-trans-application-controller-tests
+        )
+
+        add_executable(ccs-trans-host-platform-tests
+            tests/unit/host_platform_tests.cpp
+        )
+        target_link_libraries(ccs-trans-host-platform-tests PRIVATE ccs-trans-core)
+        add_test(NAME ccs-trans-host-platform-tests COMMAND ccs-trans-host-platform-tests)
+
         add_executable(ccs-trans-reload-integration
             tests/integration/reload_integration.cpp
         )

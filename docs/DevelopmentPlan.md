@@ -51,8 +51,8 @@ ConfigDocument
    进入 `src/app`、routing、rules、protocols 或 transport 公共 header。
 5. 图标母版 `assets/icons/ccs-trans-512.png` 已确认是 512x512、32-bit ARGB PNG，SHA-256
    为 `FB40BC4B30BFD403CDDFB0E867C0CA700753E077ACB7473E1F879698A83BBA6D`。
-6. 当前 Windows 工具链已有 CMake、Ninja、GCC 16 和 GNU windres；ImageMagick 尚未安装。
-   开始 12.3 前必须让 `magick` 可由 PATH 调用。
+6. 当前 Windows 工具链已有 CMake、Ninja、GCC 16、GNU windres 和 ImageMagick 7.1.2；
+   `tools/check_stage12_prerequisites.ps1` 已完整通过。
 
 `tools/check_stage12_prerequisites.ps1` 是阶段 12 的只读环境检查入口。准备工作完成不代表
 tray 已实现；当前发布物仍只有 console CLI。
@@ -60,6 +60,9 @@ tray 已实现；当前发布物仍只有 console CLI。
 ## 阶段 12：Windows Tray 与后台宿主
 
 ### 12.1 共享应用控制器
+
+实现状态：已完成。`ApplicationController`、共享 runtime loader 和 AppService 非阻塞退出
+回收已经进入 core；CLI `run` 复用同一 loader，console 等待语义不变。
 
 新增进程无关的 `ApplicationController`，拥有 AppPaths、当前 AppService 和最后一次运行
 结果，提供以下语义稳定的操作：
@@ -72,7 +75,8 @@ status   返回真实状态、监听地址、last error/exit code
 shutdown 停止服务并结束控制器，不允许后续命令
 ```
 
-状态模型为 `stopped / starting / running / reloading / stopping / faulted`。`faulted` 表示
+状态模型为 `stopped / starting / running / reloading / stopping / faulted / shutdown`。
+`faulted` 表示
 服务意外退出或 durability failure，保留 last error/exit code；用户仍可在修复配置或环境后
 再次 start。控制器必须能非阻塞发现并回收已退出 AppService，避免 thread 仍 joinable 时
 下一次 start 误报 already running。
@@ -84,7 +88,14 @@ shutdown 停止服务并结束控制器，不允许后续命令
 测试先覆盖：首次启动、停止后重启、异常退出后回收、并发命令串行化、reload 热交换、
 restart reload rollback、配置文件缺失/损坏、端口冲突以及 shutdown 后拒绝命令。
 
+当前自动测试覆盖首次启动、重复 start、失败 reload 保持运行、成功 reload、端口冲突、
+停止后重启、幂等 stop 和 shutdown 拒绝后续命令。异常 durability exit 与命令执行中的
+状态通知将在 tray control executor 接入时增加端到端覆盖。
+
 ### 12.2 宿主平台操作
+
+实现状态：已完成公共 HostPlatform、默认配置创建、Windows Shell adapter 与当前用户
+startup registration。尚未由 executable 菜单调用。
 
 定义不含 Win32/Cocoa 类型的宿主平台接口，承载：
 
@@ -104,6 +115,10 @@ Windows 实现使用 `ShellExecuteW` 和
 - enable 创建或修正 value，重复执行幂等；
 - disable 只删除本应用固定 value，重复执行幂等；
 - 安装目录变化后菜单显示未启用，再次勾选更新为新路径。
+
+startup value store 可注入 fake；默认测试覆盖 quoting、大小写匹配、缺失值、错误旧路径
+修正、enable/disable 和重复操作幂等，不读写真实 HKCU Run。真实注册表 mutation 仍只在
+后续显式 opt-in 集成测试中执行。
 
 打开配置前确保应用目录存在；若 `config.json` 不存在，以 ConfigStore 原子写入默认 v2
 文档后再打开。打开日志只确保目录存在，不伪造日志文件。平台调用失败必须返回原始系统

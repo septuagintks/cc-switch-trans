@@ -21,6 +21,7 @@ cc-switch-trans/
 
   src/
     app/
+      application_controller.hpp/.cpp
       app_service.hpp/.cpp
     config/
       app_paths.hpp/.cpp
@@ -37,6 +38,11 @@ cc-switch-trans/
       url.hpp/.cpp
     hosts/
       cli_main.cpp
+      host_platform.hpp/.cpp
+      windows/
+        startup_registration.hpp/.cpp
+        windows_error.hpp/.cpp
+        windows_host_platform.hpp/.cpp
     logging/
       logger.hpp/.cpp
     protocols/
@@ -73,6 +79,8 @@ cc-switch-trans/
       config_cli_tests.cpp
       config_document_tests.cpp
       core_tests.cpp
+      application_controller_tests.cpp
+      host_platform_tests.cpp
       protocol_tests.cpp
       route_table_tests.cpp
       rule_pipeline_tests.cpp
@@ -152,6 +160,8 @@ ccs-trans-config-cli-tests
 ccs-trans-route-table-tests
 ccs-trans-protocol-tests
 ccs-trans-rule-pipeline-tests
+ccs-trans-application-controller-tests
+ccs-trans-host-platform-tests
 ccs-trans-reload-integration
 ccs-trans-rule-pipeline-benchmark
 ```
@@ -168,25 +178,20 @@ ccs-trans-rule-pipeline-benchmark
 Windows tray 阶段按真实实现增加：
 
 ```text
-src/app/
-  application_controller.hpp/.cpp
 src/hosts/windows/
   tray_main.cpp
   tray_app.hpp/.cpp
   tray_window.hpp/.cpp
-  shell_actions.hpp/.cpp
-  startup_registration.hpp/.cpp
   instance_coordinator.hpp/.cpp
 packaging/windows/
   ccs-trans-tray.rc.in
 tools/
   generate_icons.ps1
-tests/unit/
-  application_controller_tests.cpp
 ```
 
-ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Windows host source
-只编译进 `ccs-trans-tray.exe`；`ApplicationController` 编译进共享 core，CLI 随后也使用它。
+ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Windows tray source
+只编译进 `ccs-trans-tray.exe`；`ApplicationController` 与 HostPlatform 接口编译进共享
+core，CLI 已复用共享 runtime loader。
 
 macOS 阶段增加：
 

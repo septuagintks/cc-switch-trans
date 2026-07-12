@@ -338,8 +338,11 @@ void test_app_service_startup_failure() {
     require(!service.start(error)
             && error.find("failed to resolve listen address") != std::string::npos,
         "service startup failure is synchronous and actionable");
-    require(service.status() == ccs::ServiceState::Stopped && service.wait() != 0,
-        "failed service remains stopped with a non-zero exit");
+    int exit_code = 0;
+    require(service.status() == ccs::ServiceState::Stopped
+            && service.try_wait(exit_code)
+            && exit_code != 0,
+        "failed service can be reaped without blocking and retains a non-zero exit");
     std::error_code ec;
     std::filesystem::remove(log_path, ec);
 }
@@ -388,6 +391,8 @@ void test_app_service_restart_and_rollback() {
     ccs::AppService service(compile_runtime(document));
     std::string error;
     require(service.start(error), "reload test service starts: " + error);
+    int early_exit_code = 0;
+    require(!service.try_wait(early_exit_code), "running service cannot be reaped");
 
     auto restart = document;
     ++restart.application.runtime.worker_threads;

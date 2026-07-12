@@ -32,6 +32,7 @@ public:
     bool reload(RuntimeSnapshotPtr snapshot, std::string& error);
     void stop();
     int wait();
+    bool try_wait(int& exit_code);
     ServiceState status() const;
 
 private:
@@ -46,6 +47,7 @@ private:
     ServiceState state_ = ServiceState::Stopped;
     bool startup_complete_ = false;
     bool startup_succeeded_ = false;
+    bool thread_complete_ = true;
     std::string startup_error_;
     int exit_code_ = 1;
     std::shared_ptr<Server> server_;
