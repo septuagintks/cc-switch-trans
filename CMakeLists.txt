@@ -10,7 +10,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CCS_TRANS_PLATFORM_SOURCES)
 if(WIN32)
+    enable_language(RC)
     list(APPEND CCS_TRANS_PLATFORM_SOURCES
+        src/hosts/windows/instance_coordinator.cpp
         src/hosts/windows/startup_registration.cpp
         src/hosts/windows/windows_error.cpp
         src/hosts/windows/windows_host_platform.cpp
@@ -30,6 +32,7 @@ add_library(ccs-trans-core STATIC
     src/core/request_id.cpp
     src/core/runtime_metrics.cpp
     src/core/url.cpp
+    src/hosts/control_executor.cpp
     src/hosts/host_platform.cpp
     src/logging/logger.cpp
     src/protocols/chat_handler.cpp
@@ -61,6 +64,44 @@ add_executable(ccs-trans
 
 target_link_libraries(ccs-trans PRIVATE ccs-trans-core)
 
+if(WIN32)
+    set(CCS_TRANS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    set(CCS_TRANS_WINDOWS_ICON "${CCS_TRANS_GENERATED_DIR}/icons/ccs-trans.ico")
+    add_custom_command(
+        OUTPUT "${CCS_TRANS_WINDOWS_ICON}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CCS_TRANS_GENERATED_DIR}/icons"
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_icons.ps1"
+            -SourcePath "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/ccs-trans-512.png"
+            -OutputPath "${CCS_TRANS_WINDOWS_ICON}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/ccs-trans-512.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_icons.ps1"
+        VERBATIM
+    )
+    string(REPLACE "\\" "/" CCS_TRANS_ICON_RC_PATH "${CCS_TRANS_WINDOWS_ICON}")
+    configure_file(
+        packaging/windows/ccs-trans-tray.rc.in
+        "${CCS_TRANS_GENERATED_DIR}/ccs-trans-tray.rc"
+        @ONLY
+    )
+    set_source_files_properties(
+        "${CCS_TRANS_GENERATED_DIR}/ccs-trans-tray.rc"
+        PROPERTIES OBJECT_DEPENDS "${CCS_TRANS_WINDOWS_ICON}"
+    )
+
+    add_executable(ccs-trans-tray WIN32
+        src/hosts/windows/tray_app.cpp
+        src/hosts/windows/tray_main.cpp
+        "${CCS_TRANS_GENERATED_DIR}/ccs-trans-tray.rc"
+    )
+    target_compile_definitions(ccs-trans-tray PRIVATE UNICODE _UNICODE)
+    target_link_libraries(ccs-trans-tray PRIVATE ccs-trans-core shell32 ole32 user32)
+    if(MINGW)
+        target_link_options(ccs-trans-tray PRIVATE -municode)
+    endif()
+endif()
+
 if(BUILD_TESTING)
     add_executable(ccs-trans-core-tests
         tests/unit/core_tests.cpp
@@ -68,6 +109,12 @@ if(BUILD_TESTING)
     target_link_libraries(ccs-trans-core-tests PRIVATE ccs-trans-core)
     target_include_directories(ccs-trans-core-tests PRIVATE third_party)
     add_test(NAME ccs-trans-core-tests COMMAND ccs-trans-core-tests)
+
+    add_executable(ccs-trans-control-executor-tests
+        tests/unit/control_executor_tests.cpp
+    )
+    target_link_libraries(ccs-trans-control-executor-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-control-executor-tests COMMAND ccs-trans-control-executor-tests)
 
     add_executable(ccs-trans-config-document-tests
         tests/unit/config_document_tests.cpp
@@ -120,6 +167,15 @@ if(BUILD_TESTING)
         )
         target_link_libraries(ccs-trans-host-platform-tests PRIVATE ccs-trans-core)
         add_test(NAME ccs-trans-host-platform-tests COMMAND ccs-trans-host-platform-tests)
+
+        add_executable(ccs-trans-instance-coordinator-tests
+            tests/unit/instance_coordinator_tests.cpp
+        )
+        target_link_libraries(ccs-trans-instance-coordinator-tests PRIVATE ccs-trans-core)
+        add_test(
+            NAME ccs-trans-instance-coordinator-tests
+            COMMAND ccs-trans-instance-coordinator-tests
+        )
 
         add_executable(ccs-trans-reload-integration
             tests/integration/reload_integration.cpp

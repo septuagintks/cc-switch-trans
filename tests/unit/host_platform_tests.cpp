@@ -42,6 +42,8 @@ void test_config_file_preparation() {
         / ("ccs-trans-host-platform-" + std::to_string(nonce));
     const auto paths = ccs::make_app_paths(root);
     std::string error;
+    require(paths.host_log_file == root / "logs" / "ccs-trans-host.log",
+        "application paths expose the fixed host log file");
 
     const bool prepared = ccs::ensure_config_file(paths, error);
     require(prepared, error);

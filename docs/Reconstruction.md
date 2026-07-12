@@ -231,6 +231,10 @@ failure 触发 Server 停止和非零退出。
 `redact_sensitive` 遮盖已知敏感 headers，但不会清理 JSON body。启用 body logging 可能
 记录完整模型上下文，日志必须按敏感数据处理。
 
+Windows tray 使用独立 `logs/ccs-trans-host.log` 记录宿主启动、状态变化、菜单命令、
+单实例和 shutdown。它复用同一异步 Logger 语义但不与 runtime log 共享 writer，不记录
+请求 headers/body；周期 status poll 没有变化或新错误时不产生日志。
+
 ## 宿主扩展模型
 
 CLI、Windows tray 与 macOS menu bar 共享同一服务控制路径：

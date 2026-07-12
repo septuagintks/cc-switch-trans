@@ -65,7 +65,7 @@ Codex / cc-switch / other client
 ```text
 CLI management -> ConfigStore
 CLI run -> shared runtime loader -> AppService
-future tray/menu host -> ApplicationController -> AppService
+Windows tray / future macOS menu host -> ApplicationController -> AppService
 AppService -> Server
 Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + UpstreamTransport
 UpstreamTransport -> HTTP types + cancellation + platform implementation
@@ -73,7 +73,7 @@ UpstreamTransport -> HTTP types + cancellation + platform implementation
 
 | 模块 | 当前职责 | 禁止承担 |
 | --- | --- | --- |
-| `src/hosts` | v2 CLI、退出码、服务启停 | 路由、规则或 WinHTTP 逻辑 |
+| `src/hosts` | v2 CLI、Windows tray、平台操作、退出码、服务启停 | 路由、规则或 WinHTTP 逻辑 |
 | `src/app` | start/reload/rollback/stop/wait 生命周期 | 解析协议或平台 UI |
 | `src/config` | schema、CLI、原子持久化、runtime 编译 | 请求期扫描 Profile |
 | `src/routing` | immutable Profile、两级 hash RouteTable | 解析规则 option |
@@ -83,7 +83,7 @@ UpstreamTransport -> HTTP types + cancellation + platform implementation
 | `src/transport` | upstream 接口、headers、WinHTTP、SSE、取消、timeout | 修改 JSON 请求 |
 | `src/logging` | JSON Lines、批写、flush、背压 | 决定业务规则 |
 
-`ccs-trans-core` 是未来 CLI、Windows tray 和 macOS menu bar 宿主的共享服务核心。
+`ccs-trans-core` 是 CLI、Windows tray 和未来 macOS menu bar 宿主的共享服务核心。
 新增宿主必须复用 `AppService`，不能复制初始化和停止顺序。
 
 ## 已冻结的宿主扩展边界
@@ -127,6 +127,7 @@ CLI `run` 与 tray 的服务所有权冲突由 listener 独占绑定报告。这
   config.json
   logs/
     ccs-trans.log
+    ccs-trans-host.log (tray only)
   state/
     config.lock
 ```
@@ -337,13 +338,15 @@ benchmark 输出或临时目录。
 5. Windows system proxy A/B、in-flight、dead proxy、direct、WPAD-only、bypass、PAC 和
    407 专项矩阵；
 6. `smoke`、`desktop-8`、`desktop-16`、`mixed-16`、`stress-50` 与 0/1/8/32 Rule
-   microbenchmark。
+   microbenchmark；
 7. ApplicationController 启停/reload/端口冲突/shutdown，以及 HostPlatform 默认配置和
-   fake startup registry 单测。
+   fake startup registry 单测；
+8. Windows tray control executor/单实例单测，以及真实 GUI 子进程的自动启动、
+   Start/Stop/Reload、第二实例、日志 drain 和退出集成测试。
 
 当前边界：
 
 - listener 与 upstream transport 仍只有 Windows 实现；
-- tray、开机自启、双击后台运行和 macOS menu bar 尚未实现。
-- `ApplicationController` 与 Windows HostPlatform 已实现，但尚未接入 tray executable；
-  console CLI 只复用 runtime loader，不改变前台生命周期。
+- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，尚未完成阶段 12.6 的
+  全手工矩阵与阶段 12.7 发布打包。
+- macOS listener/transport/menu bar 尚未实现；console CLI 继续保持前台生命周期。

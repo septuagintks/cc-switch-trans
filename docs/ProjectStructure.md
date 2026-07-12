@@ -38,9 +38,14 @@ cc-switch-trans/
       url.hpp/.cpp
     hosts/
       cli_main.cpp
+      control_executor.hpp/.cpp
       host_platform.hpp/.cpp
       windows/
+        instance_coordinator.hpp/.cpp
+        resource_ids.hpp
         startup_registration.hpp/.cpp
+        tray_app.hpp/.cpp
+        tray_main.cpp
         windows_error.hpp/.cpp
         windows_host_platform.hpp/.cpp
     logging/
@@ -80,7 +85,9 @@ cc-switch-trans/
       config_document_tests.cpp
       core_tests.cpp
       application_controller_tests.cpp
+      control_executor_tests.cpp
       host_platform_tests.cpp
+      instance_coordinator_tests.cpp
       protocol_tests.cpp
       route_table_tests.cpp
       rule_pipeline_tests.cpp
@@ -88,6 +95,7 @@ cc-switch-trans/
       mock_upstream.py
       reload_integration.cpp
       run_integration.py
+      run_tray_integration.py
       run_windows_system_proxy_integration.py
     benchmark/
       README.md
@@ -98,7 +106,12 @@ cc-switch-trans/
 
   tools/
     check_stage12_prerequisites.ps1
+    generate_icons.ps1
     package_windows.ps1
+
+  packaging/
+    windows/
+      ccs-trans-tray.rc.in
 
   third_party/
     nlohmann/
@@ -113,7 +126,7 @@ cc-switch-trans/
 | `src/app` | 进程无关的服务启动、停止、reload、rollback 与后续宿主控制状态机 |
 | `src/config` | v2 文档、CLI 单字段命令、原子持久化、用户路径和 runtime 编译 |
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
-| `src/hosts` | CLI 及后续 tray/menu bar 的进程入口 |
+| `src/hosts` | CLI、Windows tray、control executor、平台操作及后续 macOS menu bar 入口 |
 | `src/logging` | JSON Lines、有界队列、批写、error flush、drain 与 writer health |
 | `src/protocols` | Responses/Chat/Messages descriptor、校验和本地错误 envelope |
 | `src/routing` | immutable RuntimeProfile 与 exact RouteTable |
@@ -122,7 +135,7 @@ cc-switch-trans/
 | `src/server` | 单 listener、FIFO worker、generation、路由/Rule/transport 编排 |
 | `src/transport` | 跨平台 upstream 接口、header policy 与平台网络实现 |
 | `tests/unit` | 配置、路由、protocol、Rule、logger、生命周期和本地错误合约 |
-| `tests/integration` | 单端口多协议、SSE/Usage/reload、取消和 Windows proxy 策略 |
+| `tests/integration` | 单端口协议、tray 进程、SSE/Usage/reload、取消和 Windows proxy 策略 |
 | `tests/benchmark` | 8/16/50 路负载与 0/1/8/32 Rule 微基准 |
 
 ## 依赖方向
@@ -154,7 +167,9 @@ core -> C++ standard library
 ```text
 ccs-trans-core
 ccs-trans
+ccs-trans-tray
 ccs-trans-core-tests
+ccs-trans-control-executor-tests
 ccs-trans-config-document-tests
 ccs-trans-config-cli-tests
 ccs-trans-route-table-tests
@@ -162,6 +177,7 @@ ccs-trans-protocol-tests
 ccs-trans-rule-pipeline-tests
 ccs-trans-application-controller-tests
 ccs-trans-host-platform-tests
+ccs-trans-instance-coordinator-tests
 ccs-trans-reload-integration
 ccs-trans-rule-pipeline-benchmark
 ```
@@ -170,28 +186,23 @@ ccs-trans-rule-pipeline-benchmark
 创建静态库。Windows 只编译 `transport/windows`，macOS 阶段加入
 `transport/macos/curl_transport.*`。
 
-阶段 12 新增 GUI subsystem target `ccs-trans-tray`；阶段 13 新增 macOS app bundle target。
+Windows GUI subsystem target 为 `ccs-trans-tray`；阶段 13 新增 macOS app bundle target。
 两者只链接共享 core 和各自 host source，不能把 Win32/AppKit source 加入 console CLI。
 
 ## 后续扩展目录
 
-Windows tray 阶段按真实实现增加：
+Windows tray 后续验证与发布阶段主要修改：
 
 ```text
-src/hosts/windows/
-  tray_main.cpp
-  tray_app.hpp/.cpp
-  tray_window.hpp/.cpp
-  instance_coordinator.hpp/.cpp
-packaging/windows/
-  ccs-trans-tray.rc.in
+tests/integration/
+  Windows startup mutation opt-in test
 tools/
-  generate_icons.ps1
+  package_windows.ps1
 ```
 
 ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Windows tray source
-只编译进 `ccs-trans-tray.exe`；`ApplicationController` 与 HostPlatform 接口编译进共享
-core，CLI 已复用共享 runtime loader。
+只编译进 `ccs-trans-tray.exe`；`ApplicationController`、control executor 与 HostPlatform
+接口编译进共享 core，CLI 已复用共享 runtime loader。
 
 macOS 阶段增加：
 

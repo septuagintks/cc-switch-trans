@@ -78,6 +78,7 @@ AppPaths make_app_paths(const std::filesystem::path& root) {
         root / "config.json",
         root / "logs",
         root / "logs" / "ccs-trans.log",
+        root / "logs" / "ccs-trans-host.log",
         root / "state",
     };
 }

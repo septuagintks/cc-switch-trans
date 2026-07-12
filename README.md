@@ -17,7 +17,9 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The Windows executable is `build/ccs-trans.exe`.
+Local Windows builds produce the console CLI `build/ccs-trans.exe` and the GUI
+tray host `build/ccs-trans-tray.exe`. Double-clicking the tray host starts all
+enabled Profiles without opening a console window.
 
 Create the fixed-whitelist Windows package from a Release build:
 
@@ -27,15 +29,15 @@ powershell -ExecutionPolicy Bypass -File tools/package_windows.ps1
 
 The package is written under ignored `dist/` and includes a SHA-256 manifest.
 
-Before starting the Windows tray build work, audit its additional local tools
-and canonical icon with:
+Before building Windows tray resources, audit the additional local tools and
+canonical icon with:
 
 ```text
 powershell -ExecutionPolicy Bypass -File tools/check_stage12_prerequisites.ps1
 ```
 
-The current CLI build does not require ImageMagick. The planned tray resource
-build will require `magick` and a Windows resource compiler.
+The CLI target does not require ImageMagick. The tray resource build requires
+`magick` and a Windows resource compiler.
 
 ## Configuration Root
 
@@ -45,6 +47,7 @@ macOS:   ~/.ccs-trans/
 
 config.json
 logs/ccs-trans.log
+logs/ccs-trans-host.log   (tray host only)
 state/
 ```
 
@@ -250,6 +253,10 @@ server and produces a non-zero process exit.
 Usage logs omit request headers, query, and body. Rule logs contain bounded
 paths/counts, never configured replacement values or a second full body.
 
+The tray process writes lifecycle, menu-command, startup-registration, and
+single-instance events to the separate `logs/ccs-trans-host.log`. It never logs
+request headers or bodies and never shares a writer with the runtime log.
+
 `logging.redact-sensitive=true` masks known sensitive headers. It does not
 sanitize secrets embedded in JSON bodies. Enabling body logging can record
 complete model context, so log files must be treated as sensitive data.
@@ -292,8 +299,8 @@ src/transport/         Cross-platform interface, header policy, Windows WinHTTP
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-The shared application controller and Windows host adapters are now present in
-the source tree. The next implementation work generates executable resources
-and adds the Windows tray host, background launch, and click menu. The Apple
+The Windows tray host, executable resources, background lifecycle, click menu,
+single-instance handling, and per-user startup adapter are present in the
+source tree. Full Windows validation and release packaging are next. The Apple
 Silicon macOS 26 system-libcurl transport, menu bar host, login item, and
 packaging follow. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

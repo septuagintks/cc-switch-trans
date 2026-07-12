@@ -10,6 +10,19 @@ $failures = [System.Collections.Generic.List[string]]::new()
 function Test-CommandAvailable([string]$Name) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
     if ($null -eq $command) {
+        $pathEntries = @(
+            [Environment]::GetEnvironmentVariable("Path", "Machine"),
+            [Environment]::GetEnvironmentVariable("Path", "User")
+        ) -join ";"
+        foreach ($entry in $pathEntries.Split(";", [StringSplitOptions]::RemoveEmptyEntries)) {
+            $candidate = Join-Path $entry.Trim() "$Name.exe"
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                [Console]::WriteLine("[ok] $Name -> $candidate")
+                return $true
+            }
+        }
+    }
+    if ($null -eq $command) {
         [Console]::WriteLine("[missing] $Name")
         return $false
     }
