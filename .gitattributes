@@ -1,4 +1,9 @@
 third_party/nlohmann/json.hpp text eol=lf
 third_party/nlohmann/LICENSE.MIT text eol=lf
+*.sh text eol=lf
+*.m text eol=lf
+*.mm text eol=lf
+*.plist text eol=lf
+*.entitlements text eol=lf
 *.png -text
 *.ico -text

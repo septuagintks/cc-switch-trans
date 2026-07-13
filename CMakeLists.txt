@@ -1,12 +1,57 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(CMAKE_HOST_APPLE)
+    if(NOT DEFINED CMAKE_OSX_ARCHITECTURES)
+        set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Supported macOS architecture")
+    endif()
+    if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Supported macOS deployment target")
+    endif()
+endif()
+
 project(ccs_trans VERSION 0.5.0 LANGUAGES CXX)
 
 include(CTest)
 
+if(NOT WIN32 AND NOT APPLE)
+    message(FATAL_ERROR "ccs-trans supports only Windows and macOS")
+endif()
+
+if(APPLE)
+    if(NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        message(FATAL_ERROR "macOS builds require an Apple Silicon host")
+    endif()
+    if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        message(FATAL_ERROR "CMAKE_OSX_ARCHITECTURES must be exactly arm64")
+    endif()
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET STREQUAL "26.0")
+        message(FATAL_ERROR "CMAKE_OSX_DEPLOYMENT_TARGET must be exactly 26.0")
+    endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(CCS_TRANS_WARNINGS_AS_ERRORS "Enable strict C++ warnings and treat them as errors" OFF)
+if(CCS_TRANS_WARNINGS_AS_ERRORS)
+    if(MSVC)
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:CXX>:/W4>
+            $<$<COMPILE_LANGUAGE:CXX>:/WX>
+            $<$<COMPILE_LANGUAGE:CXX>:/permissive->
+        )
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "^(AppleClang|Clang|GNU)$")
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+            $<$<COMPILE_LANGUAGE:CXX>:-Werror>
+        )
+    else()
+        message(FATAL_ERROR "CCS_TRANS_WARNINGS_AS_ERRORS is unsupported by this compiler")
+    endif()
+endif()
 
 set(CCS_TRANS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 configure_file(

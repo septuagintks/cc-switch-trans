@@ -352,4 +352,6 @@ benchmark 输出或临时目录。
 - Windows tray、双击后台运行、点击菜单和 startup adapter 已实现；`0.5.0` 候选包已通过
   本机自动预检，真实 startup/system proxy、DPI/主题、Explorer/休眠/注销和 soak 矩阵
   等待 disposable VM 实测后才能定为正式发布；
-- macOS listener/transport/menu bar 尚未实现；console CLI 继续保持前台生命周期。
+- macOS 26 arm64 的 CMake policy、preset、只读 prerequisite probe 与真机验证清单已准备；
+  listener/transport/menu bar 尚未实现，当前非 Windows runtime 仍明确不可用；console CLI
+  继续保持前台生命周期。

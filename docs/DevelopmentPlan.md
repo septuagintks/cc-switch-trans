@@ -54,8 +54,8 @@ ConfigDocument
 6. 当前 Windows 工具链已有 CMake、Ninja、GCC 16、GNU windres 和 ImageMagick 7.1.2；
    `tools/check_stage12_prerequisites.ps1` 已完整通过。
 
-`tools/check_stage12_prerequisites.ps1` 是阶段 12 的只读环境检查入口。准备工作完成不代表
-tray 已实现；当前发布物仍只有 console CLI。
+`tools/check_stage12_prerequisites.ps1` 是阶段 12 的只读环境检查入口。Windows tray 与
+`0.5.0` 候选包现已完成，本节只保留其设计起点；最终 VM idle/soak 报告尚待回填。
 
 ## 阶段 12：Windows Tray 与后台宿主
 
@@ -255,9 +255,33 @@ SHA256SUMS.txt
 ImageMagick 只作为构建工具，不进入发布包。SHA256SUMS 同时覆盖两个 executable。发布包
 不得包含用户 `.ccs-trans`、生成日志、PDB、ICO 中间文件、benchmark 输出或构建机状态。
 
-只有以下条件全部满足才进入阶段 13：console 与 tray 回归通过；双击后台常驻、菜单全部
-命令、开机自启、单实例和退出 drain 实测通过；Windows 包从空目录可运行；文档和 help
-与 executable 一致；签名 commit 已推送。
+只有以下条件全部满足才进入阶段 13 的生产实现：console 与 tray 回归通过；双击后台常驻、
+菜单全部命令、开机自启、单实例和退出 drain 实测通过；Windows 包从空目录可运行；文档和 help
+与 executable 一致；签名 commit 已推送。平台策略、环境探针和测试清单可在 Windows
+长时间验证期间并行准备，但不得改写或覆盖正在测试的候选 ZIP。
+
+## 阶段 13 准备状态
+
+准备状态：已完成不进入 runtime 的构建与验收准备，生产实现等待 Windows `0.5.0` 最终
+报告。`CMakePresets.json` 固定 macOS 26、arm64、Release 和 warnings-as-errors 两套入口；
+CMake 在 Apple host 上拒绝非 Apple Silicon、非单一 arm64 slice 和非 `26.0` deployment
+target。`tools/check_stage13_prerequisites.sh` 只读验证 OS/Xcode/SDK、CMake/Ninja、C++20、
+SDK system libcurl、图标、签名与公证工具；Developer ID identity 缺失只标记 release pending。
+完整真机证据记录在 `docs/MacOSValidationChecklist.md`。
+
+源码审计冻结了阶段 13 的实际起点：
+
+1. `app_paths`、ConfigStore 的 `flock`/rename、logger 时间函数及大部分共享测试已有 POSIX
+   分支，可以先在 macOS 编译验证，不另造配置层；
+2. `Server::run` 的 listener、连接 registry、客户端取消监视和 console signal 仍整体位于
+   WinSock 条件块，非 Windows 分支只返回 unsupported，这是 13.2 的首要阻塞；
+3. `make_upstream_transport` 在非 Windows 上仍返回 `UnsupportedTransport`，只有 listener
+   adapter 和 POSIX 测试稳定后才替换为 CurlTransport；
+4. ApplicationController、AppService 和 control executor 可直接复用；AppKit/SMAppService
+   类型只能进入 `src/hosts/macos`，不能为了 UI 修改 request worker 或业务模型；
+5. 首次 macOS 提交顺序固定为：clean compile audit -> Windows local-socket adapter 等价抽取
+   -> POSIX adapter -> CLI/system-libcurl -> AppKit host -> 登录项/签名/打包。每一步都在同一
+   commit 上回归 Windows，避免把 listener 与 transport 两个生命周期问题混在一起。
 
 ## 阶段 13：macOS CLI、菜单栏与打包
 

@@ -49,6 +49,20 @@ powershell -ExecutionPolicy Bypass -File tools/check_stage12_prerequisites.ps1
 The CLI target does not require ImageMagick. The tray resource build requires
 `magick` and a Windows resource compiler.
 
+Stage 13 macOS runtime work has not started yet. On a macOS 26 Apple Silicon
+development machine, audit the fixed SDK, architecture, C++20, system libcurl,
+icon, signing, and notarization prerequisites with:
+
+```text
+./tools/check_stage13_prerequisites.sh
+cmake --list-presets
+```
+
+The checked-in macOS presets fix `arm64` and deployment target `26.0`; they do
+not imply that the current Windows-only listener and transport are ready on
+macOS. The implementation and release matrix is tracked in
+`docs/MacOSValidationChecklist.md`.
+
 ## Configuration Root
 
 ```text
@@ -309,8 +323,8 @@ src/transport/         Cross-platform interface, header policy, Windows WinHTTP
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-The Windows tray host, executable resources, background lifecycle, click menu,
-single-instance handling, and per-user startup adapter are present in the
-source tree. Full Windows validation and release packaging are next. The Apple
-Silicon macOS 26 system-libcurl transport, menu bar host, login item, and
-packaging follow. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
+The Windows `0.5.0` candidate package is complete and is undergoing its final
+VM idle/soak validation. Stage 13 build policy, presets, prerequisite audit,
+and validation contract are prepared; the Apple Silicon macOS 26 listener,
+system-libcurl transport, menu bar host, login item, and packaging remain to be
+implemented. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
