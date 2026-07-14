@@ -201,7 +201,7 @@ def synthetic_body(size):
     return prefix + (b"x" * max(0, size - len(prefix) - len(suffix))) + suffix
 
 
-def request_once(port, path, body, barrier, timeout):
+def request_once(port, path, body, barrier, timeout, expected_bytes):
     connection = None
     try:
         barrier.wait(timeout=10)
@@ -226,12 +226,17 @@ def request_once(port, path, body, barrier, timeout):
                 break
             received += len(chunk)
         ended = time.perf_counter_ns()
-        return {
+        result = {
             "status": response.status,
             "bytes": received,
             "ttfb_ms": (ttfb - started) / 1_000_000,
             "total_ms": (ended - started) / 1_000_000,
         }
+        if response.status == 200 and received != expected_bytes:
+            result["error"] = (
+                f"response length mismatch: expected {expected_bytes}, received {received}"
+            )
+        return result
     except Exception as ex:
         return {"status": None, "bytes": 0, "error": f"{type(ex).__name__}: {ex}"}
     finally:
@@ -280,6 +285,18 @@ def request_path(profile, local_path):
     return local_path + "?" + urlencode(query)
 
 
+def expected_response_bytes(profile):
+    if profile["mode"] != "sse":
+        return profile["response_bytes"]
+    return sum(
+        max(
+            profile["chunk_size"],
+            len(f"data: {index} ".encode("ascii")) + len(b"\n\n"),
+        )
+        for index in range(profile["chunk_count"])
+    )
+
+
 def run_requests(port, profile, local_path="/v1/responses"):
     path = request_path(profile, local_path)
     body = synthetic_body(profile["request_body_size"])
@@ -287,13 +304,18 @@ def run_requests(port, profile, local_path="/v1/responses"):
     concurrency = min(profile["concurrency"], request_count)
     barrier = threading.Barrier(concurrency)
     timeout = max(30, profile.get("chunk_count", 0) * profile.get("chunk_interval_ms", 0) / 1000 + 20)
+    expected_bytes = expected_response_bytes(profile)
 
     started = time.monotonic()
     samples = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
         pending = []
         for index in range(request_count):
-            pending.append(executor.submit(request_once, port, path, body, barrier, timeout))
+            pending.append(
+                executor.submit(
+                    request_once, port, path, body, barrier, timeout, expected_bytes
+                )
+            )
             if (len(pending) == concurrency or index + 1 == request_count):
                 samples.extend(future.result() for future in pending)
                 pending.clear()
@@ -318,6 +340,7 @@ def run_mixed_requests(
     chat_count = stream_count - responses_count
     barrier = threading.Barrier(stream_count)
     timeout = max(30, profile["chunk_count"] * profile["chunk_interval_ms"] / 1000 + 20)
+    expected_bytes = expected_response_bytes(profile)
     response_path = request_path(profile, responses_path)
     chat_path = request_path(profile, chat_path)
     usage_results = {"responses": [], "chat": []}
@@ -326,10 +349,26 @@ def run_mixed_requests(
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=stream_count) as stream_executor:
         stream_futures = [
-            stream_executor.submit(request_once, responses_port, response_path, body, barrier, timeout)
+            stream_executor.submit(
+                request_once,
+                responses_port,
+                response_path,
+                body,
+                barrier,
+                timeout,
+                expected_bytes,
+            )
             for _ in range(responses_count)
         ] + [
-            stream_executor.submit(request_once, chat_port, chat_path, body, barrier, timeout)
+            stream_executor.submit(
+                request_once,
+                chat_port,
+                chat_path,
+                body,
+                barrier,
+                timeout,
+                expected_bytes,
+            )
             for _ in range(chat_count)
         ]
         time.sleep(0.2)

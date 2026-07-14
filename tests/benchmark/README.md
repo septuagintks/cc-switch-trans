@@ -86,8 +86,9 @@ Profiles are short comparison runs, not soak tests or release SLOs:
 | `stress-50` | Bounded overload and queue behavior |
 
 `mixed-16` fails when either Usage group fails, waits until all streams finish,
-or exceeds its endpoint queue-wait bound. Every profile also fails on unexpected
-request errors, logger writer failures, or logger backpressure.
+or exceeds its endpoint queue-wait bound. Every profile also fails when any
+response has an unexpected byte count, or on request errors, logger writer
+failures, or logger backpressure.
 
 ## Stage 14 Soak
 

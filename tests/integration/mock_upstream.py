@@ -49,12 +49,19 @@ class Handler(BaseHTTPRequestHandler):
             server_port = self.server.server_address[1]
             chunk_count = max(1, int(query.get("chunk_count", ["3"])[0]))
             chunk_interval_ms = max(0, int(query.get("chunk_interval_ms", ["250"])[0]))
+            requested_chunk_size = max(0, int(query.get("chunk_size", ["0"])[0]))
+            echo_body_sha256 = query.get("echo_body_sha256", [""])[0] == "1"
+            body_sha256 = hashlib.sha256(body_bytes).hexdigest().upper()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             for index in range(chunk_count):
-                self.wfile.write(f"data: {server_port}-chunk-{index}\n\n".encode("utf-8"))
+                identity = body_sha256 if echo_body_sha256 else str(server_port)
+                prefix = f"data: {identity}-chunk-{index} ".encode("utf-8")
+                chunk_size = max(requested_chunk_size, len(prefix) + 2)
+                chunk = prefix + (b"x" * (chunk_size - len(prefix) - 2)) + b"\n\n"
+                self.wfile.write(chunk)
                 self.wfile.flush()
                 if index + 1 < chunk_count:
                     time.sleep(chunk_interval_ms / 1000)

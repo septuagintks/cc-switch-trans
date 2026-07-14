@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -589,6 +590,54 @@ def main():
         )
         assert_true(status == 200 and headers.get("Content-Type") == "text/event-stream", "Responses SSE headers")
         assert_true(f"data: {responses_port}-chunk-0".encode() in data and b"data: [DONE]" in data, "Responses SSE body")
+
+        concurrent_chunk_count = 96
+        concurrent_chunk_size = 8192
+        concurrent_stream_path = (
+            "/responses/v1/responses/?stream=sse&echo_body_sha256=1"
+            f"&chunk_count={concurrent_chunk_count}&chunk_interval_ms=0"
+            f"&chunk_size={concurrent_chunk_size}"
+        )
+        concurrent_barrier = threading.Barrier(2)
+
+        def concurrent_stream(index):
+            body = (
+                f'{{"request":{index},"padding":"'
+                + (chr(ord("a") + index) * (256 * 1024))
+                + '"}'
+            ).encode("utf-8")
+            digest = hashlib.sha256(body).hexdigest().upper()
+            expected_chunks = []
+            for chunk_index in range(concurrent_chunk_count):
+                prefix = f"data: {digest}-chunk-{chunk_index} ".encode("ascii")
+                expected_chunks.append(
+                    prefix
+                    + (b"x" * (concurrent_chunk_size - len(prefix) - 2))
+                    + b"\n\n"
+                )
+            expected = b"".join(expected_chunks) + b"data: [DONE]\n\n"
+            concurrent_barrier.wait(timeout=5)
+            stream_status, stream_headers, stream_data = request(
+                proxy_port,
+                "POST",
+                concurrent_stream_path,
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            return stream_status, stream_headers, stream_data, expected
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            concurrent_results = list(pool.map(concurrent_stream, range(2)))
+        assert_true(
+            all(
+                status == 200
+                and headers.get("Content-Type") == "text/event-stream"
+                and stream_data == expected
+                for status, headers, stream_data, expected in concurrent_results
+            ),
+            "same-path concurrent SSE responses remain complete and request-local",
+        )
+
         status, _, data = request(
             proxy_port,
             "POST",
