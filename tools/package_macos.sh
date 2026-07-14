@@ -49,10 +49,12 @@ mkdir -p "$stage/docs/Archived" "$stage/licenses"
 ditto "$application_source" "$stage/ccs-trans.app"
 cp "$cli_source" "$stage/ccs-trans"
 cp "$repository_root/README.md" "$stage/README.md"
-for document in Design.md DevelopmentPlan.md MacOSValidationChecklist.md ProjectStructure.md; do
+for document in Design.md DevelopmentPlan.md ProjectStructure.md; do
     cp "$repository_root/docs/$document" "$stage/docs/$document"
 done
-cp "$repository_root/docs/Archived/Reconstruction.md" "$stage/docs/Archived/Reconstruction.md"
+for document in MacOSValidationCheckResult.md Reconstruction.md Release-0.5.0.md; do
+    cp "$repository_root/docs/Archived/$document" "$stage/docs/Archived/$document"
+done
 cp "$repository_root/third_party/nlohmann/LICENSE.MIT" "$stage/licenses/nlohmann-LICENSE.MIT"
 
 codesign --force --options runtime --timestamp=none --sign - "$stage/ccs-trans"

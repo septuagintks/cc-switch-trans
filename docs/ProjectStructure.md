@@ -16,11 +16,12 @@ cc-switch-trans/
 
   docs/
     Archived/
+      MacOSValidationCheckResult.md
       Reconstruction.md
+      Release-0.5.0.md
       WindowsValidationCheckResult.md
     Design.md
     DevelopmentPlan.md
-    MacOSValidationChecklist.md
     ProjectStructure.md
 
   src/
@@ -164,7 +165,7 @@ cc-switch-trans/
 | `src/transport` | 跨平台 upstream 接口、header policy 与平台网络实现 |
 | `tests/unit` | 配置、路由、protocol、Rule、logger、生命周期和本地错误合约 |
 | `tests/integration` | 单端口协议、桌面宿主、SSE/Usage/reload、取消和平台 proxy 策略 |
-| `tests/benchmark` | 8/16/50 路负载、0/1/8/32 Rule 微基准与阶段 14 soak 采样 |
+| `tests/benchmark` | 8/16/50 路负载、0/1/8/32 Rule 微基准与长时间 soak 采样 |
 
 ## 依赖方向
 
@@ -226,7 +227,7 @@ Windows GUI subsystem target 为 `ccs-trans-tray`；macOS app bundle target 为
 
 ## 平台实现目录
 
-Windows tray 后续验证与发布阶段主要修改：
+Windows tray 验证与打包入口：
 
 ```text
 tests/integration/
@@ -279,9 +280,10 @@ ICNS 都从它派生到 build/package directory，不能反向编辑或提交生
 | `README.md` | 当前用户命令、配置、运行和验证入口 |
 | `docs/Design.md` | 当前实现、不变量和平台边界 |
 | `docs/Archived/Reconstruction.md` | 阶段 11 Profile/Protocol/Rule 通用化架构归档 |
-| `docs/DevelopmentPlan.md` | tray、macOS 的构建顺序和验收门槛 |
+| `docs/DevelopmentPlan.md` | 后续版本进入顺序、性能门槛、发布纪律和延后项 |
+| `docs/Archived/Release-0.5.0.md` | `0.5.0` 双平台发布、溯源、回归和接受限制归档 |
 | `docs/Archived/WindowsValidationCheckResult.md` | `0.5.0-Windows-x64` 验证结果归档 |
-| `docs/MacOSValidationChecklist.md` | macOS 26 arm64 构建、运行、签名和真机证据记录 |
+| `docs/Archived/MacOSValidationCheckResult.md` | `0.5.0-macOS-arm64` 验证结果归档 |
 | `docs/ProjectStructure.md` | 当前目录、依赖、target 与扩展位置 |
 | `tests/benchmark/README.md` | 可重复性能命令和结果解释 |
 
@@ -294,6 +296,8 @@ build/
 build-debug/
 build-release/
 build-warning/
+build-windows-release/
+build-windows-warning/
 build-macos-release/
 build-macos-warning/
 dist/

@@ -1,13 +1,13 @@
-# ccs-trans 0.5.0-macOS-arm64 验证清单
+# ccs-trans 0.5.0-macOS-arm64 验证结果归档
 
 ## 测试信息
 
 ```text
 实现 commit：dfcea1d
-清单 commit：本文件所在 commit
+结果归档 commit：本文件所在 commit
 阶段 14 测试工具 commit：c8043e3
-正式候选 ZIP：ccs-trans-0.5.0-macOS-arm64.zip（ad-hoc 签名）
-ZIP SHA-256：由打包输出和交接/发布记录保存，避免在包内文档中形成自引用
+正式发布 ZIP：ccs-trans-0.5.0-macOS-arm64.zip（ad-hoc 签名）
+ZIP SHA-256：9607E512AD6A3518190BAC3EBE85DEC5E8DF312EE8A36186027102689E88E8E4
 发行标识：0.5.0-macOS-arm64
 macOS 版本：26.5.2 (25F84)
 Xcode / SDK：完整 Xcode 不可用；Command Line Tools SDK 26.5；Apple Clang 21.0.0
@@ -18,10 +18,10 @@ Xcode / SDK：完整 Xcode 不可用；Command Line Tools SDK 26.5；Apple Clang
 
 测试目标严格限定为 macOS 26、Apple Silicon `arm64`。Intel、Rosetta、Universal 2、
 macOS 15 及更早版本不进入兼容矩阵。登录项、代理环境和签名测试前先记录当前状态；不得
-把证书、公证凭据、API key、用户 config 或日志放进仓库和候选包。
+把证书、公证凭据、API key、用户 config 或日志放进仓库和发布包。
 
 状态规则：`[x]` 表示列出的合同已在上述实现上自动验证；`[ ]` 表示未执行、仅部分覆盖或受
-外部条件阻塞。ad-hoc 是正式候选签名策略，但只证明包内容未在签名后改变，不建立发布者
+外部条件阻塞。ad-hoc 是本版本正式发布签名策略，但只证明包内容未在签名后改变，不建立发布者
 身份，也不代表已公证或可通过 Gatekeeper 自动验收。
 
 ## 工具链与干净构建
@@ -120,7 +120,7 @@ ctest --preset macos-arm64-warning
   停止前均增长 `0 bytes`，最终 queue/failure 均为零。
 - [ ] 原合同的 8 小时 idle 未运行；30 分钟结果不作为等价替代。
 
-## 签名与候选包
+## 签名与发布包
 
 - [x] CLI 与 `.app` 使用 hardened runtime、无 timestamp 的 ad-hoc 签名，nested code 校验完整。
 - [x] 验包脚本对 CLI/`.app` 执行 strict `codesign --verify` 并显式检查 `Signature=adhoc`。
@@ -154,5 +154,11 @@ file / lipo / otool -l / otool -L                              arm64, minOS 26.0
 本轮按用户指示只执行阶段 14 第 1、2 项：短负载/Rule matrix、15 分钟 mixed 和 30 分钟 idle
 通过；原 2 小时 mixed、8 小时 idle，以及睡眠唤醒、网络切换、Finder 重启、注销、系统关机、
 磁盘写满、clean-machine matrix 和其余阶段 14 项目均为 `not run`。完整 Xcode 缺失仍使工具链
-合同缺一项，登录项/Finder 候选验收也未执行；Developer ID 与 notary credential 不再是发布
+合同缺一项，登录项/Finder 发布包验收也未执行；Developer ID 与 notary credential 不再是发布
 条件。ad-hoc 包没有可验证发布者身份，不得表述为 notarized 或 Gatekeeper trusted。
+
+## 归档结论
+
+用户接受上述缩短测试范围和未执行项，`0.5.0-macOS-arm64` 已作为正式资产发布。本结果与
+[Release-0.5.0.md](Release-0.5.0.md) 一起关闭该版本；未执行项不在 `0.5.0` 继续补测，只有
+后续版本的实际需求或相关代码改动触发时才重新排期。

@@ -5,7 +5,7 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | 实现基线 | `0.5.0` |
-| 当前发行版 | `0.5.0-Windows-x64`；macOS 使用 ad-hoc 签名候选 |
+| 当前发行版 | `0.5.0-Windows-x64`；`0.5.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
 | 本地入口 | 应用级单 listener，默认 `127.0.0.1:15723` |
@@ -16,7 +16,8 @@
 本文描述当前生产路径。历史重构目标与扩展约束见
 [Reconstruction.md](Archived/Reconstruction.md)，
 后续顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
-[ProjectStructure.md](ProjectStructure.md)。
+[ProjectStructure.md](ProjectStructure.md)，`0.5.0` 双平台发布结论见
+[Release-0.5.0.md](Archived/Release-0.5.0.md)。
 
 ## 项目定位
 
@@ -367,11 +368,11 @@ benchmark 输出或临时目录。
 - listener 的共享编排已使用 Windows/POSIX local-socket adapter；Windows 使用 WinHTTP，
   macOS 使用 SDK system libcurl；
 - Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，
-  `0.5.0-Windows-x64` 已完成项目范围
-  验收。Defender/SmartScreen 未评估且 EXE 未做 Authenticode 签名；Explorer 恢复初期的
-  新 tray 短重试窗口与系统会话结束日志不保证完整是已归档限制；
+  `0.5.0-Windows-x64` 已发布并完成项目范围验收。Defender/SmartScreen 未评估且 EXE 未做
+  Authenticode 签名；Explorer 恢复初期的新 tray 短重试窗口与系统会话结束日志不保证完整
+  是已归档限制；
 - macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
-  图标和打包脚本已实现。正式 ZIP 按策略使用 ad-hoc 签名，不需要 Developer ID 或公证，
-  也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整 Xcode.app，登录项 mutation 和
-  手工 Finder/UI 证据仍未执行；阶段 14 第 1 项短负载/Rule matrix 和缩短的 15 分钟 mixed、
-  30 分钟 idle 已通过，原 2 小时/8 小时与其余阶段 14 项目仍未执行。
+  图标和打包脚本已实现，`0.5.0-macOS-arm64` 已发布。正式 ZIP 按策略使用 ad-hoc 签名，
+  不需要 Developer ID 或公证，也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整
+  Xcode.app，登录项 mutation 和手工 Finder/UI 证据未执行；短负载/Rule matrix 和缩短的
+  15 分钟 mixed、30 分钟 idle 已通过，原 2 小时/8 小时与其余项目作为发布时接受限制归档。

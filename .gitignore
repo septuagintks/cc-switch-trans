@@ -3,6 +3,8 @@ build/
 build-debug/
 build-release/
 build-warning/
+build-windows-release/
+build-windows-warning/
 build-macos-release/
 build-macos-warning/
 dist/

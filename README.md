@@ -1,9 +1,9 @@
 # ccs-trans
 
-`ccs-trans` is a local LLM API request transformation proxy. The current base
-version is `0.5.0`. The completed Windows distribution is
-`0.5.0-Windows-x64`; the macOS 26 arm64 runtime, CLI, and menu host are
-implemented, and its release package intentionally uses ad-hoc signing.
+`ccs-trans` is a local LLM API request transformation proxy. Base version
+`0.5.0` is complete and published for Windows 11 x64 and macOS 26 arm64. The
+Windows distribution is `0.5.0-Windows-x64`; the ad-hoc signed macOS
+distribution is `0.5.0-macOS-arm64`.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
@@ -25,6 +25,12 @@ Package names use the full identifier, for example
 Windows version resources, and macOS bundle version fields remain numeric
 `0.5.0`; the platform suffix identifies the release artifact rather than
 changing the application protocol or configuration version.
+
+The published release is
+[v0.5.0](https://github.com/septuagintks/cc-switch-trans/releases/tag/0.5.0).
+Its final status, source provenance, asset hashes, validation scope, and
+accepted limitations are archived in
+[Release-0.5.0.md](docs/Archived/Release-0.5.0.md).
 
 ## Build
 
@@ -64,15 +70,14 @@ For a non-release static archive check while a tray is running, append
 `-SkipTrayIntegration`. The verifier emits a warning; that mode does not count
 as complete release verification.
 
-Windows `0.5.0-Windows-x64` package, startup, system proxy, desktop UI, lifecycle, load,
-two-hour mixed soak, and eight-hour idle validation are complete. The frozen
-artifact hashes, results, accepted limitations, and evidence index are archived
-in `docs/Archived/WindowsValidationCheckResult.md`.
-
-Do not replace the archived `0.5.0-Windows-x64` ZIP with a package rebuilt from a later
-`main`: documentation and ZIP metadata will change its archive hash. Use the
-`0.5.0` tag when auditing that release and treat the archived SHA-256 as the
-identity of the tested artifact.
+Windows `0.5.0-Windows-x64` startup, system proxy, desktop UI, lifecycle, load,
+two-hour mixed soak, and eight-hour idle validation are complete. After the
+shared macOS listener work landed, the Windows asset was rebuilt from the final
+`0.5.0` shared implementation and revalidated on Windows. Historical VM evidence
+remains in
+[WindowsValidationCheckResult.md](docs/Archived/WindowsValidationCheckResult.md);
+the final cross-platform result is in
+[Release-0.5.0.md](docs/Archived/Release-0.5.0.md).
 
 Defender and SmartScreen were not evaluated in the test VM and are not claimed
 as passed. The two executables are not Authenticode-signed; this is a release
@@ -118,8 +123,9 @@ The package script always signs the CLI and `.app` with `Signature=adhoc`, the
 hardened runtime option, and no timestamp. It does not use a Developer ID
 identity, submit for notarization, staple a ticket, or claim Gatekeeper trust.
 This means the archive has no verifiable publisher identity and a quarantined
-download may require explicit user approval before launch. Current evidence
-and remaining manual checks are tracked in `docs/MacOSValidationChecklist.md`.
+download may require explicit user approval before launch. Final evidence and
+accepted manual-test gaps are archived in
+[MacOSValidationCheckResult.md](docs/Archived/MacOSValidationCheckResult.md).
 
 ## Configuration Root
 
@@ -396,11 +402,8 @@ src/transport/         Cross-platform interface, Windows WinHTTP, macOS libcurl
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-Windows `0.5.0-Windows-x64` implementation and project-scope validation are
-complete. Stage 13 macOS listener, system-libcurl transport, CLI, AppKit menu
-host, `SMAppService` adapter, icon generation, and fixed-whitelist packaging are
-implemented. The `0.5.0-macOS-arm64` candidate is ad-hoc signed by policy; it
-does not establish publisher identity, notarization, or Gatekeeper trust. Full
-Xcode 26 conformance and the remaining manual login/Finder checks are recorded
-separately. See
+Both `0.5.0-Windows-x64` and `0.5.0-macOS-arm64` are complete and published.
+The macOS package is ad-hoc signed by policy and does not establish publisher
+identity, notarization, or Gatekeeper trust. Full results are archived under
+`docs/Archived`; future-version ordering and carried constraints are in
 [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
