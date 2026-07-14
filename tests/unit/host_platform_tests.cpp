@@ -1,7 +1,9 @@
 #include "config/config_document.hpp"
 #include "config/config_store.hpp"
 #include "hosts/host_platform.hpp"
+#ifdef _WIN32
 #include "hosts/windows/startup_registration.hpp"
+#endif
 
 #include <chrono>
 #include <filesystem>
@@ -19,6 +21,7 @@ void require(bool condition, const std::string& message) {
     }
 }
 
+#ifdef _WIN32
 class FakeStartupValueStore final : public ccs::StartupValueStore {
 public:
     bool read(std::optional<std::wstring>& output, std::string&) const override {
@@ -35,6 +38,7 @@ public:
     mutable std::optional<std::wstring> value;
     mutable int write_count = 0;
 };
+#endif
 
 void test_config_file_preparation() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -55,11 +59,22 @@ void test_config_file_preparation() {
     require(store.document().profiles.empty(), "prepared config uses default profiles");
     const bool prepared_again = ccs::ensure_config_file(paths, error);
     require(prepared_again, "config preparation is not idempotent: " + error);
+#ifndef _WIN32
+    const auto private_bits = std::filesystem::perms::group_all
+        | std::filesystem::perms::others_all;
+    require((std::filesystem::status(paths.root).permissions() & private_bits)
+            == std::filesystem::perms::none,
+        "application root permissions are not owner-only");
+    require((std::filesystem::status(paths.config_file).permissions() & private_bits)
+            == std::filesystem::perms::none,
+        "config file permissions are not owner-only");
+#endif
 
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
 }
 
+#ifdef _WIN32
 void test_windows_startup_command() {
     const std::filesystem::path executable =
         L"C:\\Program Files\\ccs-trans\\ccs-trans-tray.exe";
@@ -108,13 +123,16 @@ void test_windows_startup_command() {
     require(registration.set_registered(executable, false, error) && store->write_count == 3,
         "repeated disable is idempotent");
 }
+#endif
 
 } // namespace
 
 int main() {
     try {
         test_config_file_preparation();
+#ifdef _WIN32
         test_windows_startup_command();
+#endif
         std::cout << "host platform tests ok\n";
         return 0;
     } catch (const std::exception& ex) {

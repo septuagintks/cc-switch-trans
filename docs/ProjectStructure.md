@@ -44,6 +44,12 @@ cc-switch-trans/
       cli_main.cpp
       control_executor.hpp/.cpp
       host_platform.hpp/.cpp
+      macos/
+        instance_coordinator.hpp/.mm
+        macos_host_platform.hpp/.mm
+        menu_app.hpp/.mm
+        menu_main.mm
+        startup_registration.hpp/.mm
       windows/
         instance_coordinator.hpp/.cpp
         resource_ids.hpp
@@ -72,9 +78,15 @@ cc-switch-trans/
       runtime_snapshot.hpp
     server/
       server.hpp/.cpp
+      platform/
+        local_socket.hpp
+        posix/local_socket.cpp
+        windows/local_socket.cpp
     transport/
       header_filter.hpp/.cpp
       upstream_transport.hpp/.cpp
+      macos/
+        curl_transport.hpp/.cpp
       windows/
         winhttp_transport.hpp/.cpp
 
@@ -92,6 +104,7 @@ cc-switch-trans/
       control_executor_tests.cpp
       host_platform_tests.cpp
       instance_coordinator_tests.cpp
+      local_socket_tests.cpp
       protocol_tests.cpp
       route_table_tests.cpp
       rule_pipeline_tests.cpp
@@ -99,6 +112,8 @@ cc-switch-trans/
       mock_upstream.py
       reload_integration.cpp
       run_integration.py
+      run_macos_menu_integration.py
+      run_macos_proxy_integration.py
       run_tray_integration.py
       run_windows_system_proxy_integration.py
     benchmark/
@@ -112,10 +127,16 @@ cc-switch-trans/
     check_stage12_prerequisites.ps1
     check_stage13_prerequisites.sh
     generate_icons.ps1
+    generate_macos_icons.sh
+    package_macos.sh
     package_windows.ps1
+    verify_macos_package.sh
     verify_windows_package.ps1
 
   packaging/
+    macos/
+      Info.plist.in
+      ccs-trans.entitlements
     windows/
       ccs-trans-tray.rc.in
 
@@ -132,7 +153,7 @@ cc-switch-trans/
 | `src/app` | 进程无关的服务启动、停止、reload、rollback 与后续宿主控制状态机 |
 | `src/config` | v2 文档、CLI 单字段命令、原子持久化、用户路径和 runtime 编译 |
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
-| `src/hosts` | CLI、Windows tray、control executor、平台操作及后续 macOS menu bar 入口 |
+| `src/hosts` | CLI、Windows tray、macOS menu bar、control executor 与平台操作 |
 | `src/logging` | JSON Lines、有界队列、批写、error flush、drain 与 writer health |
 | `src/protocols` | Responses/Chat/Messages descriptor、校验和本地错误 envelope |
 | `src/routing` | immutable RuntimeProfile 与 exact RouteTable |
@@ -141,7 +162,7 @@ cc-switch-trans/
 | `src/server` | 单 listener、FIFO worker、generation、路由/Rule/transport 编排 |
 | `src/transport` | 跨平台 upstream 接口、header policy 与平台网络实现 |
 | `tests/unit` | 配置、路由、protocol、Rule、logger、生命周期和本地错误合约 |
-| `tests/integration` | 单端口协议、tray 进程、SSE/Usage/reload、取消和 Windows proxy 策略 |
+| `tests/integration` | 单端口协议、桌面宿主、SSE/Usage/reload、取消和平台 proxy 策略 |
 | `tests/benchmark` | 8/16/50 路负载与 0/1/8/32 Rule 微基准 |
 
 ## 依赖方向
@@ -174,8 +195,10 @@ core -> C++ standard library
 ccs-trans-core
 ccs-trans
 ccs-trans-tray
+ccs-trans-menu
 ccs-trans-core-tests
 ccs-trans-control-executor-tests
+ccs-trans-local-socket-tests
 ccs-trans-config-document-tests
 ccs-trans-config-cli-tests
 ccs-trans-route-table-tests
@@ -189,18 +212,18 @@ ccs-trans-rule-pipeline-benchmark
 ```
 
 `ccs-trans-core` 继续保持一个静态库。平台 source 由 CMake 条件加入；不会为每个小目录
-创建静态库。Windows 只编译 `transport/windows`，macOS 阶段加入
-`transport/macos/curl_transport.*`。
+创建静态库。Windows 编译 WinSock adapter 与 `transport/windows`，macOS 编译 POSIX
+adapter 与 `transport/macos/curl_transport.*`。
 
 `CMakePresets.json` 当前只提供 macOS 26 arm64 Release 与 warnings-as-errors 入口。preset
-固定 build directory、architecture 和 deployment target；个人路径或凭据只能写入被忽略的
-`CMakeUserPresets.json`，不能修改共享 preset。当前 preset 是阶段 13 构建合同，不表示
-listener/CurlTransport 已实现。
+固定 build directory、selected `macosx` SDK、architecture 和 deployment target；个人路径
+或凭据只能写入被忽略的 `CMakeUserPresets.json`，不能修改共享 preset。
 
-Windows GUI subsystem target 为 `ccs-trans-tray`；阶段 13 新增 macOS app bundle target。
+Windows GUI subsystem target 为 `ccs-trans-tray`；macOS app bundle target 为
+`ccs-trans-menu`，产物名为 `ccs-trans.app`。
 两者只链接共享 core 和各自 host source，不能把 Win32/AppKit source 加入 console CLI。
 
-## 后续扩展目录
+## 平台实现目录
 
 Windows tray 后续验证与发布阶段主要修改：
 
@@ -215,13 +238,14 @@ ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Win
 只编译进 `ccs-trans-tray.exe`；`ApplicationController`、control executor 与 HostPlatform
 接口编译进共享 core，CLI 已复用共享 runtime loader。
 
-macOS 阶段增加：
+macOS 当前实现：
 
 ```text
 src/hosts/macos/
+  instance_coordinator.hpp/.mm
   menu_main.mm
   menu_app.hpp/.mm
-  shell_actions.hpp/.mm
+  macos_host_platform.hpp/.mm
   startup_registration.hpp/.mm
 src/server/platform/
   local_socket.hpp
@@ -235,6 +259,8 @@ packaging/macos/
 tools/
   check_stage13_prerequisites.sh
   generate_macos_icons.sh
+  package_macos.sh
+  verify_macos_package.sh
 ```
 
 `assets/icons/ccs-trans-512.png` 是唯一手工维护图标母版。ICO、menu bar PNG 和可能的
@@ -272,6 +298,7 @@ benchmark-results/
 .vscode/
 ```
 
-发布包必须使用白名单。当前允许两个 executable、`SHA256SUMS.txt`、README、五篇 docs
-和 `THIRD_PARTY_LICENSES/nlohmann-json.MIT`；始终禁止用户 config/state/log、凭据、
-真实 body、benchmark 输出、PDB、CMake/Ninja 中间文件和 Python cache。
+发布包必须使用平台白名单。Windows 保持双 executable、manifest、README、docs 与第三方
+license；macOS 只允许签名 `.app`、签名 CLI、`SHA256SUMS`、README、指定 docs 和 licenses。
+始终禁止用户 config/state/log、凭据、真实 body、benchmark 输出、PDB/dSYM、临时 iconset、
+CMake/Ninja 中间文件和 Python cache。

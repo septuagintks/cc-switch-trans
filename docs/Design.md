@@ -5,13 +5,13 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | 实现基线 | `0.5.0` |
-| 当前发行版 | `0.5.0-Windows-x64` |
+| 当前发行版 | `0.5.0-Windows-x64`；macOS Developer ID 候选待发布 |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
-| 支持平台 | Windows 11 21H2+ x64 |
+| 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
 | 本地入口 | 应用级单 listener，默认 `127.0.0.1:15723` |
-| 配置根目录 | `%USERPROFILE%/.ccs-trans/` |
+| 配置根目录 | Windows `%USERPROFILE%/.ccs-trans/`；macOS `~/.ccs-trans/` |
 | 业务模型 | 多 Profile、ProtocolRegistry、RuleRegistry、精确 RouteTable |
-| 上游网络 | WinHTTP + 当前用户 Windows 系统代理 |
+| 上游网络 | Windows WinHTTP/system proxy；macOS SDK system libcurl/process environment |
 
 本文描述当前生产路径。历史重构目标与扩展约束见
 [Reconstruction.md](Archived/Reconstruction.md)，
@@ -53,7 +53,7 @@ Codex / cc-switch / other client
  Profile -> ProtocolHandler -> CompiledPipeline
               |
               v
- UpstreamTransport / WinHTTP -> upstream
+ UpstreamTransport / WinHTTP or libcurl -> upstream
               |
               +---- incremental SSE callbacks
               +---- structured Logger
@@ -67,7 +67,7 @@ Codex / cc-switch / other client
 ```text
 CLI management -> ConfigStore
 CLI run -> shared runtime loader -> AppService
-Windows tray / future macOS menu host -> ApplicationController -> AppService
+Windows tray / macOS menu host -> ApplicationController -> AppService
 AppService -> Server
 Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + UpstreamTransport
 UpstreamTransport -> HTTP types + cancellation + platform implementation
@@ -75,17 +75,17 @@ UpstreamTransport -> HTTP types + cancellation + platform implementation
 
 | 模块 | 当前职责 | 禁止承担 |
 | --- | --- | --- |
-| `src/hosts` | v2 CLI、Windows tray、平台操作、退出码、服务启停 | 路由、规则或 WinHTTP 逻辑 |
+| `src/hosts` | v2 CLI、Windows tray、macOS menu、平台操作、退出码、服务启停 | 路由、规则或 transport 逻辑 |
 | `src/app` | start/reload/rollback/stop/wait 生命周期 | 解析协议或平台 UI |
 | `src/config` | schema、CLI、原子持久化、runtime 编译 | 请求期扫描 Profile |
 | `src/routing` | immutable Profile、两级 hash RouteTable | 解析规则 option |
 | `src/protocols` | 协议能力、专用布局、本地错误 envelope | socket/worker 生命周期 |
 | `src/rules` | factory、编译、共享 DOM pipeline | 上游选择或响应改写 |
 | `src/server` | 单 listener、容量、worker、请求编排 | findcg/provider host 特判 |
-| `src/transport` | upstream 接口、headers、WinHTTP、SSE、取消、timeout | 修改 JSON 请求 |
+| `src/transport` | upstream 接口、headers、WinHTTP/libcurl、SSE、取消、timeout | 修改 JSON 请求 |
 | `src/logging` | JSON Lines、批写、flush、背压 | 决定业务规则 |
 
-`ccs-trans-core` 是 CLI、Windows tray 和未来 macOS menu bar 宿主的共享服务核心。
+`ccs-trans-core` 是 CLI、Windows tray 和 macOS menu bar 宿主的共享服务核心。
 新增宿主必须复用 `AppService`，不能复制初始化和停止顺序。
 
 ## 已冻结的宿主扩展边界
@@ -125,11 +125,11 @@ CLI `run` 与 tray 的服务所有权冲突由 listener 独占绑定报告。这
 持久布局：
 
 ```text
-%USERPROFILE%/.ccs-trans/
+%USERPROFILE%/.ccs-trans/ or ~/.ccs-trans/
   config.json
   logs/
     ccs-trans.log
-    ccs-trans-host.log (tray only)
+    ccs-trans-host.log (tray/menu host only)
   state/
     config.lock
 ```
@@ -308,9 +308,15 @@ end-to-end response headers 原样返回；缺失的 `Content-Type` 不由代理
 direct。407 返回 `proxy_authentication_unsupported`，不提示或保存密码。仅启用自动
 检测但没有显式 PAC 时忽略 WPAD。
 
-macOS transport 尚未实现。目标是链接 Xcode SDK 的 system libcurl，只使用启动进程继承
-的 proxy 环境，不读取或激活 macOS System Settings 代理。Terminal 启动时继承 shell
-proxy 变量；Finder/登录项启动通常没有这些变量，因此默认直连，这是明确的宿主语义。
+macOS transport 只从 selected SDK 链接 system libcurl。每个在途请求独占一个 easy handle；
+handle pool 上限等于 worker 上限，每个持久 multi slot 的 connection cache 上限为 4。multi
+poll loop 以 25 ms 上限检查取消以及 resolve/connect/send/response-header/stream-idle/total
+deadline，普通响应额外受 bounded response-body idle 和 size limit 约束。
+
+macOS 只使用启动进程继承的 proxy environment，不读取或激活 System Settings 代理。
+Terminal 启动继承 shell 环境；Finder/登录项通常没有 shell proxy 变量，因此默认直连。系统
+libcurl 出于 CGI 安全规则忽略大写 `HTTP_PROXY`，接受小写 `http_proxy`；`HTTPS_PROXY`、
+`ALL_PROXY` 和 `NO_PROXY` 保持 libcurl 原生语义。代理连接失败不做应用层 direct fallback。
 
 ## 日志与安全
 
@@ -349,14 +355,22 @@ benchmark 输出或临时目录。
    生命周期验证；
 10. Windows 11 24H2 VM 的 startup/system proxy、四档 DPI、主题、睡眠唤醒、Explorer
     重启、重启/注销、2 小时 mixed soak 与 8 小时 idle 验证。
+11. macOS POSIX adapter 的 port conflict、partial I/O、SIGPIPE、EINTR、disconnect、stop
+    interrupt 与 fd 回收单测；Release/warnings 两套 10/10 CTest；
+12. macOS 同一 Python fixture 的三协议/Usage/SSE/reload/cancellation/limits/timeouts 集成，
+    process proxy direct/HTTP/HTTPS CONNECT/ALL_PROXY/NO_PROXY/no-fallback 矩阵；
+13. macOS AppKit host 的 Unicode/空格 home、自动 service、单实例通知、SIGTERM drain，以及
+    ad-hoc 固定白名单 ZIP 的签名校验、解包 CLI/menu smoke。
 
 当前边界：
 
-- listener 与 upstream transport 仍只有 Windows 实现；
+- listener 的共享编排已使用 Windows/POSIX local-socket adapter；Windows 使用 WinHTTP，
+  macOS 使用 SDK system libcurl；
 - Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，
   `0.5.0-Windows-x64` 已完成项目范围
   验收。Defender/SmartScreen 未评估且 EXE 未做 Authenticode 签名；Explorer 恢复初期的
   新 tray 短重试窗口与系统会话结束日志不保证完整是已归档限制；
-- macOS 26 arm64 的 CMake policy、preset、只读 prerequisite probe 与真机验证清单已准备；
-  listener/transport/menu bar 尚未实现，当前非 Windows runtime 仍明确不可用；console CLI
-  继续保持前台生命周期。
+- macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
+  图标和打包脚本已实现。当前机器缺少完整 Xcode.app 与 Developer ID Application identity，
+  因此正式 codesign/notarization/staple/Gatekeeper、登录项 mutation 和手工 Finder/UI 证据仍
+  是发布阻塞；阶段 14 的负载与 soak 按用户指示未执行。

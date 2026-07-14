@@ -1,8 +1,9 @@
 # ccs-trans
 
 `ccs-trans` is a local LLM API request transformation proxy. The current base
-version is `0.5.0`; the completed Windows distribution is
-`0.5.0-Windows-x64` and supports Windows 11 21H2 x64 or newer.
+version is `0.5.0`. The completed Windows distribution is
+`0.5.0-Windows-x64`; the macOS 26 arm64 runtime, CLI, and menu host are
+implemented, while the Developer ID/notarized macOS release remains pending.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
@@ -87,18 +88,38 @@ powershell -ExecutionPolicy Bypass -File tools/check_stage12_prerequisites.ps1
 The CLI target does not require ImageMagick. The tray resource build requires
 `magick` and a Windows resource compiler.
 
-Stage 13 macOS runtime work has not started yet. On a macOS 26 Apple Silicon
-development machine, audit the fixed SDK, architecture, C++20, system libcurl,
-icon, signing, and notarization prerequisites with:
+On a macOS 26 Apple Silicon development machine, audit the fixed SDK,
+architecture, C++20, system libcurl, icon, signing, and notarization
+prerequisites, then build both strict presets with:
 
 ```text
 ./tools/check_stage13_prerequisites.sh
-cmake --list-presets
+cmake --preset macos-arm64-release
+cmake --build --preset macos-arm64-release
+ctest --preset macos-arm64-release
+cmake --preset macos-arm64-warning
+cmake --build --preset macos-arm64-warning
+ctest --preset macos-arm64-warning
 ```
 
-The checked-in macOS presets fix `arm64` and deployment target `26.0`; they do
-not imply that the current Windows-only listener and transport are ready on
-macOS. The implementation and release matrix is tracked in
+The presets produce `build-macos-*/ccs-trans` and
+`build-macos-*/ccs-trans.app`. They fix the selected `macosx` SDK, single
+`arm64` slice, and deployment target `26.0`; CMake rejects other architectures
+or targets and resolves libcurl only from that SDK.
+
+Create the Developer ID signed and notarized fixed-whitelist ZIP with:
+
+```text
+CCS_TRANS_CODESIGN_IDENTITY="Developer ID Application: ..." \
+CCS_TRANS_NOTARY_PROFILE="ccs-trans-notary" \
+./tools/package_macos.sh --build-dir build-macos-release --output-dir dist
+./tools/verify_macos_package.sh dist/ccs-trans-0.5.0-macOS-arm64.zip
+```
+
+For structure and lifecycle smoke without release credentials, pass `--adhoc`.
+That output is deliberately named
+`ccs-trans-0.5.0-macOS-arm64-adhoc-smoke.zip` and is not a release candidate.
+Current evidence and external blockers are tracked in
 `docs/MacOSValidationChecklist.md`.
 
 ## Configuration Root
@@ -109,14 +130,15 @@ macOS:   ~/.ccs-trans/
 
 config.json
 logs/ccs-trans.log
-logs/ccs-trans-host.log   (tray host only)
+logs/ccs-trans-host.log   (tray/menu host only)
 state/
 ```
 
-Windows resolves the root from `USERPROFILE`. Relative log paths stay under
-the application root; an absolute path can place the log elsewhere. The
-configuration schema is `ccs-trans.config/v2`. Old schemas and unknown fields
-are rejected rather than migrated or silently ignored.
+Windows resolves the root from `USERPROFILE`. macOS uses an absolute `HOME`
+when present and otherwise falls back to the current account database. Relative
+log paths stay under the application root; an absolute path can place the log
+elsewhere. The configuration schema is `ccs-trans.config/v2`. Old schemas and
+unknown fields are rejected rather than migrated or silently ignored.
 
 Profiles never persist API keys, Authorization headers, cookies, or proxy
 credentials. Credentials remain request headers supplied by the client.
@@ -284,7 +306,7 @@ use a graceful restart with rollback to the previous snapshot if startup fails.
 Aggregate 8-16 SSE connections are the normal desktop load. Fifty connections
 are a bounded stress profile, not the normal operating target.
 
-## Windows Proxy
+## Platform Proxy
 
 The WinHTTP transport follows current-user manual proxy, bypass, and explicit
 PAC settings. A registry watcher publishes a new session for new requests when
@@ -295,9 +317,14 @@ directly. Proxy authentication is unsupported and returns a classified error;
 ccs-trans never prompts for or stores a proxy password. WPAD-only auto-detection
 is intentionally ignored, while an explicit PAC URL is honored.
 
-The future macOS transport will link system libcurl and use only proxy
-environment inherited from the launching terminal. It will not activate or
-read macOS system proxy settings.
+The macOS transport links `/usr/lib/libcurl.4.dylib` from the selected SDK and
+uses only the process proxy environment. It does not read or activate macOS
+System Settings proxies and never falls back to direct after libcurl selects a
+proxy. System libcurl intentionally ignores uppercase `HTTP_PROXY`; lowercase
+`http_proxy`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` retain libcurl's native
+semantics. Terminal launches inherit the shell environment. Finder and login
+item launches normally have no shell proxy variables and therefore connect
+directly.
 
 ## Logging
 
@@ -339,6 +366,15 @@ python tests/integration/run_windows_system_proxy_integration.py \
   --confirm-system-proxy-mutation
 ```
 
+macOS shared runtime, process-proxy, and menu-host integration use only local
+fixtures:
+
+```text
+python3 tests/integration/run_integration.py build-macos-release/ccs-trans
+python3 tests/integration/run_macos_proxy_integration.py build-macos-release/ccs-trans
+python3 tests/integration/run_macos_menu_integration.py build-macos-release/ccs-trans.app
+```
+
 Load and rule-pipeline benchmarks are documented in
 [tests/benchmark/README.md](tests/benchmark/README.md). Generated results stay
 under ignored `benchmark-results/`.
@@ -357,12 +393,14 @@ src/protocols/         Responses, Chat, and Messages handlers/registry
 src/routing/           Immutable Profiles and exact RouteTable
 src/rules/             Rule factories, registry, and compiled pipelines
 src/server/            Single listener, worker queue, request orchestration
-src/transport/         Cross-platform interface, header policy, Windows WinHTTP
+src/transport/         Cross-platform interface, Windows WinHTTP, macOS libcurl
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-Windows `0.5.0-Windows-x64` implementation and project-scope validation are complete.
-Stage 13 build policy, presets, prerequisite audit, and validation contract are
-prepared; the Apple Silicon macOS 26 listener, system-libcurl transport, menu
-bar host, login item, and packaging remain to be implemented. See
+Windows `0.5.0-Windows-x64` implementation and project-scope validation are
+complete. Stage 13 macOS listener, system-libcurl transport, CLI, AppKit menu
+host, `SMAppService` adapter, icon generation, and fixed-whitelist packaging are
+implemented. A notarized `0.5.0-macOS-arm64` candidate still requires full
+Xcode 26, a Developer ID Application identity, notarization credentials, and
+the remaining manual login/Finder checks. See
 [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

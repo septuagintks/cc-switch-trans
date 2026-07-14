@@ -1,10 +1,7 @@
 #include "app/application_controller.hpp"
 #include "config/config_document.hpp"
 #include "config/config_store.hpp"
-
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "server/platform/local_socket.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -22,40 +19,14 @@ void require(bool condition, const std::string& message) {
     }
 }
 
-class WinsockScope {
-public:
-    WinsockScope() {
-        WSADATA data{};
-        require(WSAStartup(MAKEWORD(2, 2), &data) == 0, "WSAStartup failed");
-    }
-
-    ~WinsockScope() {
-        WSACleanup();
-    }
-};
-
 std::uint16_t reserve_free_port() {
-    const SOCKET socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    require(socket_handle != INVALID_SOCKET, "failed to create port probe socket");
-
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-    require(bind(
-                socket_handle,
-                reinterpret_cast<const sockaddr*>(&address),
-                sizeof(address)) == 0,
-        "failed to bind port probe socket");
-
-    int length = sizeof(address);
-    require(getsockname(
-                socket_handle,
-                reinterpret_cast<sockaddr*>(&address),
-                &length) == 0,
-        "failed to inspect port probe socket");
-    closesocket(socket_handle);
-    return ntohs(address.sin_port);
+    ccs::server_platform::SocketRuntime runtime;
+    ccs::server_platform::LocalListener listener("127.0.0.1", 0);
+    std::string error;
+    require(listener.open(error), "failed to reserve a test port: " + error);
+    const auto port = listener.local_port();
+    require(port != 0, "test port probe returned zero");
+    return port;
 }
 
 void write_file(const std::filesystem::path& path, const std::string& content) {
@@ -160,7 +131,6 @@ void test_application_controller_lifecycle() {
 
 int main() {
     try {
-        WinsockScope winsock;
         test_application_controller_lifecycle();
         std::cout << "application controller tests ok\n";
         return 0;

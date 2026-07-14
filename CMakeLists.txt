@@ -293,22 +293,22 @@ if(BUILD_TESTING)
     )
     add_test(NAME ccs-trans-rule-pipeline-tests COMMAND ccs-trans-rule-pipeline-tests)
 
+    add_executable(ccs-trans-application-controller-tests
+        tests/unit/application_controller_tests.cpp
+    )
+    target_link_libraries(ccs-trans-application-controller-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-application-controller-tests
+        COMMAND ccs-trans-application-controller-tests
+    )
+
+    add_executable(ccs-trans-host-platform-tests
+        tests/unit/host_platform_tests.cpp
+    )
+    target_link_libraries(ccs-trans-host-platform-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-host-platform-tests COMMAND ccs-trans-host-platform-tests)
+
     if(WIN32)
-        add_executable(ccs-trans-application-controller-tests
-            tests/unit/application_controller_tests.cpp
-        )
-        target_link_libraries(ccs-trans-application-controller-tests PRIVATE ccs-trans-core)
-        add_test(
-            NAME ccs-trans-application-controller-tests
-            COMMAND ccs-trans-application-controller-tests
-        )
-
-        add_executable(ccs-trans-host-platform-tests
-            tests/unit/host_platform_tests.cpp
-        )
-        target_link_libraries(ccs-trans-host-platform-tests PRIVATE ccs-trans-core)
-        add_test(NAME ccs-trans-host-platform-tests COMMAND ccs-trans-host-platform-tests)
-
         add_executable(ccs-trans-instance-coordinator-tests
             tests/unit/instance_coordinator_tests.cpp
         )
