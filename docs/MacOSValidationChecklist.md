@@ -5,6 +5,7 @@
 ```text
 实现 commit：dfcea1d
 清单 commit：本文件所在 commit
+阶段 14 测试工具 commit：c8043e3
 正式候选 ZIP：ccs-trans-0.5.0-macOS-arm64.zip（ad-hoc 签名）
 ZIP SHA-256：由打包输出和交接/发布记录保存，避免在包内文档中形成自引用
 发行标识：0.5.0-macOS-arm64
@@ -104,11 +105,20 @@ ctest --preset macos-arm64-warning
 
 ## 性能与长时间运行
 
-- [ ] 8 路、16 路 SSE 无失败，added TTFB 与 Windows 基线可解释。
-- [ ] mixed-16 中 Responses/Chat Usage 在 SSE 期间持续完成。
-- [ ] stress-50 保持 32 worker、连接、fd、内存和 logger queue 有界。
-- [ ] 2 小时 mixed soak 后 RSS、fd、线程和 curl handle 回到稳定区间。
-- [ ] 8 小时 idle 不持续轮询磁盘、不产生周期日志膨胀或资源增长。
+- [x] `desktop-8`、`desktop-16` 均零失败；added TTFB p50 分别为 `-2.212 ms`、`-0.994 ms`，
+  采样后半程 fd 斜率均为零。
+- [x] `mixed-16` 16 条 SSE 零失败，Responses/Chat Usage 各 `12/12` 成功且都在 SSE 期间完成；
+  added TTFB p50 为 `0.434 ms`、p95 为 `2.535 ms`。
+- [x] `stress-50` 50 条 SSE 零失败，32 worker 有界处理，peak queue=18、peak fd=220、
+  peak thread=40；added TTFB p95=`2100.068 ms` 是压力档排队结果，logger 无 backpressure/failure。
+- [x] 用户指定的 15 分钟 mixed soak 实际 `904.062 s`、133 轮：SSE `2128/0`，Responses/Chat
+  Usage 各 `1596/0`；RSS `8.33 -> 10.34 MiB`、peak `11.59 MiB`，后半程 RSS 斜率为负，fd
+  `45 -> 120` 和线程 `16 -> 25` 在后半程斜率均为零，最终连接/worker/logger queue 均为零。
+- [ ] 原合同的 2 小时 mixed soak 未运行；15 分钟结果不作为等价替代。
+- [x] 用户指定的 30 分钟 menu idle 实际 `1800.004 s`、361 个 5 秒样本：RSS
+  `47.02 -> 46.98 MiB`、后半程斜率为零，fd 恒为 45，线程 `20 -> 17`；runtime/host log
+  停止前均增长 `0 bytes`，最终 queue/failure 均为零。
+- [ ] 原合同的 8 小时 idle 未运行；30 分钟结果不作为等价替代。
 
 ## 签名与候选包
 
@@ -132,11 +142,17 @@ python3 tests/integration/run_macos_proxy_integration.py ...    passed
 python3 tests/integration/run_macos_menu_integration.py ...     passed (build tree)
 tools/verify_macos_package.sh ...-macOS-arm64.zip               passed
 python3 tests/integration/run_macos_menu_integration.py ...     passed (extracted ZIP)
+python3 tests/benchmark/run_benchmark.py ...                    passed: smoke/8/16/mixed/50, zero failures
+ccs-trans-rule-pipeline-benchmark 100                           passed: 30 records, 0/1/8/32 rules,
+                                                               empty pipeline parse/serialize=0
+python3 tests/benchmark/run_stage14_soak.py ...mixed 900        passed: 133 rounds, 2128 SSE
+python3 tests/benchmark/run_stage14_soak.py ...idle 1800        passed: 361 samples, idle logs +0 bytes
 file / lipo / otool -l / otool -L                              arm64, minOS 26.0,
                                                                SDK 26.5, /usr/lib/libcurl
 ```
 
-阶段 14 的 8/16/50 路负载、2 小时 mixed soak、8 小时 idle、睡眠唤醒和网络切换按用户指示
-全部为 `not run`。完整 Xcode 缺失仍使工具链合同缺一项，登录项/Finder 候选验收也未执行；
-Developer ID 与 notary credential 不再是发布条件。ad-hoc 包没有可验证发布者身份，不得
-表述为 notarized 或 Gatekeeper trusted。
+本轮按用户指示只执行阶段 14 第 1、2 项：短负载/Rule matrix、15 分钟 mixed 和 30 分钟 idle
+通过；原 2 小时 mixed、8 小时 idle，以及睡眠唤醒、网络切换、Finder 重启、注销、系统关机、
+磁盘写满、clean-machine matrix 和其余阶段 14 项目均为 `not run`。完整 Xcode 缺失仍使工具链
+合同缺一项，登录项/Finder 候选验收也未执行；Developer ID 与 notary credential 不再是发布
+条件。ad-hoc 包没有可验证发布者身份，不得表述为 notarized 或 Gatekeeper trusted。

@@ -373,4 +373,5 @@ benchmark 输出或临时目录。
 - macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
   图标和打包脚本已实现。正式 ZIP 按策略使用 ad-hoc 签名，不需要 Developer ID 或公证，
   也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整 Xcode.app，登录项 mutation 和
-  手工 Finder/UI 证据仍未执行；阶段 14 的负载与 soak 按用户指示未执行。
+  手工 Finder/UI 证据仍未执行；阶段 14 第 1 项短负载/Rule matrix 和缩短的 15 分钟 mixed、
+  30 分钟 idle 已通过，原 2 小时/8 小时与其余阶段 14 项目仍未执行。
