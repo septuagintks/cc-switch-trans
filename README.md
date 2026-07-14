@@ -1,12 +1,29 @@
 # ccs-trans
 
-`ccs-trans` is a local LLM API request transformation proxy. The current
-release is `0.5.0` and supports Windows 11 21H2 x64 or newer.
+`ccs-trans` is a local LLM API request transformation proxy. The current base
+version is `0.5.0`; the completed Windows distribution is
+`0.5.0-Windows-x64` and supports Windows 11 21H2 x64 or newer.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
 select their own upstream targets, and optionally run an ordered request Rule
 pipeline. Ordinary responses and SSE streams are forwarded transparently.
+
+## Release Naming
+
+All platforms share one numeric base version. Distribution identifiers append
+the system and architecture with fixed casing:
+
+```text
+0.5.0-Windows-x64
+0.5.0-macOS-arm64
+```
+
+Package names use the full identifier, for example
+`ccs-trans-0.5.0-Windows-x64.zip`. CMake `PROJECT_VERSION`, CLI `--version`,
+Windows version resources, and macOS bundle version fields remain numeric
+`0.5.0`; the platform suffix identifies the release artifact rather than
+changing the application protocol or configuration version.
 
 ## Build
 
@@ -28,6 +45,8 @@ powershell -ExecutionPolicy Bypass -File tools/package_windows.ps1
 ```
 
 The package is written under ignored `dist/` and includes a SHA-256 manifest.
+Use `-OutputDirectory tmp/package-test` for a disposable package without
+overwriting an archived distribution.
 Verify the fixed whitelist, both executable hashes, reported versions, and an
 extracted tray lifecycle with:
 
@@ -40,13 +59,16 @@ instance. Its extracted-package smoke test launches a tray process, so the
 session-level single-instance guard intentionally prevents that step when the
 installed tray is already running.
 
-Windows `0.5.0` package, startup, system proxy, desktop UI, lifecycle, load,
+For a non-release static archive check while a tray is running, append
+`-SkipTrayIntegration`. The verifier emits a warning; that mode does not count
+as complete release verification.
+
+Windows `0.5.0-Windows-x64` package, startup, system proxy, desktop UI, lifecycle, load,
 two-hour mixed soak, and eight-hour idle validation are complete. The frozen
 artifact hashes, results, accepted limitations, and evidence index are archived
-in `docs/WindowsValidationChecklist.md` (the historical filename is retained
-for package reproducibility).
+in `docs/Archived/WindowsValidationCheckResult.md`.
 
-Do not replace the archived `0.5.0` ZIP with a package rebuilt from a later
+Do not replace the archived `0.5.0-Windows-x64` ZIP with a package rebuilt from a later
 `main`: documentation and ZIP metadata will change its archive hash. Use the
 `0.5.0` tag when auditing that release and treat the archived SHA-256 as the
 identity of the tested artifact.
@@ -339,7 +361,7 @@ src/transport/         Cross-platform interface, header policy, Windows WinHTTP
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-Windows `0.5.0` implementation and project-scope validation are complete.
+Windows `0.5.0-Windows-x64` implementation and project-scope validation are complete.
 Stage 13 build policy, presets, prerequisite audit, and validation contract are
 prepared; the Apple Silicon macOS 26 listener, system-libcurl transport, menu
 bar host, login item, and packaging remain to be implemented. See

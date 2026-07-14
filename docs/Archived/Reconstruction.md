@@ -1,5 +1,9 @@
 # ccs-trans 通用化架构
 
+> 本文归档阶段 11 的通用化重构目标与决策。当前实现状态以
+> [Design.md](../Design.md) 为准，后续构建顺序以
+> [DevelopmentPlan.md](../DevelopmentPlan.md) 为准。
+
 ## 目标模型
 
 `ccs-trans` 是本地 LLM API Request Transformation Proxy。业务能力由三类可扩展对象

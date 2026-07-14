@@ -2,7 +2,8 @@
 
 ## 当前基线
 
-当前版本为 `0.5.0`，生产路径已经收敛为一套通用模型：
+当前共享基础版本为 `0.5.0`，Windows 发行标识为 `0.5.0-Windows-x64`，macOS 首个发行标识
+计划为 `0.5.0-macOS-arm64`。生产路径已经收敛为一套通用模型：
 
 ```text
 ConfigDocument
@@ -55,8 +56,8 @@ ConfigDocument
    `tools/check_stage12_prerequisites.ps1` 已完整通过。
 
 `tools/check_stage12_prerequisites.ps1` 是阶段 12 的只读环境检查入口。Windows tray、
-`0.5.0` 发布包与 VM 验收均已完成；本节只保留实现边界，最终结果见
-`docs/WindowsValidationChecklist.md`。
+`0.5.0-Windows-x64` 发布包与 VM 验收均已完成；本节只保留实现边界，最终结果见
+`docs/Archived/WindowsValidationCheckResult.md`。
 
 ## 阶段 12：Windows Tray 与后台宿主
 
@@ -227,7 +228,7 @@ microbenchmark。需要修改 HKCU 或系统代理的测试仍保留显式 confi
 不得回退超过 15%/20%，Usage 不得被 SSE 饥饿，50 路必须保持连接、线程、logger queue
 和内存有界。tray idle 状态不得持续轮询磁盘或产生高频日志。
 
-`0.5.0` 本机单轮预检中，`smoke`、`desktop-8`、`desktop-16`、`mixed-16` 和
+`0.5.0-Windows-x64` 本机单轮预检中，`smoke`、`desktop-8`、`desktop-16`、`mixed-16` 和
 `stress-50` 全部零失败。8/16 路 SSE added TTFB p50 分别为 `5.936 ms` 和
 `6.484 ms`；mixed-16 为 `6.859 ms`，两组 Usage 各 12 次均在 stream 期间完成。
 50 路由 32 个 worker 有界处理，peak worker 32、peak queue 25、无 logger backpressure；
@@ -240,12 +241,12 @@ failure、logger backpressure、残留连接或持续资源增长。
 
 ### 12.7 Windows 打包与退出条件
 
-实现状态：已完成并验收。`0.5.0` Windows x64 打包脚本和独立验包脚本从 ZIP 解压到临时
+实现状态：已完成并验收。`0.5.0-Windows-x64` 打包脚本和独立验包脚本从 ZIP 解压到临时
 目录后检查精确白名单、两个 SHA-256、CLI/资源版本，并运行提取后的 tray 生命周期集成；
 脚本兼容 Windows PowerShell 5.1。最终归档 ZIP SHA-256 为
 `FD6E2812410F9B9274B9F54B04C6C461D582E1A4C68A69D341C9DC99CB9A005A`。
 
-阶段 12 发布版本为 `0.5.0`。固定白名单包括：
+阶段 12 发行标识为 `0.5.0-Windows-x64`。固定白名单包括：
 
 ```text
 ccs-trans.exe
@@ -355,8 +356,9 @@ template PNG，验证浅色/深色、Retina 和辅助功能尺寸；Finder app i
 拒绝、需要用户批准和系统错误都必须可见并记录。登录项只启动 `.app` menu host，不启动
 第二份 CLI 服务。
 
-阶段 13 发布版本计划为 `0.6.0`，先生成 arm64 ZIP，内容为签名 `.app`、签名 CLI、README、
-docs、licenses 和 checksum。随后完成 Developer ID codesign、notarization、staple 与干净
+阶段 13 使用同一基础版本 `0.5.0`，发行标识为 `0.5.0-macOS-arm64`。先生成 arm64 ZIP，
+文件名为 `ccs-trans-0.5.0-macOS-arm64.zip`，内容为签名 `.app`、签名 CLI、README、docs、
+licenses 和 checksum。随后完成 Developer ID codesign、notarization、staple 与干净
 机器 Gatekeeper 验证；证书和公证凭据只从 CI secret/keychain 获取，不进入仓库或日志。
 DMG 是可选发布外壳，不阻塞首个 ZIP。
 

@@ -1,8 +1,9 @@
-# ccs-trans 0.5.0 Windows 验证结果归档
+# ccs-trans 0.5.0-Windows-x64 验证结果归档
 
-本文件沿用候选阶段的历史文件名，以保持 `0.5.0` 固定白名单、打包脚本和验包脚本可复现；
-内容已经从执行清单收敛为不可变测试结果。归档只描述下表给出的 ZIP，不代表之后从 `main`
-重新构建的二进制。
+本文件记录基础版本 `0.5.0` 的 Windows x64 发行版，规范发行标识为
+`0.5.0-Windows-x64`。验证时 ZIP 和内部根目录仍使用旧的小写平台名；归档后只重命名外部
+ZIP，不重新压缩，因此 SHA-256 与测试证据保持不变。归档只描述下表给出的二进制，不代表
+之后从 `main` 重新构建的产物。
 
 ## 结论
 
@@ -12,7 +13,7 @@
 2 小时 mixed soak、8 小时 idle soak、睡眠唤醒、Explorer 重启、系统重启和注销验证均通过。
 没有请求失败、logger backpressure、writer failure、无界资源增长、残留进程或损坏 JSONL 尾部。
 
-阶段 12 和 Windows `0.5.0` 在项目范围内正式验收完成。以下说明项已经接受，不阻塞该版本，
+阶段 12 和 `0.5.0-Windows-x64` 在项目范围内正式验收完成。以下说明项已经接受，不阻塞该版本，
 也不安排阶段 13 开始前补测或修复：
 
 - VM 的 Windows Defender 服务已停止且 WMI provider 不可用，因此 Defender 未评估。
@@ -28,7 +29,9 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 候选 ZIP | `dist/ccs-trans-0.5.0-windows-x64.zip` |
+| 发行标识 | `0.5.0-Windows-x64` |
+| 归档 ZIP | `dist/ccs-trans-0.5.0-Windows-x64.zip` |
+| 验证时文件名 | `ccs-trans-0.5.0-windows-x64.zip` |
 | ZIP SHA-256 | `FD6E2812410F9B9274B9F54B04C6C461D582E1A4C68A69D341C9DC99CB9A005A` |
 | CLI SHA-256 | `6BE7B8670956A1401E0275669B0B168C501E1AB7B6913A30CEB6B7E917B377FF` |
 | tray SHA-256 | `5873C6677BD2FB8B4D5135B3F9007B27F3F8B16A4111B6F1DD041F2ED52E70DB` |

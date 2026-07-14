@@ -1,11 +1,12 @@
-# macOS 0.6.0 验证清单
+# ccs-trans 0.5.0-macOS-arm64 验证清单
 
 ## 测试信息
 
 ```text
 源码 commit：
-候选 ZIP：
+候选 ZIP：ccs-trans-0.5.0-macOS-arm64.zip
 ZIP SHA-256：
+发行标识：0.5.0-macOS-arm64
 macOS 版本：
 Xcode / SDK：
 机器型号：

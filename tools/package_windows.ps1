@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$BuildDirectory = "build-release"
+    [string]$BuildDirectory = "build-release",
+    [string]$OutputDirectory = "dist"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,8 +21,12 @@ if ($cmake -notmatch 'project\(ccs_trans VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
     throw "Unable to read the project version from CMakeLists.txt"
 }
 $version = $Matches[1]
-$packageName = "ccs-trans-$version-windows-x64"
-$distRoot = Join-Path $repositoryRoot "dist"
+$packageName = "ccs-trans-$version-Windows-x64"
+$distRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
+    [IO.Path]::GetFullPath($OutputDirectory)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $repositoryRoot $OutputDirectory))
+}
 $packageRoot = Join-Path $distRoot $packageName
 $archivePath = Join-Path $distRoot "$packageName.zip"
 
@@ -56,6 +61,7 @@ if (Test-Path -LiteralPath $archivePath) {
 
 New-Item -ItemType Directory -Path $packageRoot | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $packageRoot "docs") | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $packageRoot "docs/Archived") | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $packageRoot "THIRD_PARTY_LICENSES") | Out-Null
 
 foreach ($name in $executables) {
@@ -67,8 +73,8 @@ $documents = @(
     "Design.md",
     "DevelopmentPlan.md",
     "ProjectStructure.md",
-    "Reconstruction.md",
-    "WindowsValidationChecklist.md"
+    "Archived/Reconstruction.md",
+    "Archived/WindowsValidationCheckResult.md"
 )
 foreach ($document in $documents) {
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs/$document") `
@@ -94,7 +100,8 @@ $expectedFiles = @(
 ) + ($documents | ForEach-Object { "docs/$_" })
 $expectedDirectories = @(
     "THIRD_PARTY_LICENSES",
-    "docs"
+    "docs",
+    "docs/Archived"
 )
 $actualFiles = @(
     Get-ChildItem -LiteralPath $packageRoot -Recurse -File | ForEach-Object {

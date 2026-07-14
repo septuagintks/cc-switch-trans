@@ -5,6 +5,7 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | 实现基线 | `0.5.0` |
+| 当前发行版 | `0.5.0-Windows-x64` |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64 |
 | 本地入口 | 应用级单 listener，默认 `127.0.0.1:15723` |
@@ -12,7 +13,8 @@
 | 业务模型 | 多 Profile、ProtocolRegistry、RuleRegistry、精确 RouteTable |
 | 上游网络 | WinHTTP + 当前用户 Windows 系统代理 |
 
-本文描述当前生产路径。目标模型与扩展约束见 [Reconstruction.md](Reconstruction.md)，
+本文描述当前生产路径。历史重构目标与扩展约束见
+[Reconstruction.md](Archived/Reconstruction.md)，
 后续顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
 [ProjectStructure.md](ProjectStructure.md)。
 
@@ -351,7 +353,8 @@ benchmark 输出或临时目录。
 当前边界：
 
 - listener 与 upstream transport 仍只有 Windows 实现；
-- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，`0.5.0` 已完成项目范围
+- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，
+  `0.5.0-Windows-x64` 已完成项目范围
   验收。Defender/SmartScreen 未评估且 EXE 未做 Authenticode 签名；Explorer 恢复初期的
   新 tray 短重试窗口与系统会话结束日志不保证完整是已归档限制；
 - macOS 26 arm64 的 CMake policy、preset、只读 prerequisite probe 与真机验证清单已准备；

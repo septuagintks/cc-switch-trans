@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ArchivePath = ""
+    [string]$ArchivePath = "",
+    [switch]$SkipTrayIntegration
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,13 +12,13 @@ if ($cmake -notmatch 'project\(ccs_trans VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
     throw "Unable to read the project version from CMakeLists.txt"
 }
 $version = $Matches[1]
-$packageName = "ccs-trans-$version-windows-x64"
+$packageName = "ccs-trans-$version-Windows-x64"
+$historicalPackageName = "ccs-trans-$version-windows-x64"
 if (-not $ArchivePath) {
     $ArchivePath = Join-Path $repositoryRoot "dist/$packageName.zip"
 }
 $archive = (Resolve-Path -LiteralPath $ArchivePath).Path
 $verificationRoot = Join-Path $repositoryRoot "tmp/package-verification-$([Guid]::NewGuid().ToString('N'))"
-$packageRoot = Join-Path $verificationRoot $packageName
 
 function Assert-RepositoryChild([string]$Path) {
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -38,31 +39,50 @@ function Get-RelativePackagePath([string]$Root, [string]$Path) {
 
 Assert-RepositoryChild $verificationRoot
 
-$documents = @(
-    "Design.md",
-    "DevelopmentPlan.md",
-    "ProjectStructure.md",
-    "Reconstruction.md",
-    "WindowsValidationChecklist.md"
-)
-$expectedFiles = @(
-    "README.md",
-    "SHA256SUMS.txt",
-    "THIRD_PARTY_LICENSES/nlohmann-json.MIT",
-    "ccs-trans-tray.exe",
-    "ccs-trans.exe"
-) + ($documents | ForEach-Object { "docs/$_" })
-$expectedDirectories = @(
-    "THIRD_PARTY_LICENSES",
-    "docs"
-)
-
 try {
     New-Item -ItemType Directory -Force -Path $verificationRoot | Out-Null
     Expand-Archive -LiteralPath $archive -DestinationPath $verificationRoot
-    if (-not (Test-Path -LiteralPath $packageRoot -PathType Container)) {
-        throw "Archive does not contain the expected root directory: $packageName"
+    $rootEntries = @(Get-ChildItem -LiteralPath $verificationRoot -Force)
+    if ($rootEntries.Count -ne 1 -or -not $rootEntries[0].PSIsContainer) {
+        throw "Archive must contain exactly one root directory"
     }
+    $packageRoot = $rootEntries[0].FullName
+    $documents = @(
+        "Design.md",
+        "DevelopmentPlan.md",
+        "ProjectStructure.md",
+        "Archived/Reconstruction.md",
+        "Archived/WindowsValidationCheckResult.md"
+    )
+    $expectedDirectories = @(
+        "THIRD_PARTY_LICENSES",
+        "docs",
+        "docs/Archived"
+    )
+    if ($rootEntries[0].Name -ceq $historicalPackageName) {
+        $documents = @(
+            "Design.md",
+            "DevelopmentPlan.md",
+            "ProjectStructure.md",
+            "Reconstruction.md",
+            "WindowsValidationChecklist.md"
+        )
+        $expectedDirectories = @(
+            "THIRD_PARTY_LICENSES",
+            "docs"
+        )
+        Write-Output "Verifying historical Windows package layout: $historicalPackageName"
+    } elseif ($rootEntries[0].Name -cne $packageName) {
+        throw "Archive root directory is unexpected: $($rootEntries[0].Name)"
+    }
+
+    $expectedFiles = @(
+        "README.md",
+        "SHA256SUMS.txt",
+        "THIRD_PARTY_LICENSES/nlohmann-json.MIT",
+        "ccs-trans-tray.exe",
+        "ccs-trans.exe"
+    ) + ($documents | ForEach-Object { "docs/$_" })
 
     $actualFiles = @(
         Get-ChildItem -LiteralPath $packageRoot -Recurse -File | ForEach-Object {
@@ -111,14 +131,18 @@ try {
         throw "Extracted tray resource reported version $trayVersion instead of $version"
     }
 
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $python) {
-        throw "Python is required for the extracted tray smoke test"
-    }
-    & $python.Source (Join-Path $repositoryRoot "tests/integration/run_tray_integration.py") `
-        --tray $tray --cli $cli
-    if ($LASTEXITCODE -ne 0) {
-        throw "Extracted tray integration failed"
+    if ($SkipTrayIntegration) {
+        Write-Warning "Tray lifecycle integration was skipped; this is a static package verification only"
+    } else {
+        $python = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $python) {
+            throw "Python is required for the extracted tray smoke test"
+        }
+        & $python.Source (Join-Path $repositoryRoot "tests/integration/run_tray_integration.py") `
+            --tray $tray --cli $cli
+        if ($LASTEXITCODE -ne 0) {
+            throw "Extracted tray integration failed"
+        }
     }
 
     Write-Output "Windows package verification passed: $archive"

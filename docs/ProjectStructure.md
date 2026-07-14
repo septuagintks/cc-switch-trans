@@ -15,12 +15,13 @@ cc-switch-trans/
       ccs-trans-512.png
 
   docs/
+    Archived/
+      Reconstruction.md
+      WindowsValidationCheckResult.md
     Design.md
     DevelopmentPlan.md
     MacOSValidationChecklist.md
     ProjectStructure.md
-    Reconstruction.md
-    WindowsValidationChecklist.md
 
   src/
     app/
@@ -246,9 +247,9 @@ ICNS 都从它派生到 build/package directory，不能反向编辑或提交生
 | --- | --- |
 | `README.md` | 当前用户命令、配置、运行和验证入口 |
 | `docs/Design.md` | 当前实现、不变量和平台边界 |
-| `docs/Reconstruction.md` | Profile/Protocol/Rule 通用架构与扩展合约 |
+| `docs/Archived/Reconstruction.md` | 阶段 11 Profile/Protocol/Rule 通用化架构归档 |
 | `docs/DevelopmentPlan.md` | tray、macOS 的构建顺序和验收门槛 |
-| `docs/WindowsValidationChecklist.md` | Windows `0.5.0` 验证结果归档；沿用历史文件名以保持包可复现 |
+| `docs/Archived/WindowsValidationCheckResult.md` | `0.5.0-Windows-x64` 验证结果归档 |
 | `docs/MacOSValidationChecklist.md` | macOS 26 arm64 构建、运行、签名和真机证据记录 |
 | `docs/ProjectStructure.md` | 当前目录、依赖、target 与扩展位置 |
 | `tests/benchmark/README.md` | 可重复性能命令和结果解释 |
