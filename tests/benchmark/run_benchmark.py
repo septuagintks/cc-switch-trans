@@ -508,10 +508,90 @@ class WindowsProcessProbe:
         return count
 
 
+class ProcTaskInfo(ctypes.Structure):
+    _fields_ = [
+        ("virtual_size", ctypes.c_uint64),
+        ("resident_size", ctypes.c_uint64),
+        ("total_user", ctypes.c_uint64),
+        ("total_system", ctypes.c_uint64),
+        ("threads_user", ctypes.c_uint64),
+        ("threads_system", ctypes.c_uint64),
+        ("policy", ctypes.c_int32),
+        ("faults", ctypes.c_int32),
+        ("pageins", ctypes.c_int32),
+        ("cow_faults", ctypes.c_int32),
+        ("messages_sent", ctypes.c_int32),
+        ("messages_received", ctypes.c_int32),
+        ("syscalls_mach", ctypes.c_int32),
+        ("syscalls_unix", ctypes.c_int32),
+        ("context_switches", ctypes.c_int32),
+        ("thread_count", ctypes.c_int32),
+        ("running_thread_count", ctypes.c_int32),
+        ("priority", ctypes.c_int32),
+    ]
+
+
+class DarwinProcessProbe:
+    def __init__(self, pid):
+        self.pid = pid
+        self.libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        self.libproc.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        self.libproc.proc_pidinfo.restype = ctypes.c_int
+
+    def close(self):
+        return
+
+    def sample(self):
+        try:
+            task = ProcTaskInfo()
+            task_size = self.libproc.proc_pidinfo(
+                self.pid, 4, 0, ctypes.byref(task), ctypes.sizeof(task)
+            )
+            if task_size != ctypes.sizeof(task):
+                return None
+            fd_bytes = self.libproc.proc_pidinfo(self.pid, 1, 0, None, 0)
+            if fd_bytes <= 0:
+                return None
+            return {
+                "rss_bytes": task.resident_size,
+                "virtual_bytes": task.virtual_size,
+                "fd_count": fd_bytes // 8,
+                "thread_count": task.thread_count,
+                "cpu_seconds": (task.total_user + task.total_system) / 1_000_000_000,
+            }
+        except OSError:
+            return None
+
+
+def sample_slope_per_hour(samples, key, start_index=0):
+    points = [
+        (sample["elapsed_seconds"], sample[key])
+        for sample in samples[start_index:]
+        if sample.get(key) is not None
+    ]
+    if len(points) < 2:
+        return None
+    mean_x = statistics.fmean(point[0] for point in points)
+    mean_y = statistics.fmean(point[1] for point in points)
+    denominator = sum((point[0] - mean_x) ** 2 for point in points)
+    if denominator == 0:
+        return 0.0
+    slope_per_second = sum(
+        (point[0] - mean_x) * (point[1] - mean_y) for point in points
+    ) / denominator
+    return round(slope_per_second * 3600, 3)
+
+
 class ProcessSampler:
-    def __init__(self, pid, interval=0.05):
-        self.probe = WindowsProcessProbe(pid)
-        self.interval = interval
+    def __init__(self, pid, interval=None):
+        self.probe = DarwinProcessProbe(pid) if sys.platform == "darwin" else WindowsProcessProbe(pid)
+        self.interval = interval if interval is not None else (0.05 if os.name == "nt" else 0.5)
         self.samples = []
         self.stop_event = threading.Event()
         self.thread = None
@@ -540,6 +620,7 @@ class ProcessSampler:
     def _sample(self):
         sample = self.probe.sample()
         if sample is not None:
+            sample["elapsed_seconds"] = time.monotonic() - self.started_at
             self.samples.append(sample)
 
     def _summarize(self, elapsed):
@@ -549,6 +630,37 @@ class ProcessSampler:
         last = self.samples[-1]
         cpu_delta = max(0.0, last["cpu_seconds"] - first["cpu_seconds"])
         cpu_percent = cpu_delta / elapsed / max(1, os.cpu_count() or 1) * 100 if elapsed else 0
+        second_half = len(self.samples) // 2
+        if "rss_bytes" in first:
+            return {
+                "available": True,
+                "resource_kind": "darwin",
+                "sample_count": len(self.samples),
+                "cpu_percent_of_machine": round(cpu_percent, 3),
+                "rss_start_bytes": first["rss_bytes"],
+                "rss_end_bytes": last["rss_bytes"],
+                "rss_delta_bytes": last["rss_bytes"] - first["rss_bytes"],
+                "peak_rss_bytes": max(sample["rss_bytes"] for sample in self.samples),
+                "peak_virtual_bytes": max(sample["virtual_bytes"] for sample in self.samples),
+                "rss_slope_bytes_per_hour": sample_slope_per_hour(self.samples, "rss_bytes"),
+                "rss_second_half_slope_bytes_per_hour": sample_slope_per_hour(
+                    self.samples, "rss_bytes", second_half
+                ),
+                "fd_start": first["fd_count"],
+                "fd_end": last["fd_count"],
+                "fd_delta": last["fd_count"] - first["fd_count"],
+                "peak_fd_count": max(sample["fd_count"] for sample in self.samples),
+                "fd_second_half_slope_per_hour": sample_slope_per_hour(
+                    self.samples, "fd_count", second_half
+                ),
+                "thread_start": first["thread_count"],
+                "thread_end": last["thread_count"],
+                "thread_delta": last["thread_count"] - first["thread_count"],
+                "peak_thread_count": max(sample["thread_count"] for sample in self.samples),
+                "thread_second_half_slope_per_hour": sample_slope_per_hour(
+                    self.samples, "thread_count", second_half
+                ),
+            }
         return {
             "available": True,
             "sample_count": len(self.samples),
@@ -562,6 +674,15 @@ class ProcessSampler:
             "peak_thread_count": max(
                 (sample["thread_count"] for sample in self.samples if sample["thread_count"] is not None),
                 default=None,
+            ),
+            "working_set_second_half_slope_bytes_per_hour": sample_slope_per_hour(
+                self.samples, "working_set_bytes", second_half
+            ),
+            "handle_second_half_slope_per_hour": sample_slope_per_hour(
+                self.samples, "handle_count", second_half
+            ),
+            "thread_second_half_slope_per_hour": sample_slope_per_hour(
+                self.samples, "thread_count", second_half
             ),
         }
 
@@ -751,6 +872,9 @@ def main():
             )
             proxy_environment = os.environ.copy()
             proxy_environment["USERPROFILE"] = str(proxy_home)
+            proxy_environment["HOME"] = str(proxy_home)
+            proxy_environment["NO_PROXY"] = "127.0.0.1,localhost"
+            proxy_environment["no_proxy"] = "127.0.0.1,localhost"
             try:
                 proxy = start_process(
                     [str(exe), "run"],

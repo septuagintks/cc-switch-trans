@@ -120,6 +120,7 @@ cc-switch-trans/
       README.md
       mock_upstream.py
       run_benchmark.py
+      run_stage14_soak.py
       run_windows_direct_benchmark.py
       rule_pipeline_benchmark.cpp
 
@@ -163,7 +164,7 @@ cc-switch-trans/
 | `src/transport` | 跨平台 upstream 接口、header policy 与平台网络实现 |
 | `tests/unit` | 配置、路由、protocol、Rule、logger、生命周期和本地错误合约 |
 | `tests/integration` | 单端口协议、桌面宿主、SSE/Usage/reload、取消和平台 proxy 策略 |
-| `tests/benchmark` | 8/16/50 路负载与 0/1/8/32 Rule 微基准 |
+| `tests/benchmark` | 8/16/50 路负载、0/1/8/32 Rule 微基准与阶段 14 soak 采样 |
 
 ## 依赖方向
 

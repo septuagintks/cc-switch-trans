@@ -11,6 +11,8 @@ cmake --build build-release --clean-first
 ```
 
 This builds `ccs-trans.exe` and the compiled rule-pipeline microbenchmark.
+On macOS, use `build-macos-release/ccs-trans` and the corresponding benchmark
+binary without the `.exe` suffix.
 
 Run the rule matrix with its default 1 KiB, 100 KiB, and 1 MiB bodies:
 
@@ -86,6 +88,30 @@ Profiles are short comparison runs, not soak tests or release SLOs:
 `mixed-16` fails when either Usage group fails, waits until all streams finish,
 or exceeds its endpoint queue-wait bound. Every profile also fails on unexpected
 request errors, logger writer failures, or logger backpressure.
+
+## Stage 14 Soak
+
+The soak runner keeps one production process alive for the entire test and
+samples RSS, fd/handle count, threads, CPU, runtime metrics, and log sizes. Run
+mixed load through the CLI and idle through the menu host on macOS:
+
+```text
+python tests/benchmark/run_stage14_soak.py \
+  --exe build-macos-release/ccs-trans \
+  --host cli --mode mixed --duration-seconds 900 \
+  --source-ref HEAD \
+  --output benchmark-results/macos-arm64-mixed-15m.json
+
+python tests/benchmark/run_stage14_soak.py \
+  --exe build-macos-release/ccs-trans.app/Contents/MacOS/ccs-trans \
+  --host menu --mode idle --duration-seconds 1800 \
+  --source-ref HEAD \
+  --output benchmark-results/macos-arm64-idle-30m.json
+```
+
+The idle configuration disables periodic runtime snapshots, so runtime and
+host logs must remain byte-for-byte stable between startup and shutdown. Soak
+results are ignored build evidence; commit only concise summaries.
 
 Interpret changes using repeated Release runs from the same machine and build
 settings. Correctness, bounded resources, and the median of comparable runs take
