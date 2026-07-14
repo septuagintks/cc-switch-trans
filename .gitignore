@@ -37,6 +37,7 @@ CMakeUserPresets.json
 # Editor and OS noise
 .vscode/
 .idea/
+.codex/
 .DS_Store
 Thumbs.db
 
