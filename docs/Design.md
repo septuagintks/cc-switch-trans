@@ -5,7 +5,7 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | 实现基线 | `0.5.0` |
-| 当前发行版 | `0.5.0-Windows-x64`；macOS Developer ID 候选待发布 |
+| 当前发行版 | `0.5.0-Windows-x64`；macOS 使用 ad-hoc 签名候选 |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
 | 本地入口 | 应用级单 listener，默认 `127.0.0.1:15723` |
@@ -360,7 +360,7 @@ benchmark 输出或临时目录。
 12. macOS 同一 Python fixture 的三协议/Usage/SSE/reload/cancellation/limits/timeouts 集成，
     process proxy direct/HTTP/HTTPS CONNECT/ALL_PROXY/NO_PROXY/no-fallback 矩阵；
 13. macOS AppKit host 的 Unicode/空格 home、自动 service、单实例通知、SIGTERM drain，以及
-    ad-hoc 固定白名单 ZIP 的签名校验、解包 CLI/menu smoke。
+    正式文件名 ad-hoc 固定白名单 ZIP 的签名校验、解包 CLI/menu smoke。
 
 当前边界：
 
@@ -371,6 +371,6 @@ benchmark 输出或临时目录。
   验收。Defender/SmartScreen 未评估且 EXE 未做 Authenticode 签名；Explorer 恢复初期的
   新 tray 短重试窗口与系统会话结束日志不保证完整是已归档限制；
 - macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
-  图标和打包脚本已实现。当前机器缺少完整 Xcode.app 与 Developer ID Application identity，
-  因此正式 codesign/notarization/staple/Gatekeeper、登录项 mutation 和手工 Finder/UI 证据仍
-  是发布阻塞；阶段 14 的负载与 soak 按用户指示未执行。
+  图标和打包脚本已实现。正式 ZIP 按策略使用 ad-hoc 签名，不需要 Developer ID 或公证，
+  也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整 Xcode.app，登录项 mutation 和
+  手工 Finder/UI 证据仍未执行；阶段 14 的负载与 soak 按用户指示未执行。

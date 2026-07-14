@@ -4,14 +4,12 @@ set -eu
 
 usage() {
     printf '%s\n' \
-        'usage: package_macos.sh --build-dir <dir> --output-dir <dir> [--adhoc]' \
-        'release mode requires CCS_TRANS_CODESIGN_IDENTITY and CCS_TRANS_NOTARY_PROFILE' >&2
+        'usage: package_macos.sh --build-dir <dir> --output-dir <dir>' >&2
     exit 2
 }
 
 build_directory=
 output_directory=
-adhoc=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --build-dir)
@@ -23,10 +21,6 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || usage
             output_directory=$2
             shift 2
-            ;;
-        --adhoc)
-            adhoc=1
-            shift
             ;;
         *) usage ;;
     esac
@@ -61,32 +55,12 @@ done
 cp "$repository_root/docs/Archived/Reconstruction.md" "$stage/docs/Archived/Reconstruction.md"
 cp "$repository_root/third_party/nlohmann/LICENSE.MIT" "$stage/licenses/nlohmann-LICENSE.MIT"
 
-if [ "$adhoc" -eq 1 ]; then
-    identity=-
-    timestamp_option=--timestamp=none
-else
-    identity=${CCS_TRANS_CODESIGN_IDENTITY:-}
-    notary_profile=${CCS_TRANS_NOTARY_PROFILE:-}
-    [ -n "$identity" ] || { printf 'CCS_TRANS_CODESIGN_IDENTITY is required\n' >&2; exit 1; }
-    [ -n "$notary_profile" ] || { printf 'CCS_TRANS_NOTARY_PROFILE is required\n' >&2; exit 1; }
-    timestamp_option=--timestamp
-fi
-
-codesign --force --options runtime "$timestamp_option" --sign "$identity" "$stage/ccs-trans"
-codesign --force --options runtime "$timestamp_option" \
+codesign --force --options runtime --timestamp=none --sign - "$stage/ccs-trans"
+codesign --force --options runtime --timestamp=none \
     --entitlements "$repository_root/packaging/macos/ccs-trans.entitlements" \
-    --sign "$identity" "$stage/ccs-trans.app"
+    --sign - "$stage/ccs-trans.app"
 codesign --verify --deep --strict --verbose=2 "$stage/ccs-trans.app"
 codesign --verify --strict --verbose=2 "$stage/ccs-trans"
-
-draft_zip="$stage_parent/notarization-submission.zip"
-ditto -c -k --sequesterRsrc --keepParent "$stage" "$draft_zip"
-if [ "$adhoc" -eq 0 ]; then
-    xcrun notarytool submit "$draft_zip" --keychain-profile "$notary_profile" --wait
-    xcrun stapler staple "$stage/ccs-trans.app"
-    xcrun stapler validate "$stage/ccs-trans.app"
-    spctl --assess --type execute --verbose=4 "$stage/ccs-trans.app"
-fi
 
 (
     cd "$stage"
@@ -96,9 +70,6 @@ fi
 ) > "$stage/SHA256SUMS"
 
 zip_path="$output_directory/$distribution.zip"
-if [ "$adhoc" -eq 1 ]; then
-    zip_path="$output_directory/$distribution-adhoc-smoke.zip"
-fi
 rm -f "$zip_path"
 ditto -c -k --sequesterRsrc --keepParent "$stage" "$zip_path"
 shasum -a 256 "$zip_path"

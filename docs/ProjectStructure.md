@@ -267,6 +267,10 @@ tools/
 ICNS 都从它派生到 build/package directory，不能反向编辑或提交生成物。实际 socket
 文件拆分可在保持上述依赖边界的前提下调整，不要求为每个 adapter 建静态库。
 
+`package_macos.sh` 生成正式文件名的固定白名单 ZIP，并统一对 CLI 和 `.app` 使用 ad-hoc
+签名。`verify_macos_package.sh` 校验包名、内部 checksum、arm64 slice、strict codesign 和
+`Signature=adhoc`；发布路径不读取 Developer ID 或公证凭据。
+
 ## 文档职责
 
 | 文件 | 主要内容 |

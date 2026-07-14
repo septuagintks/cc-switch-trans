@@ -9,9 +9,8 @@ fi
 
 archive=$1
 expected_name=ccs-trans-0.5.0-macOS-arm64.zip
-adhoc_name=ccs-trans-0.5.0-macOS-arm64-adhoc-smoke.zip
 archive_name=$(basename "$archive")
-[ "$archive_name" = "$expected_name" ] || [ "$archive_name" = "$adhoc_name" ] || {
+[ "$archive_name" = "$expected_name" ] || {
     printf 'unexpected archive name: %s\n' "$(basename "$archive")" >&2
     exit 1
 }
@@ -39,6 +38,14 @@ expected=$(printf '%s\n' README.md SHA256SUMS ccs-trans ccs-trans.app docs licen
 )
 codesign --verify --deep --strict --verbose=2 "$root/ccs-trans.app"
 codesign --verify --strict --verbose=2 "$root/ccs-trans"
+
+for signed_path in "$root/ccs-trans.app" "$root/ccs-trans"; do
+    signature_details=$(codesign -dv --verbose=4 "$signed_path" 2>&1)
+    if ! printf '%s\n' "$signature_details" | grep -Fqx 'Signature=adhoc'; then
+        printf 'package entry is not ad-hoc signed: %s\n' "$signed_path" >&2
+        exit 1
+    fi
+done
 
 for binary in "$root/ccs-trans" "$root/ccs-trans.app/Contents/MacOS/ccs-trans"; do
     [ "$(lipo -archs "$binary")" = arm64 ] || {

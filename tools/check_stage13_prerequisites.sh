@@ -26,7 +26,7 @@ repository_root=$(CDPATH= cd "$script_dir/.." && pwd)
 icon_path="$repository_root/assets/icons/ccs-trans-512.png"
 
 for command_name in \
-    cmake ninja xcrun xcodebuild sw_vers sips iconutil plutil codesign security otool file awk
+    cmake ninja xcrun xcodebuild sw_vers sips iconutil plutil codesign ditto shasum lipo otool file awk
 do
     require_command "$command_name"
 done
@@ -142,24 +142,6 @@ if [ -n "$sdk_path" ] && command -v xcrun >/dev/null 2>&1; then
         fi
     else
         fail "Apple Clang could not compile and link the C++20/system-libcurl probe"
-    fi
-fi
-
-if command -v xcrun >/dev/null 2>&1; then
-    for tool_name in notarytool stapler; do
-        if tool_path=$(xcrun --find "$tool_name" 2>/dev/null); then
-            ok "$tool_name -> $tool_path"
-        else
-            fail "Xcode tool is unavailable: $tool_name"
-        fi
-    done
-fi
-
-if command -v security >/dev/null 2>&1; then
-    if security find-identity -v -p codesigning 2>/dev/null | grep 'Developer ID Application' >/dev/null 2>&1; then
-        ok "Developer ID Application identity is available"
-    else
-        printf '[release-pending] Developer ID Application identity is not available in this keychain\n'
     fi
 fi
 

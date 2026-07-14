@@ -3,7 +3,7 @@
 `ccs-trans` is a local LLM API request transformation proxy. The current base
 version is `0.5.0`. The completed Windows distribution is
 `0.5.0-Windows-x64`; the macOS 26 arm64 runtime, CLI, and menu host are
-implemented, while the Developer ID/notarized macOS release remains pending.
+implemented, and its release package intentionally uses ad-hoc signing.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
@@ -89,8 +89,8 @@ The CLI target does not require ImageMagick. The tray resource build requires
 `magick` and a Windows resource compiler.
 
 On a macOS 26 Apple Silicon development machine, audit the fixed SDK,
-architecture, C++20, system libcurl, icon, signing, and notarization
-prerequisites, then build both strict presets with:
+architecture, C++20, system libcurl, icon, and packaging prerequisites, then
+build both strict presets with:
 
 ```text
 ./tools/check_stage13_prerequisites.sh
@@ -107,20 +107,19 @@ The presets produce `build-macos-*/ccs-trans` and
 `arm64` slice, and deployment target `26.0`; CMake rejects other architectures
 or targets and resolves libcurl only from that SDK.
 
-Create the Developer ID signed and notarized fixed-whitelist ZIP with:
+Create and verify the ad-hoc signed fixed-whitelist release ZIP with:
 
 ```text
-CCS_TRANS_CODESIGN_IDENTITY="Developer ID Application: ..." \
-CCS_TRANS_NOTARY_PROFILE="ccs-trans-notary" \
 ./tools/package_macos.sh --build-dir build-macos-release --output-dir dist
 ./tools/verify_macos_package.sh dist/ccs-trans-0.5.0-macOS-arm64.zip
 ```
 
-For structure and lifecycle smoke without release credentials, pass `--adhoc`.
-That output is deliberately named
-`ccs-trans-0.5.0-macOS-arm64-adhoc-smoke.zip` and is not a release candidate.
-Current evidence and external blockers are tracked in
-`docs/MacOSValidationChecklist.md`.
+The package script always signs the CLI and `.app` with `Signature=adhoc`, the
+hardened runtime option, and no timestamp. It does not use a Developer ID
+identity, submit for notarization, staple a ticket, or claim Gatekeeper trust.
+This means the archive has no verifiable publisher identity and a quarantined
+download may require explicit user approval before launch. Current evidence
+and remaining manual checks are tracked in `docs/MacOSValidationChecklist.md`.
 
 ## Configuration Root
 
@@ -400,7 +399,8 @@ tests/                  Unit, integration, proxy-policy, and load tests
 Windows `0.5.0-Windows-x64` implementation and project-scope validation are
 complete. Stage 13 macOS listener, system-libcurl transport, CLI, AppKit menu
 host, `SMAppService` adapter, icon generation, and fixed-whitelist packaging are
-implemented. A notarized `0.5.0-macOS-arm64` candidate still requires full
-Xcode 26, a Developer ID Application identity, notarization credentials, and
-the remaining manual login/Finder checks. See
+implemented. The `0.5.0-macOS-arm64` candidate is ad-hoc signed by policy; it
+does not establish publisher identity, notarization, or Gatekeeper trust. Full
+Xcode 26 conformance and the remaining manual login/Finder checks are recorded
+separately. See
 [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
