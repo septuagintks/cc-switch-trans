@@ -29,7 +29,10 @@ public:
     using StartupCallback = std::function<void(bool, const std::string&)>;
     using LogSinkFactory = std::function<std::unique_ptr<LogSink>()>;
 
-    explicit Server(RuntimeSnapshotPtr snapshot, LogSinkFactory log_sink_factory = {});
+    explicit Server(
+        RuntimeSnapshotPtr snapshot,
+        LogSinkFactory log_sink_factory = {},
+        bool handle_process_signals = true);
     ~Server();
 
     int run(const StartupCallback& startup_callback = {});
@@ -80,6 +83,7 @@ private:
     mutable std::mutex reload_mutex_;
     std::mutex client_shutdown_mutex_;
     std::function<void()> client_shutdown_;
+    bool handle_process_signals_ = true;
     std::atomic_bool fatal_error_{false};
     std::atomic_bool stop_requested_{false};
 };

@@ -89,7 +89,7 @@ bool ApplicationController::start(std::string& error) {
         return false;
     }
 
-    auto candidate_service = std::make_unique<AppService>(candidate);
+    auto candidate_service = std::make_unique<AppService>(candidate, false);
     if (!candidate_service->start(error)) {
         if (error.empty()) {
             error = "application service failed to start";

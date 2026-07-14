@@ -1,5 +1,6 @@
 #include "config/app_paths.hpp"
 
+#include <cstdlib>
 #include <system_error>
 #include <vector>
 
@@ -39,6 +40,15 @@ bool resolve_home_directory(std::filesystem::path& home, std::string& error) {
     }
     return true;
 #else
+    const char* environment_home = std::getenv("HOME");
+    if (environment_home != nullptr && environment_home[0] != '\0') {
+        home = std::filesystem::path(environment_home);
+        if (!home.is_absolute()) {
+            error = "HOME must be an absolute path";
+            return false;
+        }
+        return true;
+    }
     const passwd* account = getpwuid(getuid());
     if (account == nullptr || account->pw_dir == nullptr || account->pw_dir[0] == '\0') {
         error = "failed to resolve the current user home directory";

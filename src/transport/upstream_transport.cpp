@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 #include "transport/windows/winhttp_transport.hpp"
+#elif defined(__APPLE__)
+#include "transport/macos/curl_transport.hpp"
 #endif
 
 #include <utility>
@@ -10,7 +12,7 @@ namespace ccs {
 
 namespace {
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
 class UnsupportedTransport final : public UpstreamTransport {
 public:
     const char* proxy_mode() const noexcept override {
@@ -59,14 +61,20 @@ const std::string& ProxyError::type() const {
 std::unique_ptr<UpstreamTransport> make_upstream_transport(
     TimeoutConfig timeouts,
     std::size_t max_response_body_size,
-    std::shared_ptr<RuntimeMetrics> metrics) {
+    std::shared_ptr<RuntimeMetrics> metrics,
+    std::size_t handle_pool_size) {
 #ifdef _WIN32
+    (void)handle_pool_size;
     return std::make_unique<WinHttpTransport>(
         timeouts, max_response_body_size, std::move(metrics));
+#elif defined(__APPLE__)
+    return std::make_unique<CurlTransport>(
+        timeouts, max_response_body_size, handle_pool_size, std::move(metrics));
 #else
     (void)timeouts;
     (void)max_response_body_size;
     (void)metrics;
+    (void)handle_pool_size;
     return std::make_unique<UnsupportedTransport>();
 #endif
 }

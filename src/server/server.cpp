@@ -1,6 +1,7 @@
 #include "server/server.hpp"
 
 #include "core/request_id.hpp"
+#include "server/platform/local_socket.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -9,7 +10,6 @@
 #include <charconv>
 #include <chrono>
 #include <cctype>
-#include <climits>
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -25,17 +25,10 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#endif
-
 namespace ccs {
 
 namespace {
 
-constexpr int kBacklog = 64;
 constexpr std::size_t kHeaderLimit = 64 * 1024;
 
 const RuntimeSnapshot& require_runtime_snapshot(const RuntimeSnapshotPtr& snapshot) {
@@ -427,10 +420,8 @@ std::string build_stream_response_head(HttpResponse response) {
     return build_response_head(std::move(response), false);
 }
 
-#ifdef _WIN32
-
 struct ClientJob {
-    SOCKET client = INVALID_SOCKET;
+    server_platform::SocketHandle client = server_platform::kInvalidSocket;
     std::string client_ip;
     std::chrono::steady_clock::time_point accepted_at;
 };
@@ -452,7 +443,9 @@ public:
         }
     }
 
-    std::uint64_t watch(SOCKET socket, const CancellationSource& source) {
+    std::uint64_t watch(
+        server_platform::SocketHandle socket,
+        const CancellationSource& source) {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto id = next_id_++;
         entries_.push_back(Entry{id, socket, source});
@@ -478,7 +471,7 @@ public:
 private:
     struct Entry {
         std::uint64_t id;
-        SOCKET socket;
+        server_platform::SocketHandle socket;
         CancellationSource source;
     };
 
@@ -499,26 +492,19 @@ private:
                 continue;
             }
 
-            std::vector<WSAPOLLFD> poll_entries;
-            poll_entries.reserve(entries.size());
+            std::vector<server_platform::SocketHandle> sockets;
+            sockets.reserve(entries.size());
             for (const auto& entry : entries) {
-                poll_entries.push_back(WSAPOLLFD{entry.socket, POLLRDNORM, 0});
+                sockets.push_back(entry.socket);
             }
-            const int result = WSAPoll(poll_entries.data(), static_cast<ULONG>(poll_entries.size()), 50);
-            if (result <= 0) {
+            std::vector<bool> disconnected;
+            std::string error;
+            if (!server_platform::poll_disconnected(sockets, 50, disconnected, error)) {
                 continue;
             }
 
-            for (std::size_t i = 0; i < poll_entries.size(); ++i) {
-                const auto revents = poll_entries[i].revents;
-                bool disconnected = (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
-                if (!disconnected && (revents & POLLRDNORM) != 0) {
-                    char byte = 0;
-                    const int received = recv(entries[i].socket, &byte, 1, MSG_PEEK);
-                    disconnected = received == 0
-                        || (received == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK);
-                }
-                if (disconnected) {
+            for (std::size_t i = 0; i < disconnected.size(); ++i) {
+                if (disconnected[i]) {
                     cancel(entries[i].source);
                 }
             }
@@ -536,7 +522,10 @@ private:
 
 class SocketWatch {
 public:
-    SocketWatch(ClientCancellationMonitor& monitor, SOCKET socket, const CancellationSource& source)
+    SocketWatch(
+        ClientCancellationMonitor& monitor,
+        server_platform::SocketHandle socket,
+        const CancellationSource& source)
         : monitor_(&monitor)
         , id_(monitor.watch(socket, source)) {}
 
@@ -556,40 +545,6 @@ private:
     std::uint64_t id_;
 };
 
-std::atomic_bool& console_shutdown_requested() {
-    static std::atomic_bool value{false};
-    return value;
-}
-
-BOOL WINAPI console_handler(DWORD event) {
-    if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT || event == CTRL_CLOSE_EVENT) {
-        console_shutdown_requested().store(true, std::memory_order_relaxed);
-        return TRUE;
-    }
-    return FALSE;
-}
-
-class WinsockRuntime {
-public:
-    WinsockRuntime() {
-        WSADATA data{};
-        const int rc = WSAStartup(MAKEWORD(2, 2), &data);
-        if (rc != 0) {
-            throw std::runtime_error("WSAStartup failed");
-        }
-    }
-
-    ~WinsockRuntime() {
-        WSACleanup();
-    }
-};
-
-void close_socket(SOCKET socket) {
-    if (socket != INVALID_SOCKET) {
-        closesocket(socket);
-    }
-}
-
 class ClientConnectionRegistry {
 public:
     explicit ClientConnectionRegistry(std::size_t capacity) {
@@ -600,7 +555,7 @@ public:
         close_all();
     }
 
-    bool add(SOCKET socket) {
+    bool add(server_platform::SocketHandle socket) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (closing_) {
             return false;
@@ -609,12 +564,12 @@ public:
         return true;
     }
 
-    void close_registered(SOCKET socket) {
+    void close_registered(server_platform::SocketHandle socket) {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto entry = std::find(sockets_.begin(), sockets_.end(), socket);
         if (entry != sockets_.end()) {
             sockets_.erase(entry);
-            close_socket(socket);
+            server_platform::close_socket(socket);
         }
     }
 
@@ -622,112 +577,16 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         closing_ = true;
         for (const auto socket : sockets_) {
-            close_socket(socket);
+            server_platform::interrupt_and_close_socket(socket);
         }
         sockets_.clear();
     }
 
 private:
     std::mutex mutex_;
-    std::vector<SOCKET> sockets_;
+    std::vector<server_platform::SocketHandle> sockets_;
     bool closing_ = false;
 };
-
-class BoundListener {
-public:
-    explicit BoundListener(const ListenerSettings& settings)
-        : settings_(&settings) {}
-
-    ~BoundListener() {
-        close();
-    }
-
-    BoundListener(const BoundListener&) = delete;
-    BoundListener& operator=(const BoundListener&) = delete;
-
-    bool open(std::string& error) {
-        addrinfo hints{};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-        hints.ai_flags = AI_PASSIVE;
-
-        addrinfo* result = nullptr;
-        const auto port = std::to_string(settings_->port);
-        const int rc = getaddrinfo(settings_->host.c_str(), port.c_str(), &hints, &result);
-        if (rc != 0 || result == nullptr) {
-            error = "failed to resolve listen address: " + settings_->host + ":" + port;
-            return false;
-        }
-
-        for (addrinfo* ptr = result; ptr != nullptr; ptr = ptr->ai_next) {
-            socket_ = ::socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
-            if (socket_ == INVALID_SOCKET) {
-                continue;
-            }
-
-            const BOOL exclusive = TRUE;
-            if (setsockopt(
-                    socket_,
-                    SOL_SOCKET,
-                    SO_EXCLUSIVEADDRUSE,
-                    reinterpret_cast<const char*>(&exclusive),
-                    sizeof(exclusive)) == SOCKET_ERROR) {
-                close_socket(socket_);
-                socket_ = INVALID_SOCKET;
-                continue;
-            }
-            if (bind(socket_, ptr->ai_addr, static_cast<int>(ptr->ai_addrlen)) == 0) {
-                break;
-            }
-            close_socket(socket_);
-            socket_ = INVALID_SOCKET;
-        }
-        freeaddrinfo(result);
-
-        if (socket_ == INVALID_SOCKET) {
-            error = "failed to bind listener " + settings_->host + ":" + port;
-            return false;
-        }
-        if (listen(socket_, kBacklog) == SOCKET_ERROR) {
-            error = "failed to listen on " + settings_->host + ":" + port;
-            close();
-            return false;
-        }
-
-        return true;
-    }
-
-    void close() {
-        close_socket(socket_);
-        socket_ = INVALID_SOCKET;
-    }
-
-    SOCKET socket() const {
-        return socket_;
-    }
-
-private:
-    const ListenerSettings* settings_;
-    SOCKET socket_ = INVALID_SOCKET;
-};
-
-bool send_all(SOCKET socket, const std::string& data) {
-    const char* cursor = data.data();
-    std::size_t remaining = data.size();
-    while (remaining > 0) {
-        const int chunk = remaining > static_cast<std::size_t>(INT_MAX)
-            ? INT_MAX
-            : static_cast<int>(remaining);
-        const int sent = send(socket, cursor, chunk, 0);
-        if (sent <= 0) {
-            return false;
-        }
-        cursor += sent;
-        remaining -= static_cast<std::size_t>(sent);
-    }
-    return true;
-}
 
 class ClientReadStopped final : public std::runtime_error {
 public:
@@ -735,17 +594,19 @@ public:
         : std::runtime_error("server stopped while reading request") {}
 };
 
-int recv_with_stop(
-    SOCKET socket,
+std::ptrdiff_t recv_with_stop(
+    server_platform::SocketHandle socket,
     char* buffer,
-    int buffer_size,
+    std::size_t buffer_size,
     const std::function<bool()>& stopping) {
     while (true) {
         if (stopping()) {
             throw ClientReadStopped();
         }
-        const int received = recv(socket, buffer, buffer_size, 0);
-        if (received != SOCKET_ERROR) {
+        std::string error;
+        const auto received = server_platform::receive_socket(
+            socket, buffer, buffer_size, error);
+        if (received >= 0) {
             if (received == 0 && stopping()) {
                 throw ClientReadStopped();
             }
@@ -754,12 +615,15 @@ int recv_with_stop(
         if (stopping()) {
             throw ClientReadStopped();
         }
-        return SOCKET_ERROR;
+        if (received == -2) {
+            continue;
+        }
+        return -1;
     }
 }
 
 std::string recv_request(
-    SOCKET socket,
+    server_platform::SocketHandle socket,
     std::size_t max_body_size,
     const std::function<bool()>& stopping) {
     std::string buffer;
@@ -767,8 +631,7 @@ std::string recv_request(
     std::size_t header_end = std::string::npos;
 
     while (header_end == std::string::npos) {
-        const int received = recv_with_stop(
-            socket, temp, static_cast<int>(sizeof(temp)), stopping);
+        const auto received = recv_with_stop(socket, temp, sizeof(temp), stopping);
         if (received <= 0) {
             if (buffer.empty()) {
                 throw std::runtime_error("client disconnected before request");
@@ -794,8 +657,7 @@ std::string recv_request(
 
     const std::size_t body_start = header_end + 4;
     while (buffer.size() < body_start + expected_body) {
-        const int received = recv_with_stop(
-            socket, temp, static_cast<int>(sizeof(temp)), stopping);
+        const auto received = recv_with_stop(socket, temp, sizeof(temp), stopping);
         if (received <= 0) {
             throw std::runtime_error("failed to read request body");
         }
@@ -815,19 +677,9 @@ std::string recv_request(
     return buffer.substr(0, body_start) + buffer.substr(actual_body_start, expected_body);
 }
 
-std::string peer_ip(sockaddr_storage& storage) {
-    char host[NI_MAXHOST]{};
-    const auto* addr = reinterpret_cast<sockaddr*>(&storage);
-    const int rc = getnameinfo(addr, sizeof(storage), host, sizeof(host), nullptr, 0, NI_NUMERICHOST);
-    if (rc != 0) {
-        return "";
-    }
-    return host;
-}
-
 template <typename ProcessRequest, typename ReportError>
 void handle_client(
-    SOCKET client,
+    server_platform::SocketHandle client,
     ClientCancellationMonitor& cancellation_monitor,
     std::size_t max_body_size,
     std::string client_ip,
@@ -842,7 +694,8 @@ void handle_client(
             raw,
             client_ip,
             [&](const std::string& data) {
-                const bool sent = send_all(client, data);
+                std::string send_error;
+                const bool sent = server_platform::send_all(client, data, send_error);
                 if (!sent) {
                     cancellation_monitor.cancel(cancellation_source);
                 }
@@ -859,7 +712,8 @@ void handle_client(
         response.reason = reason_phrase(400);
         response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json(ex.what(), "invalid_request_error");
-        send_all(client, build_response(std::move(response)));
+        std::string send_error;
+        server_platform::send_all(client, build_response(std::move(response)), send_error);
     } catch (const std::exception& ex) {
         if (std::strcmp(ex.what(), "client disconnected before request") == 0) {
             return;
@@ -880,11 +734,14 @@ void handle_client(
         response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json(message, status == 413 ? "invalid_request_error" : "server_error");
         const auto raw_response = build_response(response);
-        send_all(client, raw_response);
+        std::string send_error;
+        server_platform::send_all(client, raw_response, send_error);
     }
 }
 
-void reject_overloaded_client(SOCKET client, const Server* server) {
+void reject_overloaded_client(
+    server_platform::SocketHandle client,
+    const Server* server) {
     try {
         server->log_request_error(503, "server_overloaded", "maximum connection count reached");
         HttpResponse response;
@@ -892,19 +749,12 @@ void reject_overloaded_client(SOCKET client, const Server* server) {
         response.reason = reason_phrase(503);
         response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json("server is at connection capacity", "server_overloaded");
-        send_all(client, build_response(std::move(response)));
-        shutdown(client, SD_SEND);
-        const int drain_timeout_ms = 250;
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&drain_timeout_ms), sizeof(drain_timeout_ms));
-        char drain_buffer[4096];
-        while (recv(client, drain_buffer, sizeof(drain_buffer), 0) > 0) {
-        }
+        std::string send_error;
+        server_platform::send_all(client, build_response(std::move(response)), send_error);
     } catch (...) {
     }
-    close_socket(client);
+    server_platform::shutdown_send_and_drain(client, 250);
 }
-
-#endif
 
 } // namespace
 
@@ -921,7 +771,8 @@ public:
         , transport(make_upstream_transport(
               runtime.application.timeouts,
               static_cast<std::size_t>(runtime.application.runtime.max_response_body_size),
-              metrics))
+              metrics,
+              static_cast<std::size_t>(runtime.application.runtime.worker_threads)))
         , logger(std::move(shared_logger)) {
         if (!logger) {
             throw std::invalid_argument("request generation must have a logger");
@@ -935,9 +786,13 @@ public:
     std::shared_ptr<Logger> logger;
 };
 
-Server::Server(RuntimeSnapshotPtr snapshot, LogSinkFactory log_sink_factory)
+Server::Server(
+    RuntimeSnapshotPtr snapshot,
+    LogSinkFactory log_sink_factory,
+    bool handle_process_signals)
     : metrics_(std::make_shared<RuntimeMetrics>())
-    , log_sink_factory_(std::move(log_sink_factory)) {
+    , log_sink_factory_(std::move(log_sink_factory))
+    , handle_process_signals_(handle_process_signals) {
     const auto& runtime = require_runtime_snapshot(snapshot);
     generation_ = std::make_shared<RequestGeneration>(
         next_generation_id(), std::move(snapshot), metrics_, make_logger(runtime));
@@ -1623,37 +1478,37 @@ int Server::run(const StartupCallback& startup_callback) {
             startup_callback(succeeded, error);
         }
     };
-#ifndef _WIN32
-    const std::string error = "ccs-trans currently supports the built-in HTTP server on Windows only";
-    report_startup(false, error);
-    std::cerr << error << "\n";
-    return 1;
-#else
     try {
         stop_requested_.store(false, std::memory_order_release);
         fatal_error_.store(false, std::memory_order_release);
-        console_shutdown_requested().store(false, std::memory_order_release);
+        server_platform::reset_shutdown_signal();
         auto startup_generation = current_generation();
         const auto startup_snapshot = startup_generation->snapshot;
         const auto application = startup_snapshot->application;
         const auto log_path = startup_snapshot->log_path;
         const auto profile_count = startup_snapshot->profiles.size();
         const auto route_count = startup_snapshot->routes.size();
-        WinsockRuntime winsock;
+        server_platform::SocketRuntime socket_runtime;
         std::string log_error;
         if (!startup_generation->logger->open(log_error)) {
             report_startup(false, log_error);
             std::cerr << log_error << "\n";
             return 1;
         }
-        SetConsoleCtrlHandler(console_handler, TRUE);
+        server_platform::ShutdownSignalGuard shutdown_signal;
+        std::string signal_error;
+        if (handle_process_signals_ && !shutdown_signal.install(signal_error)) {
+            report_startup(false, signal_error);
+            std::cerr << signal_error << "\n";
+            return 1;
+        }
 
-        BoundListener listener(application.listener);
+        server_platform::LocalListener listener(
+            application.listener.host, application.listener.port);
         std::string listener_error;
         if (!listener.open(listener_error)) {
             report_startup(false, listener_error);
             std::cerr << listener_error << "\n";
-            SetConsoleCtrlHandler(console_handler, FALSE);
             return 1;
         }
 
@@ -1685,7 +1540,6 @@ int Server::run(const StartupCallback& startup_callback) {
             }
             report_startup(false, startup_log_error);
             std::cerr << startup_log_error << "\n";
-            SetConsoleCtrlHandler(console_handler, FALSE);
             return 1;
         }
         startup_generation.reset();
@@ -1745,7 +1599,7 @@ int Server::run(const StartupCallback& startup_callback) {
                         std::move(job.client_ip),
                         [this]() {
                             return stop_requested_.load(std::memory_order_acquire)
-                                || console_shutdown_requested().load(std::memory_order_acquire);
+                                || server_platform::shutdown_signal_requested();
                         },
                         [this, request_generation](
                             const std::string& raw,
@@ -1808,60 +1662,34 @@ int Server::run(const StartupCallback& startup_callback) {
         const auto accept_loop = [&]() noexcept {
             try {
                 while (!stop_requested_.load(std::memory_order_acquire)
-                    && !console_shutdown_requested().load(std::memory_order_acquire)) {
-                fd_set read_set;
-                FD_ZERO(&read_set);
-                FD_SET(listener.socket(), &read_set);
-                timeval wait_time{};
-                wait_time.tv_usec = 100 * 1000;
-                const int selected = select(0, &read_set, nullptr, nullptr, &wait_time);
-                if (selected == 0) {
+                    && !server_platform::shutdown_signal_requested()) {
+                server_platform::AcceptedSocket accepted;
+                std::string accept_error;
+                const auto accept_result = listener.accept(accepted, 100, accept_error);
+                if (accept_result == server_platform::SocketWaitResult::Timeout
+                    || accept_result == server_platform::SocketWaitResult::Interrupted) {
                     continue;
                 }
-                if (selected == SOCKET_ERROR) {
-                    const int error = WSAGetLastError();
+                if (accept_result == server_platform::SocketWaitResult::Failed) {
                     if (stop_requested_.load(std::memory_order_acquire)
-                        || console_shutdown_requested().load(std::memory_order_acquire)) {
+                        || server_platform::shutdown_signal_requested()) {
                         return;
                     }
                     log_request_error(
                         500,
                         "listener_error",
-                        "listener wait failed: " + std::to_string(error));
+                        accept_error.empty() ? "listener wait failed" : accept_error);
                     stop_requested_.store(true, std::memory_order_release);
                     return;
                 }
-                sockaddr_storage client_addr{};
-                int client_addr_len = sizeof(client_addr);
-                SOCKET client = accept(
-                    listener.socket(),
-                    reinterpret_cast<sockaddr*>(&client_addr),
-                    &client_addr_len);
-                if (client == INVALID_SOCKET) {
-                    const int error = WSAGetLastError();
-                    if (stop_requested_.load(std::memory_order_acquire)
-                        || console_shutdown_requested().load(std::memory_order_acquire)) {
-                        return;
-                    }
-                    log_request_error(
-                        500,
-                        "listener_error",
-                        "listener accept failed: " + std::to_string(error));
-                    stop_requested_.store(true, std::memory_order_release);
-                    return;
-                }
+                const auto client = accepted.handle;
                 bool queued = false;
                 bool queue_failed = false;
                 bool worker_scale_failed = false;
                 bool registered = false;
                 bool registration_stopped = false;
                 std::size_t worker_count_after_scale = 0;
-                std::string client_ip;
-                try {
-                    client_ip = peer_ip(client_addr);
-                } catch (...) {
-                    queue_failed = true;
-                }
+                std::string client_ip = std::move(accepted.peer_ip);
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex);
                     if (!queue_failed
@@ -1900,7 +1728,7 @@ int Server::run(const StartupCallback& startup_callback) {
                     if (registered) {
                         client_connections->close_registered(client);
                     } else {
-                        close_socket(client);
+                        server_platform::close_socket(client);
                     }
                     stop_requested_.store(true, std::memory_order_release);
                     try {
@@ -1911,7 +1739,7 @@ int Server::run(const StartupCallback& startup_callback) {
                     return;
                 }
                 if (registration_stopped) {
-                    close_socket(client);
+                    server_platform::close_socket(client);
                     return;
                 }
                 if (worker_scale_failed) {
@@ -1991,21 +1819,17 @@ int Server::run(const StartupCallback& startup_callback) {
         if (!stopping_generation->logger->drain(drain_error)) {
             handle_logger_failure(drain_error);
         }
-        SetConsoleCtrlHandler(console_handler, FALSE);
         return fatal_error_.load(std::memory_order_acquire) ? 1 : 0;
     } catch (const std::exception& ex) {
         report_startup(false, ex.what());
         std::cerr << "server failed: " << ex.what() << "\n";
-        SetConsoleCtrlHandler(console_handler, FALSE);
         return 1;
     } catch (...) {
         const std::string error = "server failed with an unknown exception";
         report_startup(false, error);
         std::cerr << error << "\n";
-        SetConsoleCtrlHandler(console_handler, FALSE);
         return 1;
     }
-#endif
 }
 
 } // namespace ccs

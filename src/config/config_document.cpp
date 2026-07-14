@@ -73,6 +73,7 @@ bool path_from_utf8(
     }
     path = std::filesystem::path(std::move(wide));
 #else
+    (void)error;
     path = std::filesystem::path(value);
 #endif
     return true;

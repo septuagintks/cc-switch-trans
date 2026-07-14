@@ -227,7 +227,12 @@ def write_config(home, listener_port, upstream_ports, log_name="integration.log"
 
 def process_environment(home):
     environment = os.environ.copy()
-    environment["USERPROFILE"] = str(home)
+    if os.name == "nt":
+        environment["USERPROFILE"] = str(home)
+    else:
+        environment["HOME"] = str(home)
+        environment["NO_PROXY"] = "127.0.0.1,localhost"
+        environment["no_proxy"] = "127.0.0.1,localhost"
     return environment
 
 
@@ -680,7 +685,11 @@ def main():
         assert_true(any(event.get("profile_id") == "responses" and event.get("json_parse_count") == 0 for event in upstream_requests), "empty pipeline is zero-parse in production")
         assert_true(any(event.get("profile_id") == "chat" and event.get("protocol") == "chat" for event in upstream_requests), "Chat route context logged")
         assert_true(any(event.get("profile_id") == "messages" and event.get("protocol") == "messages" for event in upstream_requests), "Messages route context logged")
-        assert_true(all(event.get("upstream_proxy_mode") == "windows_system" for event in upstream_requests), "Windows proxy mode logged")
+        expected_proxy_mode = "windows_system" if os.name == "nt" else "macos_environment"
+        assert_true(
+            all(event.get("upstream_proxy_mode") == expected_proxy_mode for event in upstream_requests),
+            "platform proxy mode logged",
+        )
 
         stream_chunks = [event for event in events if event.get("event") == "stream_chunk"]
         sequences = {}

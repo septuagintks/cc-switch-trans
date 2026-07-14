@@ -7,8 +7,9 @@
 
 namespace ccs {
 
-AppService::AppService(RuntimeSnapshotPtr snapshot)
-    : snapshot_(std::move(snapshot)) {}
+AppService::AppService(RuntimeSnapshotPtr snapshot, bool handle_process_signals)
+    : snapshot_(std::move(snapshot))
+    , handle_process_signals_(handle_process_signals) {}
 
 AppService::~AppService() {
     stop();
@@ -38,7 +39,7 @@ bool AppService::start_impl(std::string& error) {
     startup_error_.clear();
     exit_code_ = 1;
     try {
-        server_ = std::make_shared<Server>(snapshot_);
+        server_ = std::make_shared<Server>(snapshot_, Server::LogSinkFactory{}, handle_process_signals_);
         const auto running_server = server_;
         thread_ = std::thread([this, running_server]() {
             const int code = running_server->run([this](bool succeeded, const std::string& startup_error) {

@@ -129,6 +129,9 @@ void test_url_and_transport_boundary() {
 #ifdef _WIN32
     require(std::string(transport->proxy_mode()) == "windows_system",
         "Windows transport owns system proxy policy");
+#elif defined(__APPLE__)
+    require(std::string(transport->proxy_mode()) == "macos_environment",
+        "macOS transport delegates proxy selection to libcurl environment policy");
 #else
     require(std::string(transport->proxy_mode()) == "unsupported",
         "unsupported platform transport remains explicit");

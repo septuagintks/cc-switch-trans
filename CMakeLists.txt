@@ -7,9 +7,16 @@ if(CMAKE_HOST_APPLE)
     if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
         set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Supported macOS deployment target")
     endif()
+    if(NOT DEFINED CMAKE_OSX_SYSROOT OR CMAKE_OSX_SYSROOT STREQUAL "")
+        set(CMAKE_OSX_SYSROOT "macosx" CACHE STRING "Selected macOS SDK" FORCE)
+    endif()
 endif()
 
 project(ccs_trans VERSION 0.5.0 LANGUAGES CXX)
+
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
 
 include(CTest)
 
@@ -47,6 +54,10 @@ if(CCS_TRANS_WARNINGS_AS_ERRORS)
             $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
             $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
             $<$<COMPILE_LANGUAGE:CXX>:-Werror>
+            $<$<COMPILE_LANGUAGE:OBJCXX>:-Wall>
+            $<$<COMPILE_LANGUAGE:OBJCXX>:-Wextra>
+            $<$<COMPILE_LANGUAGE:OBJCXX>:-Wpedantic>
+            $<$<COMPILE_LANGUAGE:OBJCXX>:-Werror>
         )
     else()
         message(FATAL_ERROR "CCS_TRANS_WARNINGS_AS_ERRORS is unsupported by this compiler")
@@ -68,7 +79,64 @@ if(WIN32)
         src/hosts/windows/startup_registration.cpp
         src/hosts/windows/windows_error.cpp
         src/hosts/windows/windows_host_platform.cpp
+        src/server/platform/windows/local_socket.cpp
         src/transport/windows/winhttp_transport.cpp
+    )
+elseif(APPLE)
+    list(APPEND CCS_TRANS_PLATFORM_SOURCES
+        src/server/platform/posix/local_socket.cpp
+        src/transport/macos/curl_transport.cpp
+    )
+endif()
+
+if(APPLE)
+    set(CCS_TRANS_MACOS_ICON_DIR "${CCS_TRANS_GENERATED_DIR}/icons/macos")
+    set(CCS_TRANS_MACOS_APP_ICON "${CCS_TRANS_MACOS_ICON_DIR}/ccs-trans.icns")
+    set(CCS_TRANS_MACOS_STATUS_ICON
+        "${CCS_TRANS_MACOS_ICON_DIR}/ccs-trans-statusTemplate.png")
+    add_custom_command(
+        OUTPUT "${CCS_TRANS_MACOS_APP_ICON}" "${CCS_TRANS_MACOS_STATUS_ICON}"
+        COMMAND /bin/sh "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_macos_icons.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/ccs-trans-512.png"
+            "${CCS_TRANS_MACOS_ICON_DIR}"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/ccs-trans-512.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_macos_icons.sh"
+        VERBATIM
+    )
+    set_source_files_properties(
+        "${CCS_TRANS_MACOS_APP_ICON}"
+        "${CCS_TRANS_MACOS_STATUS_ICON}"
+        PROPERTIES
+            GENERATED TRUE
+            MACOSX_PACKAGE_LOCATION Resources
+    )
+    configure_file(
+        packaging/macos/Info.plist.in
+        "${CCS_TRANS_GENERATED_DIR}/macos/Info.plist"
+        @ONLY
+    )
+
+    add_executable(ccs-trans-menu MACOSX_BUNDLE
+        src/hosts/macos/instance_coordinator.mm
+        src/hosts/macos/macos_host_platform.mm
+        src/hosts/macos/menu_app.mm
+        src/hosts/macos/menu_main.mm
+        src/hosts/macos/startup_registration.mm
+        "${CCS_TRANS_MACOS_APP_ICON}"
+        "${CCS_TRANS_MACOS_STATUS_ICON}"
+    )
+    find_library(CCS_TRANS_APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(CCS_TRANS_SERVICE_MANAGEMENT_FRAMEWORK ServiceManagement REQUIRED)
+    target_compile_options(ccs-trans-menu PRIVATE -fobjc-arc)
+    target_link_libraries(ccs-trans-menu PRIVATE
+        ccs-trans-core
+        "${CCS_TRANS_APPKIT_FRAMEWORK}"
+        "${CCS_TRANS_SERVICE_MANAGEMENT_FRAMEWORK}"
+    )
+    set_target_properties(ccs-trans-menu PROPERTIES
+        OUTPUT_NAME ccs-trans
+        MACOSX_BUNDLE_INFO_PLIST "${CCS_TRANS_GENERATED_DIR}/macos/Info.plist"
     )
 endif()
 
@@ -112,6 +180,18 @@ target_include_directories(ccs-trans-core PUBLIC
 
 if(WIN32)
     target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp shell32 ole32 advapi32)
+elseif(APPLE)
+    find_library(
+        CCS_TRANS_SYSTEM_CURL
+        NAMES curl
+        PATHS "${CMAKE_OSX_SYSROOT}/usr/lib"
+        NO_DEFAULT_PATH
+        REQUIRED
+    )
+    if(NOT CCS_TRANS_SYSTEM_CURL MATCHES "/[^/]*MacOSX[^/]*\\.sdk/usr/lib/libcurl")
+        message(FATAL_ERROR "macOS must link libcurl from the selected Xcode SDK")
+    endif()
+    target_link_libraries(ccs-trans-core PRIVATE "${CCS_TRANS_SYSTEM_CURL}")
 endif()
 
 add_executable(ccs-trans
@@ -170,6 +250,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(ccs-trans-control-executor-tests PRIVATE ccs-trans-core)
     add_test(NAME ccs-trans-control-executor-tests COMMAND ccs-trans-control-executor-tests)
+
+    add_executable(ccs-trans-local-socket-tests
+        tests/unit/local_socket_tests.cpp
+    )
+    target_link_libraries(ccs-trans-local-socket-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-local-socket-tests COMMAND ccs-trans-local-socket-tests)
 
     add_executable(ccs-trans-config-document-tests
         tests/unit/config_document_tests.cpp

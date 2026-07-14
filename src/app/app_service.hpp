@@ -22,7 +22,9 @@ enum class ServiceState {
 
 class AppService {
 public:
-    explicit AppService(RuntimeSnapshotPtr snapshot);
+    explicit AppService(
+        RuntimeSnapshotPtr snapshot,
+        bool handle_process_signals = true);
     ~AppService();
 
     AppService(const AppService&) = delete;
@@ -39,6 +41,7 @@ private:
     bool start_impl(std::string& error);
 
     RuntimeSnapshotPtr snapshot_;
+    bool handle_process_signals_ = true;
     mutable std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_cv_;
     bool wait_in_progress_ = false;

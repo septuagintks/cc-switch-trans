@@ -15,6 +15,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "26.0",
+        "CMAKE_OSX_SYSROOT": "macosx",
         "CCS_TRANS_WARNINGS_AS_ERRORS": "OFF"
       }
     },
@@ -27,6 +28,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "26.0",
+        "CMAKE_OSX_SYSROOT": "macosx",
         "CCS_TRANS_WARNINGS_AS_ERRORS": "ON"
       }
     }
