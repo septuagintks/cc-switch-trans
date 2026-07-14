@@ -78,6 +78,11 @@ struct RuntimeMetricsSnapshot {
     std::uint64_t log_writer_healthy = 0;
     std::uint64_t max_log_batch_records = 0;
     std::uint64_t max_log_batch_bytes = 0;
+    std::uint64_t log_rotations = 0;
+    std::uint64_t log_retention_files_removed = 0;
+    std::uint64_t log_retention_bytes_removed = 0;
+    std::uint64_t current_log_storage_bytes = 0;
+    std::uint64_t peak_log_storage_bytes = 0;
 };
 
 class RuntimeMetrics {
@@ -122,6 +127,9 @@ public:
     void log_writer_started();
     void log_writer_failed(bool was_active);
     void log_writer_stopped();
+    void log_rotated();
+    void log_retention_removed(std::size_t files, std::uint64_t bytes);
+    void log_storage_changed(std::uint64_t previous_bytes, std::uint64_t current_bytes);
 
     RuntimeMetricsSnapshot snapshot() const;
 
@@ -188,6 +196,11 @@ private:
     std::atomic<std::uint64_t> log_writers_active_{0};
     std::atomic<std::uint64_t> max_log_batch_records_{0};
     std::atomic<std::uint64_t> max_log_batch_bytes_{0};
+    std::atomic<std::uint64_t> log_rotations_{0};
+    std::atomic<std::uint64_t> log_retention_files_removed_{0};
+    std::atomic<std::uint64_t> log_retention_bytes_removed_{0};
+    std::atomic<std::uint64_t> current_log_storage_bytes_{0};
+    std::atomic<std::uint64_t> peak_log_storage_bytes_{0};
 };
 
 } // namespace ccs

@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -273,6 +274,105 @@ void test_logger_backpressure() {
         "logger backpressure is measured rather than dropping records");
 }
 
+void test_logger_bounded_rotation_and_recovery() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path()
+        / ("ccs-trans-log-rotation-" + std::to_string(nonce));
+    const auto log_path = root / "bounded.log";
+    std::filesystem::create_directories(root);
+    {
+        std::ofstream legacy(log_path, std::ios::binary | std::ios::trunc);
+        for (int index = 0; index < 120; ++index) {
+            legacy << "{\"legacy\":" << index << ",\"padding\":\""
+                   << std::string(48, 'l') << "\"}\n";
+        }
+    }
+    const auto stale_compaction = std::filesystem::path(
+        log_path.string() + ".ccs-compact-stale");
+    {
+        std::ofstream stale(stale_compaction, std::ios::binary | std::ios::trunc);
+        stale << std::string(512, 's');
+    }
+
+    ccs::LoggerConfig config;
+    config.path = log_path;
+    config.flush_interval_ms = 1;
+    config.queue_capacity = 1024;
+    config.max_total_size = 4096;
+    auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    {
+        ccs::Logger logger(config, metrics);
+        std::string error;
+        require(logger.open(error), error);
+        ccs::Logger competing(config);
+        std::string competing_error;
+        require(!competing.open(competing_error)
+                && competing_error.find("already owned") != std::string::npos,
+            "a log family has one cross-process owner");
+        for (int index = 0; index < 100; ++index) {
+            require(logger.log("info", "rotation_record", {
+                ccs::field_number("index", index),
+                ccs::field_string("padding", std::string(80, 'x')),
+            }), "bounded logger accepts a complete record");
+        }
+        require(logger.log("error", "rotation_complete", {}),
+            "final error record is durably flushed");
+        require(logger.drain(error), error);
+    }
+    {
+        ccs::Logger reopened(config, metrics);
+        std::string error;
+        require(reopened.open(error), "released log lock permits restart: " + error);
+        for (int index = 0; index < 8; ++index) {
+            require(reopened.log("info", "reopened_record", {
+                ccs::field_number("index", index),
+                ccs::field_string("padding", std::string(80, 'r')),
+            }), "reopened logger continues the archive sequence");
+        }
+        require(reopened.log("error", "rotation_reopened", {}),
+            "reopened logger durably flushes its final record");
+        require(reopened.drain(error), error);
+    }
+
+    std::uint64_t managed_size = 0;
+    std::size_t managed_files = 0;
+    bool final_record_found = false;
+    const auto prefix = log_path.filename().string() + ".ccs-archive-";
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        const auto filename = entry.path().filename().string();
+        if (entry.path() != log_path && filename.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        ++managed_files;
+        managed_size += entry.file_size();
+        std::ifstream input(entry.path(), std::ios::binary);
+        std::string line;
+        while (std::getline(input, line)) {
+            require(!line.empty() && nlohmann::json::parse(line).is_object(),
+                "rotation preserves complete JSON Lines records");
+            final_record_found = final_record_found
+                || line.find("\"event\":\"rotation_reopened\"") != std::string::npos;
+        }
+        require(input.eof(), "rotated log remains readable to EOF");
+    }
+    const auto snapshot = metrics->snapshot();
+    require(!std::filesystem::exists(stale_compaction),
+        "startup removes an owned stale compaction file");
+    require(managed_files > 1 && managed_size <= config.max_total_size,
+        "active log and managed archives remain within the total limit");
+    require(final_record_found, "newest complete record survives retention pruning");
+    require(snapshot.log_rotations > 0
+            && snapshot.log_retention_files_removed > 0
+            && snapshot.log_retention_bytes_removed > 0,
+        "rotation and retention activity are observable");
+    require(snapshot.current_log_storage_bytes == 0
+            && snapshot.peak_log_storage_bytes <= config.max_total_size,
+        "storage metric unregisters stopped writers and retains a bounded peak");
+
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
+
 void test_runtime_metrics() {
     ccs::RuntimeMetrics metrics;
     metrics.connection_accepted(2, 2);
@@ -283,6 +383,11 @@ void test_runtime_metrics() {
     metrics.upstream_request_started();
     metrics.upstream_request_failed();
     metrics.upstream_timeout(ccs::UpstreamTimeoutPhase::ResponseHeader);
+    metrics.log_storage_changed(0, 100);
+    metrics.log_storage_changed(0, 50);
+    metrics.log_storage_changed(100, 20);
+    metrics.log_storage_changed(50, 0);
+    metrics.log_storage_changed(20, 0);
     metrics.request_completed();
     metrics.worker_finished(1);
     metrics.connection_rejected();
@@ -302,6 +407,9 @@ void test_runtime_metrics() {
     require(snapshot.upstream_requests_failed == 1
             && snapshot.upstream_response_header_timeouts == 1,
         "upstream failures and timeout phases are classified");
+    require(snapshot.current_log_storage_bytes == 0
+            && snapshot.peak_log_storage_bytes == 150,
+        "log storage metrics aggregate overlapping writer contributions");
 }
 
 void test_server_stops_on_logger_failure() {
@@ -374,6 +482,12 @@ void test_server_reload_classification() {
     require(server.reload(compile_runtime(writer_restart), error)
             == ccs::ReloadResult::RestartRequired,
         "same-path writer topology requires restart");
+
+    auto retention_restart = hot;
+    --retention_restart.application.logging.max_total_size;
+    require(server.reload(compile_runtime(retention_restart), error)
+            == ccs::ReloadResult::RestartRequired,
+        "same-path log retention changes require restart");
 
     auto hot_limit = hot;
     --hot_limit.application.runtime.max_response_body_size;
@@ -520,6 +634,7 @@ int main() {
         {"hop-by-hop header filtering", test_hop_by_hop_header_filtering},
         {"logger durability and generation metrics", test_logger_durability_and_generation_metrics},
         {"logger backpressure", test_logger_backpressure},
+        {"logger bounded rotation and recovery", test_logger_bounded_rotation_and_recovery},
         {"runtime metrics", test_runtime_metrics},
         {"server stops on logger failure", test_server_stops_on_logger_failure},
         {"app service startup failure", test_app_service_startup_failure},

@@ -146,6 +146,7 @@ add_library(ccs-trans-core STATIC
     src/config/app_paths.cpp
     src/config/config_cli.cpp
     src/config/config_document.cpp
+    src/config/config_editing_service.cpp
     src/config/config_store.cpp
     src/config/runtime_compiler.cpp
     src/core/cancellation.cpp
@@ -271,6 +272,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(ccs-trans-config-cli-tests PRIVATE ccs-trans-core)
     add_test(NAME ccs-trans-config-cli-tests COMMAND ccs-trans-config-cli-tests)
+
+    add_executable(ccs-trans-config-editing-service-tests
+        tests/unit/config_editing_service_tests.cpp
+    )
+    target_link_libraries(ccs-trans-config-editing-service-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-config-editing-service-tests
+        COMMAND ccs-trans-config-editing-service-tests
+    )
 
     add_executable(ccs-trans-route-table-tests
         tests/unit/route_table_tests.cpp

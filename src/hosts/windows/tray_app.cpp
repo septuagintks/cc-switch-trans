@@ -160,6 +160,7 @@ bool TrayApplication::initialize_host_logger(std::string& error) {
     config.path = paths_.host_log_file;
     config.level = "info";
     config.queue_capacity = 1024 * 1024;
+    config.max_total_size = 64ULL * 1024 * 1024;
     config.flush_interval_ms = 100;
     logger_ = std::make_unique<Logger>(
         std::move(config),

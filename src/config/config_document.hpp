@@ -19,6 +19,7 @@ inline constexpr std::size_t kMaxConfigDocumentBytes = 4 * 1024 * 1024;
 inline constexpr std::size_t kMaxConfigProfiles = 128;
 inline constexpr std::size_t kMaxConfigRoutes = 256;
 inline constexpr std::size_t kMaxRulesPerProfile = 64;
+inline constexpr std::uint64_t kDefaultLogMaxTotalSize = 2ULL * 1024 * 1024 * 1024;
 
 struct ProtocolId {
     std::string value;
@@ -48,6 +49,7 @@ struct LoggingSettings {
     bool redact_sensitive = false;
     std::uint64_t body_limit = 1024ULL * 1024;
     std::uint64_t queue_capacity = 16ULL * 1024 * 1024;
+    std::uint64_t max_total_size = kDefaultLogMaxTotalSize;
     std::uint32_t flush_interval_ms = 100;
 };
 

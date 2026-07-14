@@ -145,6 +145,16 @@ log paths stay under the application root; an absolute path can place the log
 elsewhere. The configuration schema is `ccs-trans.config/v2`. Old schemas and
 unknown fields are rejected rather than migrated or silently ignored.
 
+`logging.max_total_size` bounds one runtime log family, including the active
+file and all ccs-trans-managed rotation segments. It defaults to
+`2147483648` bytes (2 GiB). Existing v2 files without this field load with the
+default; once saved by the current build, the new field is written explicitly.
+Set it with the single canonical command:
+
+```text
+ccs-trans config set logging.max-total-size 2147483648
+```
+
 Profiles never persist API keys, Authorization headers, cookies, or proxy
 credentials. Credentials remain request headers supplied by the client.
 
@@ -307,6 +317,8 @@ upstreams, ordered Rules, request limits, timeouts, body-logging policy, and a
 new log path can change for new requests without altering in-flight requests.
 Listener, worker, metrics-reporter, and same-path log-writer topology changes
 use a graceful restart with rollback to the previous snapshot if startup fails.
+Changing `logging.max_total_size` on the same path is a log-writer topology
+change.
 
 Aggregate 8-16 SSE connections are the normal desktop load. Fifty connections
 are a bounded stress profile, not the normal operating target.
@@ -338,6 +350,20 @@ flush immediately. The queue is bounded and applies backpressure rather than
 silently dropping records. Request, upstream, response, SSE chunk, Usage, and
 Rule events can be joined by `request_id`, `generation_id`, Profile, protocol,
 and route kind. Generation-swap events link the previous and new ids.
+
+The runtime log family is bounded to 2 GiB by default. Rotation happens only
+between complete JSON Lines records on the writer thread. The active path stays
+`ccs-trans.log`; managed segments use the sortable
+`ccs-trans.log.ccs-archive-<sequence>` form. Oldest managed segments are
+removed until the active file and segments fit the configured total. An
+oversized pre-rotation log is compacted once at startup while retaining its
+newest complete records. Rotation, compaction, or retention failure follows the
+normal writer-failure path and never silently falls back to unlimited growth.
+
+Each log family owns a sibling `.ccs-lock` file and permits one writer process.
+The lock file may remain after a clean exit, but the operating-system lock is
+released. The tray/menu host uses its own bounded 64 MiB
+`ccs-trans-host.log` family and does not consume the runtime log budget.
 
 Overlapping old/new log paths are tracked as separate active writers, so a
 retiring writer cannot mark the current one unhealthy. Shutdown drains the

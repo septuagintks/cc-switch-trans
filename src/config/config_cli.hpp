@@ -1,6 +1,6 @@
 #pragma once
 
-#include "config/config_store.hpp"
+#include "config/config_repository.hpp"
 
 #include <cstddef>
 #include <ostream>
@@ -57,7 +57,7 @@ ConfigCliParseResult parse_config_cli(int argc, char** argv);
 bool is_config_cli_management_command(const std::string& command);
 bool execute_config_cli(
     const ConfigCliCommand& command,
-    ConfigStore& store,
+    ConfigRepository& repository,
     std::string& output,
     std::string& error);
 void print_config_cli_help(std::ostream& output);

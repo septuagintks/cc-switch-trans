@@ -203,6 +203,31 @@ void RuntimeMetrics::log_writer_stopped() {
     log_writers_active_.fetch_sub(1, std::memory_order_relaxed);
 }
 
+void RuntimeMetrics::log_rotated() {
+    log_rotations_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RuntimeMetrics::log_retention_removed(std::size_t files, std::uint64_t bytes) {
+    log_retention_files_removed_.fetch_add(files, std::memory_order_relaxed);
+    log_retention_bytes_removed_.fetch_add(bytes, std::memory_order_relaxed);
+}
+
+void RuntimeMetrics::log_storage_changed(
+    std::uint64_t previous_bytes,
+    std::uint64_t current_bytes) {
+    std::uint64_t aggregate = 0;
+    if (current_bytes >= previous_bytes) {
+        aggregate = current_log_storage_bytes_.fetch_add(
+            current_bytes - previous_bytes, std::memory_order_relaxed)
+            + current_bytes - previous_bytes;
+    } else {
+        aggregate = current_log_storage_bytes_.fetch_sub(
+            previous_bytes - current_bytes, std::memory_order_relaxed)
+            - (previous_bytes - current_bytes);
+    }
+    update_peak(peak_log_storage_bytes_, aggregate);
+}
+
 RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
     RuntimeMetricsSnapshot result;
 #define CCS_LOAD_METRIC(name) result.name = load(name##_)
@@ -273,6 +298,11 @@ RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
     CCS_LOAD_METRIC(log_writers_active);
     CCS_LOAD_METRIC(max_log_batch_records);
     CCS_LOAD_METRIC(max_log_batch_bytes);
+    CCS_LOAD_METRIC(log_rotations);
+    CCS_LOAD_METRIC(log_retention_files_removed);
+    CCS_LOAD_METRIC(log_retention_bytes_removed);
+    CCS_LOAD_METRIC(current_log_storage_bytes);
+    CCS_LOAD_METRIC(peak_log_storage_bytes);
 #undef CCS_LOAD_METRIC
 
     result.log_writer_healthy = result.log_writers_active > 0 ? 1 : 0;

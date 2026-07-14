@@ -32,6 +32,8 @@ cc-switch-trans/
       app_paths.hpp/.cpp
       config_cli.hpp/.cpp
       config_document.hpp/.cpp
+      config_editing_service.hpp/.cpp
+      config_repository.hpp
       config_store.hpp/.cpp
       runtime_compiler.hpp/.cpp
     core/
@@ -100,6 +102,7 @@ cc-switch-trans/
     unit/
       config_cli_tests.cpp
       config_document_tests.cpp
+      config_editing_service_tests.cpp
       core_tests.cpp
       application_controller_tests.cpp
       control_executor_tests.cpp
@@ -153,17 +156,17 @@ cc-switch-trans/
 | 目录 | 职责 |
 | --- | --- |
 | `src/app` | 进程无关的服务启动、停止、reload、rollback 与后续宿主控制状态机 |
-| `src/config` | v2 文档、CLI 单字段命令、原子持久化、用户路径和 runtime 编译 |
+| `src/config` | v2 文档、共享 draft/commit 服务、repository、CLI、原子持久化、用户路径和 runtime 编译 |
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
 | `src/hosts` | CLI、Windows tray、macOS menu bar、control executor 与平台操作 |
-| `src/logging` | JSON Lines、有界队列、批写、error flush、drain 与 writer health |
+| `src/logging` | JSON Lines、有界队列、批写、2 GiB 日志族轮转/保留、error flush、drain 与 writer health |
 | `src/protocols` | Responses/Chat/Messages descriptor、校验和本地错误 envelope |
 | `src/routing` | immutable RuntimeProfile 与 exact RouteTable |
 | `src/rules` | Rule factory、共享 DOM pipeline、JSON Pointer 与 `remove_tool` |
 | `src/runtime` | 不可变 RuntimeSnapshot 的聚合类型 |
 | `src/server` | 单 listener、FIFO worker、generation、路由/Rule/transport 编排 |
 | `src/transport` | 跨平台 upstream 接口、header policy 与平台网络实现 |
-| `tests/unit` | 配置、路由、protocol、Rule、logger、生命周期和本地错误合约 |
+| `tests/unit` | 配置 repository/editing、路由、protocol、Rule、logger、生命周期和本地错误合约 |
 | `tests/integration` | 单端口协议、桌面宿主、SSE/Usage/reload、取消和平台 proxy 策略 |
 | `tests/benchmark` | 8/16/50 路负载、0/1/8/32 Rule 微基准与长时间 soak 采样 |
 
@@ -203,6 +206,7 @@ ccs-trans-control-executor-tests
 ccs-trans-local-socket-tests
 ccs-trans-config-document-tests
 ccs-trans-config-cli-tests
+ccs-trans-config-editing-service-tests
 ccs-trans-route-table-tests
 ccs-trans-protocol-tests
 ccs-trans-rule-pipeline-tests

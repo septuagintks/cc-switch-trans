@@ -211,6 +211,7 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     logger_config.path = _paths->host_log_file;
     logger_config.level = "info";
     logger_config.queue_capacity = 1024 * 1024;
+    logger_config.max_total_size = 64ULL * 1024 * 1024;
     logger_config.flush_interval_ms = 100;
     _logger = new ccs::Logger(
         std::move(logger_config),

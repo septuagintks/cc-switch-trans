@@ -57,6 +57,7 @@ struct LoggerConfig {
     std::filesystem::path path;
     std::string level = "info";
     std::size_t queue_capacity = 16 * 1024 * 1024;
+    std::uint64_t max_total_size = 2ULL * 1024 * 1024 * 1024;
     int flush_interval_ms = 100;
 };
 

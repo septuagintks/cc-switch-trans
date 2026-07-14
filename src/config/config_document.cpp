@@ -28,6 +28,9 @@ constexpr std::uint32_t kMaxWorkerThreads = 1024;
 constexpr std::uint32_t kMaxConnections = 65535;
 constexpr std::uint64_t kMaxBufferedBodySize = 1024ULL * 1024 * 1024;
 constexpr std::uint64_t kMaxLogBufferSize = 1024ULL * 1024 * 1024;
+constexpr std::uint64_t kMaxLogTotalSize = 1024ULL * 1024 * 1024 * 1024;
+constexpr std::uint64_t kLogRecordHeadroom = 1024ULL * 1024;
+constexpr std::uint64_t kJsonEscapeExpansion = 6;
 constexpr std::uint32_t kMaxFlushIntervalMs = 60000;
 constexpr std::size_t kMaxUrlBytes = 8192;
 constexpr std::size_t kMaxRuleOptionDepth = 32;
@@ -311,7 +314,7 @@ bool read_required_application_settings(
     if (!check_object_keys(
             logging,
             "$.logging",
-            {"path", "level", "body", "redact_sensitive", "body_limit", "queue_capacity", "flush_interval_ms"},
+            {"path", "level", "body", "redact_sensitive", "body_limit", "queue_capacity", "max_total_size", "flush_interval_ms"},
             {"path", "level", "body", "redact_sensitive", "body_limit", "queue_capacity", "flush_interval_ms"},
             error)
         || !read_string(logging, "path", "$.logging", application.logging.path, error)
@@ -336,6 +339,16 @@ bool read_required_application_settings(
         return false;
     }
     application.logging.queue_capacity = number;
+    if (logging.contains("max_total_size")) {
+        if (!read_unsigned(logging, "max_total_size", "$.logging", kMaxLogTotalSize, number, error)
+            || number == 0) {
+            if (error.empty()) {
+                error = "$.logging.max_total_size must be greater than 0";
+            }
+            return false;
+        }
+        application.logging.max_total_size = number;
+    }
     if (!read_unsigned(logging, "flush_interval_ms", "$.logging", kMaxFlushIntervalMs, number, error)
         || number == 0) {
         if (error.empty()) {
@@ -663,6 +676,18 @@ bool validate_application(const ApplicationSettings& application, std::string& e
         error = "logging size fields must be 1 byte to 1 GiB and flush_interval_ms must be 1 to 60000";
         return false;
     }
+    if (application.logging.max_total_size == 0
+        || application.logging.max_total_size > kMaxLogTotalSize) {
+        error = "logging.max_total_size must be between 1 byte and 1 TiB";
+        return false;
+    }
+    const auto minimum_total_size = std::max(
+        application.logging.queue_capacity,
+        application.logging.body_limit * kJsonEscapeExpansion + kLogRecordHeadroom);
+    if (application.logging.max_total_size < minimum_total_size) {
+        error = "logging.max_total_size is too small for body_limit and queue_capacity";
+        return false;
+    }
     return true;
 }
 
@@ -695,6 +720,7 @@ Json document_to_json(const ConfigDocument& document) {
         {"redact_sensitive", document.application.logging.redact_sensitive},
         {"body_limit", document.application.logging.body_limit},
         {"queue_capacity", document.application.logging.queue_capacity},
+        {"max_total_size", document.application.logging.max_total_size},
         {"flush_interval_ms", document.application.logging.flush_interval_ms},
     };
     root["profiles"] = Json::object();

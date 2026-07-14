@@ -158,6 +158,8 @@ void test_help_contract() {
         "rule move help");
     require(text.find(", -h") == std::string::npos, "short help alias omitted");
     require(text.find("listener.port") != std::string::npos, "application key documented");
+    require(text.find("logging.max-total-size") != std::string::npos,
+        "log retention key documented");
     require(text.find("local.request-path") != std::string::npos, "profile key documented");
 }
 
@@ -180,6 +182,12 @@ void test_management_workflow() {
     require(shown["listener"]["port"] == 16000, "typed integer config set");
     output = execute(store, {"config", "set", "logging.body", "false"});
     require(nlohmann::json::parse(output)["logging"]["body"] == false, "typed boolean config set");
+    output = execute(store, {"config", "set", "logging.max-total-size", "33554432"});
+    require(nlohmann::json::parse(output)["logging"]["max_total_size"] == 33554432,
+        "log total size config set uses one canonical key");
+    output = execute(store, {"config", "unset", "logging.max-total-size"});
+    require(nlohmann::json::parse(output)["logging"]["max_total_size"] == 2147483648ULL,
+        "log total size unset restores 2 GiB");
     output = execute(store, {"config", "unset", "listener.port"});
     require(nlohmann::json::parse(output)["listener"]["port"] == 15723, "config unset restores default");
 

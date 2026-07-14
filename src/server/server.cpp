@@ -44,12 +44,15 @@ std::uint64_t next_generation_id() {
 }
 
 LoggerConfig make_logger_config(const RuntimeSnapshot& snapshot) {
-    return LoggerConfig{
-        snapshot.log_path,
-        snapshot.application.logging.level,
-        static_cast<std::size_t>(snapshot.application.logging.queue_capacity),
-        static_cast<int>(snapshot.application.logging.flush_interval_ms),
-    };
+    LoggerConfig config;
+    config.path = snapshot.log_path;
+    config.level = snapshot.application.logging.level;
+    config.queue_capacity = static_cast<std::size_t>(
+        snapshot.application.logging.queue_capacity);
+    config.max_total_size = snapshot.application.logging.max_total_size;
+    config.flush_interval_ms = static_cast<int>(
+        snapshot.application.logging.flush_interval_ms);
+    return config;
 }
 
 class RequestMetricsScope {
@@ -886,6 +889,7 @@ ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
     const bool same_log_writer_settings =
         old_application.logging.level == new_application.logging.level
         && old_application.logging.queue_capacity == new_application.logging.queue_capacity
+        && old_application.logging.max_total_size == new_application.logging.max_total_size
         && old_application.logging.flush_interval_ms == new_application.logging.flush_interval_ms;
     if (listener_changed || execution_changed || (same_log_path && !same_log_writer_settings)) {
         current->logger->log("info", "config_reload", {
@@ -1404,6 +1408,11 @@ void Server::log_performance_snapshot(const std::string& reason) const {
         field_bool("log_writer_healthy", snapshot.log_writer_healthy != 0),
         field_number("max_log_batch_records", static_cast<long long>(snapshot.max_log_batch_records)),
         field_number("max_log_batch_bytes", static_cast<long long>(snapshot.max_log_batch_bytes)),
+        field_number("log_rotations", static_cast<long long>(snapshot.log_rotations)),
+        field_number("log_retention_files_removed", static_cast<long long>(snapshot.log_retention_files_removed)),
+        field_number("log_retention_bytes_removed", static_cast<long long>(snapshot.log_retention_bytes_removed)),
+        field_number("current_log_storage_bytes", static_cast<long long>(snapshot.current_log_storage_bytes)),
+        field_number("peak_log_storage_bytes", static_cast<long long>(snapshot.peak_log_storage_bytes)),
     });
 }
 

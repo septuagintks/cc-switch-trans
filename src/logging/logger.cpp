@@ -1,13 +1,28 @@
 #include "logging/logger.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
+#include <system_error>
 #include <utility>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <cerrno>
+#include <cstdio>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace ccs {
 
@@ -15,20 +30,61 @@ namespace {
 
 class FileLogSink final : public LogSink {
 public:
+    FileLogSink(
+        std::uint64_t max_total_size,
+        std::shared_ptr<RuntimeMetrics> metrics)
+        : max_total_size_(max_total_size)
+        , metrics_(std::move(metrics)) {}
+
     bool open(const std::filesystem::path& path, std::string& error) override {
         path_ = path;
+        if (max_total_size_ == 0) {
+            error = "log max total size must be greater than zero";
+            return false;
+        }
+        segment_target_size_ = std::min<std::uint64_t>(
+            128ULL * 1024 * 1024,
+            std::max<std::uint64_t>(1, max_total_size_ / 16));
+        if (!acquire_lock(error)) {
+            return false;
+        }
+        if (!scan_existing(error) || !compact_oversized_active(error)
+            || !prune_archives(error)) {
+            release_lock();
+            return false;
+        }
         file_.open(path, std::ios::app | std::ios::binary);
         if (!file_) {
             error = "failed to open log file: " + path.string();
+            release_lock();
             return false;
         }
+        storage_reporting_enabled_ = true;
+        update_storage_metric();
         return true;
     }
 
     bool write(std::string_view data, std::string& error) override {
+        if (data.size() > max_total_size_) {
+            error = "log record exceeds the configured total size limit";
+            return false;
+        }
+        if (active_size_ != 0
+            && active_size_ + static_cast<std::uint64_t>(data.size()) > segment_target_size_
+            && !rotate(error)) {
+            return false;
+        }
         file_.write(data.data(), static_cast<std::streamsize>(data.size()));
         if (!file_) {
             error = "failed to write log file: " + path_.string();
+            return false;
+        }
+        active_size_ += static_cast<std::uint64_t>(data.size());
+        managed_size_ += static_cast<std::uint64_t>(data.size());
+        if (managed_size_ > max_total_size_ && !flush(error)) {
+            return false;
+        }
+        if (!prune_archives(error)) {
             return false;
         }
         return true;
@@ -45,11 +101,408 @@ public:
 
     void close() noexcept override {
         file_.close();
+        if (metrics_ && storage_reporting_enabled_) {
+            metrics_->log_storage_changed(reported_storage_size_, 0);
+        }
+        reported_storage_size_ = 0;
+        storage_reporting_enabled_ = false;
+        release_lock();
     }
 
 private:
+    struct Archive {
+        std::filesystem::path path;
+        std::uint64_t sequence = 0;
+        std::uint64_t size = 0;
+    };
+
+    static bool replace_file(
+        const std::filesystem::path& source,
+        const std::filesystem::path& target,
+        std::string& error) {
+#ifdef _WIN32
+        if (!MoveFileExW(
+                source.c_str(),
+                target.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            error = "failed to replace oversized log file: Windows error "
+                + std::to_string(GetLastError());
+            return false;
+        }
+#else
+        if (std::rename(source.c_str(), target.c_str()) != 0) {
+            error = "failed to replace oversized log file: "
+                + std::string(std::strerror(errno));
+            return false;
+        }
+#endif
+        return true;
+    }
+
+    bool acquire_lock(std::string& error) {
+        lock_path_ = path_;
+        lock_path_ += ".ccs-lock";
+#ifdef _WIN32
+        lock_handle_ = CreateFileW(
+            lock_path_.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (lock_handle_ == INVALID_HANDLE_VALUE) {
+            const auto code = GetLastError();
+            error = code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION
+                ? "log file is already owned by another process"
+                : "failed to acquire log file lock: Windows error " + std::to_string(code);
+            return false;
+        }
+#else
+        lock_fd_ = ::open(lock_path_.c_str(), O_CREAT | O_RDWR, 0600);
+        if (lock_fd_ < 0) {
+            error = "failed to open log file lock: " + std::string(std::strerror(errno));
+            return false;
+        }
+        if (flock(lock_fd_, LOCK_EX | LOCK_NB) != 0) {
+            error = errno == EWOULDBLOCK
+                ? "log file is already owned by another process"
+                : "failed to acquire log file lock: " + std::string(std::strerror(errno));
+            ::close(lock_fd_);
+            lock_fd_ = -1;
+            return false;
+        }
+#endif
+        return true;
+    }
+
+    void release_lock() noexcept {
+#ifdef _WIN32
+        if (lock_handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(lock_handle_);
+            lock_handle_ = INVALID_HANDLE_VALUE;
+        }
+#else
+        if (lock_fd_ >= 0) {
+            flock(lock_fd_, LOCK_UN);
+            ::close(lock_fd_);
+            lock_fd_ = -1;
+        }
+#endif
+    }
+
+    std::filesystem::path archive_path(std::uint64_t sequence) const {
+        std::ostringstream suffix;
+        suffix << ".ccs-archive-" << std::setw(20) << std::setfill('0') << sequence;
+        auto result = path_;
+        result += suffix.str();
+        return result;
+    }
+
+    bool parse_archive_sequence(
+        const std::filesystem::path& candidate,
+        std::uint64_t& sequence) const {
+        auto prefix_path = path_.filename();
+        prefix_path += ".ccs-archive-";
+        const auto& prefix = prefix_path.native();
+        const auto filename_path = candidate.filename();
+        const auto& filename = filename_path.native();
+        if (filename.size() <= prefix.size()
+            || !std::equal(prefix.begin(), prefix.end(), filename.begin())) {
+            return false;
+        }
+        sequence = 0;
+        constexpr auto zero = static_cast<std::filesystem::path::value_type>('0');
+        constexpr auto nine = static_cast<std::filesystem::path::value_type>('9');
+        for (auto index = prefix.size(); index < filename.size(); ++index) {
+            const auto ch = filename[index];
+            if (ch < zero || ch > nine) {
+                return false;
+            }
+            const auto digit = static_cast<std::uint64_t>(ch - zero);
+            if (sequence > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) {
+                return false;
+            }
+            sequence = sequence * 10 + digit;
+        }
+        return sequence != 0;
+    }
+
+    bool has_managed_prefix(
+        const std::filesystem::path& candidate,
+        const char* marker) const {
+        auto prefix_path = path_.filename();
+        prefix_path += marker;
+        const auto& prefix = prefix_path.native();
+        const auto filename_path = candidate.filename();
+        const auto& filename = filename_path.native();
+        return filename.size() > prefix.size()
+            && std::equal(prefix.begin(), prefix.end(), filename.begin());
+    }
+
+    bool scan_existing(std::string& error) {
+        archives_.clear();
+        active_size_ = 0;
+        managed_size_ = 0;
+        next_archive_sequence_ = 1;
+        std::error_code ec;
+        if (std::filesystem::exists(path_, ec)) {
+            active_size_ = std::filesystem::file_size(path_, ec);
+            if (ec) {
+                error = "failed to inspect log file size: " + ec.message();
+                return false;
+            }
+            managed_size_ = active_size_;
+        } else if (ec) {
+            error = "failed to inspect log file: " + ec.message();
+            return false;
+        }
+
+        auto parent = path_.parent_path();
+        if (parent.empty()) {
+            parent = std::filesystem::current_path(ec);
+            if (ec) {
+                error = "failed to resolve log directory: " + ec.message();
+                return false;
+            }
+        }
+        for (std::filesystem::directory_iterator iterator(parent, ec), end;
+             !ec && iterator != end;
+             iterator.increment(ec)) {
+            if (has_managed_prefix(iterator->path(), ".ccs-compact-")) {
+                const auto status = iterator->symlink_status(ec);
+                if (ec) {
+                    break;
+                }
+                if (!std::filesystem::is_regular_file(status)) {
+                    continue;
+                }
+                const auto size = iterator->file_size(ec);
+                if (ec) {
+                    break;
+                }
+                const bool removed = std::filesystem::remove(iterator->path(), ec);
+                if (ec) {
+                    error = "failed to remove stale log compaction file: " + ec.message();
+                    return false;
+                }
+                if (!removed) {
+                    error = "stale log compaction file disappeared before cleanup";
+                    return false;
+                }
+                if (metrics_) {
+                    metrics_->log_retention_removed(1, size);
+                }
+                continue;
+            }
+            std::uint64_t sequence = 0;
+            if (!parse_archive_sequence(iterator->path(), sequence)) {
+                continue;
+            }
+            const auto status = iterator->symlink_status(ec);
+            if (ec) {
+                break;
+            }
+            if (!std::filesystem::is_regular_file(status)) {
+                continue;
+            }
+            const auto size = iterator->file_size(ec);
+            if (ec) {
+                break;
+            }
+            archives_.push_back(Archive{iterator->path(), sequence, size});
+            managed_size_ += size;
+            if (sequence == std::numeric_limits<std::uint64_t>::max()) {
+                error = "log archive sequence is exhausted";
+                return false;
+            }
+            next_archive_sequence_ = std::max(next_archive_sequence_, sequence + 1);
+        }
+        if (ec) {
+            error = "failed to scan log archives: " + ec.message();
+            return false;
+        }
+        std::sort(archives_.begin(), archives_.end(), [](const Archive& left, const Archive& right) {
+            return left.sequence < right.sequence;
+        });
+        return true;
+    }
+
+    bool compact_oversized_active(std::string& error) {
+        if (active_size_ <= max_total_size_) {
+            return true;
+        }
+        std::ifstream input(path_, std::ios::binary);
+        if (!input) {
+            error = "failed to open oversized log file for compaction: " + path_.string();
+            return false;
+        }
+        const auto original_size = active_size_;
+        std::uint64_t start = original_size - max_total_size_;
+        if (start != 0) {
+            input.seekg(static_cast<std::streamoff>(start - 1));
+            char previous = '\0';
+            input.read(&previous, 1);
+            if (!input) {
+                error = "failed to inspect oversized log record boundary";
+                return false;
+            }
+            if (previous != '\n') {
+                input.clear();
+                input.seekg(static_cast<std::streamoff>(start));
+                std::array<char, 8192> scan{};
+                bool boundary_found = false;
+                std::uint64_t cursor = start;
+                while (input && !boundary_found) {
+                    input.read(scan.data(), static_cast<std::streamsize>(scan.size()));
+                    const auto count = input.gcount();
+                    if (count <= 0) {
+                        break;
+                    }
+                    const auto* newline = static_cast<const char*>(
+                        std::memchr(scan.data(), '\n', static_cast<std::size_t>(count)));
+                    if (newline) {
+                        start = cursor + static_cast<std::uint64_t>(newline - scan.data()) + 1;
+                        boundary_found = true;
+                    }
+                    cursor += static_cast<std::uint64_t>(count);
+                }
+                if (!boundary_found) {
+                    start = original_size;
+                }
+            }
+        }
+
+        auto temporary = path_;
+        temporary += ".ccs-compact-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            error = "failed to create compacted log file: " + temporary.string();
+            return false;
+        }
+        input.clear();
+        input.seekg(static_cast<std::streamoff>(start));
+        std::array<char, 64 * 1024> buffer{};
+        while (input) {
+            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const auto count = input.gcount();
+            if (count > 0) {
+                output.write(buffer.data(), count);
+            }
+        }
+        if (!input.eof() || !output) {
+            error = "failed while compacting oversized log file";
+            output.close();
+            std::error_code cleanup_error;
+            std::filesystem::remove(temporary, cleanup_error);
+            return false;
+        }
+        output.flush();
+        output.close();
+        input.close();
+        if (!output) {
+            error = "failed to flush compacted log file";
+            std::error_code cleanup_error;
+            std::filesystem::remove(temporary, cleanup_error);
+            return false;
+        }
+        if (!replace_file(temporary, path_, error)) {
+            std::error_code cleanup_error;
+            std::filesystem::remove(temporary, cleanup_error);
+            return false;
+        }
+        active_size_ = original_size - start;
+        managed_size_ -= original_size - active_size_;
+        if (metrics_) {
+            metrics_->log_retention_removed(0, original_size - active_size_);
+        }
+        update_storage_metric();
+        return true;
+    }
+
+    bool rotate(std::string& error) {
+        if (next_archive_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+            error = "log archive sequence is exhausted";
+            return false;
+        }
+        if (!flush(error)) {
+            return false;
+        }
+        file_.close();
+        if (file_.fail()) {
+            error = "failed to close log file before rotation: " + path_.string();
+            return false;
+        }
+        const auto destination = archive_path(next_archive_sequence_);
+        std::error_code ec;
+        std::filesystem::rename(path_, destination, ec);
+        if (ec) {
+            error = "failed to rotate log file: " + ec.message();
+            return false;
+        }
+        archives_.push_back(Archive{destination, next_archive_sequence_, active_size_});
+        ++next_archive_sequence_;
+        active_size_ = 0;
+        file_.clear();
+        file_.open(path_, std::ios::app | std::ios::binary);
+        if (!file_) {
+            error = "failed to open new log file after rotation: " + path_.string();
+            return false;
+        }
+        if (metrics_) {
+            metrics_->log_rotated();
+        }
+        return true;
+    }
+
+    bool prune_archives(std::string& error) {
+        while (managed_size_ > max_total_size_ && !archives_.empty()) {
+            const auto oldest = archives_.front();
+            std::error_code ec;
+            if (!std::filesystem::remove(oldest.path, ec) || ec) {
+                error = "failed to remove expired log archive: "
+                    + (ec ? ec.message() : oldest.path.string());
+                return false;
+            }
+            archives_.erase(archives_.begin());
+            managed_size_ -= oldest.size;
+            if (metrics_) {
+                metrics_->log_retention_removed(1, oldest.size);
+            }
+        }
+        if (managed_size_ > max_total_size_) {
+            error = "active log file exceeds the configured total size limit";
+            return false;
+        }
+        update_storage_metric();
+        return true;
+    }
+
+    void update_storage_metric() {
+        if (metrics_ && storage_reporting_enabled_) {
+            metrics_->log_storage_changed(reported_storage_size_, managed_size_);
+            reported_storage_size_ = managed_size_;
+        }
+    }
+
     std::filesystem::path path_;
+    std::filesystem::path lock_path_;
     std::ofstream file_;
+    std::uint64_t max_total_size_ = 0;
+    std::uint64_t segment_target_size_ = 0;
+    std::uint64_t active_size_ = 0;
+    std::uint64_t managed_size_ = 0;
+    std::uint64_t next_archive_sequence_ = 1;
+    std::vector<Archive> archives_;
+    std::shared_ptr<RuntimeMetrics> metrics_;
+    std::uint64_t reported_storage_size_ = 0;
+    bool storage_reporting_enabled_ = false;
+#ifdef _WIN32
+    HANDLE lock_handle_ = INVALID_HANDLE_VALUE;
+#else
+    int lock_fd_ = -1;
+#endif
 };
 
 std::string json_escape(const std::string& value) {
@@ -170,7 +623,7 @@ Logger::Logger(
     , sink_(std::move(sink))
     , failure_handler_(std::move(failure_handler)) {
     if (!sink_) {
-        sink_ = std::make_unique<FileLogSink>();
+        sink_ = std::make_unique<FileLogSink>(config_.max_total_size, metrics_);
     }
 }
 

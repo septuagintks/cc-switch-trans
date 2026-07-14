@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TMP = ROOT / "tmp" / "benchmark"
+DEFAULT_LOG_MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024
 
 PROFILES = {
     "smoke": {
@@ -427,6 +428,18 @@ def validate_mixed_result(result, runtime_metrics, profile):
         raise RuntimeError("mixed-16 observed a logger writer failure")
     if runtime_metrics.get("log_backpressure_count", 0) != 0:
         raise RuntimeError("mixed-16 observed logger backpressure under normal load")
+
+
+def validate_runtime_metrics(runtime_metrics, profile_name):
+    if runtime_metrics is None:
+        raise RuntimeError(f"{profile_name} requires runtime metrics")
+    if runtime_metrics.get("log_writer_failures", 0) != 0:
+        raise RuntimeError(f"{profile_name} observed a logger writer failure")
+    if runtime_metrics.get("log_backpressure_count", 0) != 0:
+        raise RuntimeError(f"{profile_name} observed logger backpressure")
+    storage_bytes = runtime_metrics.get("current_log_storage_bytes")
+    if storage_bytes is not None and storage_bytes > DEFAULT_LOG_MAX_TOTAL_SIZE:
+        raise RuntimeError(f"{profile_name} exceeded the default log storage limit")
 
 
 def post_json(port, path):
@@ -945,6 +958,8 @@ def main():
                     runtime_metrics = latest_performance_snapshot(proxy_log)
                 else:
                     runtime_metrics = None
+                if supports_runtime_metrics:
+                    validate_runtime_metrics(runtime_metrics, name)
                 if profile.get("mixed"):
                     validate_mixed_result(proxied, runtime_metrics, profile)
             finally:

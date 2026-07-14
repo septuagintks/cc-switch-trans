@@ -2,9 +2,7 @@
 
 #include "core/version.hpp"
 
-#include "config/runtime_compiler.hpp"
-#include "protocols/protocol_registry.hpp"
-#include "rules/rule_registry.hpp"
+#include "config/config_editing_service.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -43,6 +41,7 @@ const std::set<std::string>& application_keys() {
         "logging.redact-sensitive",
         "logging.body-limit",
         "logging.queue-capacity",
+        "logging.max-total-size",
         "logging.flush-interval-ms",
     };
     return keys;
@@ -378,6 +377,8 @@ bool set_application_value(
         application.logging.body_limit = value;
     } else if (key == "logging.queue-capacity") {
         application.logging.queue_capacity = value;
+    } else if (key == "logging.max-total-size") {
+        application.logging.max_total_size = value;
     } else if (key == "logging.flush-interval-ms") {
         if (value > std::numeric_limits<std::uint32_t>::max()) {
             error = key + " exceeds the supported integer range";
@@ -449,6 +450,8 @@ void reset_application_value(ApplicationSettings& target, const std::string& key
         target.logging.body_limit = defaults.logging.body_limit;
     } else if (key == "logging.queue-capacity") {
         target.logging.queue_capacity = defaults.logging.queue_capacity;
+    } else if (key == "logging.max-total-size") {
+        target.logging.max_total_size = defaults.logging.max_total_size;
     } else if (key == "logging.flush-interval-ms") {
         target.logging.flush_interval_ms = defaults.logging.flush_interval_ms;
     }
@@ -604,72 +607,12 @@ bool render_rule(
     return true;
 }
 
-bool validate_cli_runtime_semantics(
-    const ConfigDocument& document,
-    const std::filesystem::path& application_root,
-    std::string& error) {
-    const auto protocols = builtin_protocol_registry();
-    const auto rules = builtin_rule_registry();
-    for (const auto& [profile_id, profile] : document.profiles) {
-        const bool has_enabled_rules = std::any_of(
-            profile.rules.begin(), profile.rules.end(), [](const RuleDefinition& rule) {
-                return rule.enabled;
-            });
-        if (!profile.enabled && !has_enabled_rules) {
-            continue;
-        }
-        if (!profile.protocol) {
-            error = "profile " + profile_id
-                + " must set protocol before enabling the profile or one of its rules";
-            return false;
-        }
-        const auto handler = protocols->find(profile.protocol->value);
-        if (!handler) {
-            error = "profile " + profile_id + " uses unknown protocol: "
-                + profile.protocol->value;
-            return false;
-        }
-        if (profile.enabled
-            && !protocols->validate_profile(handler, profile_id, profile, error)) {
-            error = "profile " + profile_id + ": " + error;
-            return false;
-        }
-        std::shared_ptr<const CompiledPipeline> pipeline;
-        if (!rules->compile_pipeline(profile.rules, handler, pipeline, error)) {
-            error = "profile " + profile_id + ": " + error;
-            return false;
-        }
-    }
-
-    std::filesystem::path resolved_log_path;
-    if (!resolve_application_log_path(
-            document.application, application_root, resolved_log_path, error)) {
-        return false;
-    }
-    const bool has_enabled_profiles = std::any_of(
-        document.profiles.begin(), document.profiles.end(), [](const auto& entry) {
-            return entry.second.enabled;
-        });
-    if (has_enabled_profiles) {
-        RuntimeCompiler compiler(application_root);
-        RuntimeSnapshotPtr snapshot;
-        if (!compiler.compile(document, {}, snapshot, error)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool save_candidate(
-    ConfigStore& store,
-    const ConfigDocument& candidate,
+    ConfigEditingService& editing,
     std::string rendered,
     std::string& output,
     std::string& error) {
-    if (!validate_cli_runtime_semantics(candidate, store.paths().root, error)) {
-        return false;
-    }
-    if (!store.save(candidate, error)) {
+    if (!editing.commit(error)) {
         return false;
     }
     output = std::move(rendered);
@@ -719,23 +662,27 @@ bool is_config_cli_management_command(const std::string& command) {
 
 bool execute_config_cli(
     const ConfigCliCommand& command,
-    ConfigStore& store,
+    ConfigRepository& repository,
     std::string& output,
     std::string& error) {
     output.clear();
     error.clear();
-    if (!store.loaded()) {
-        error = "config store is not loaded";
+    if (!repository.loaded()) {
+        error = "config repository is not loaded";
         return false;
     }
     if (command.kind == ConfigCliCommandKind::ConfigShow) {
-        return render_application(store.document(), output, error);
+        return render_application(repository.document(), output, error);
     }
     if (command.kind == ConfigCliCommandKind::ProfileList) {
-        return render_profile_list(store.document(), output);
+        return render_profile_list(repository.document(), output);
     }
 
-    auto candidate = store.document();
+    ConfigEditingService editing(repository);
+    if (!editing.begin(error)) {
+        return false;
+    }
+    auto& candidate = editing.draft();
     if (command.kind == ConfigCliCommandKind::ConfigSet) {
         if (!set_application_value(candidate.application, command.key, command.value, error)
             || !validate_config_document(candidate, error)) {
@@ -745,7 +692,7 @@ bool execute_config_cli(
         if (!render_application(candidate, rendered, error)) {
             return false;
         }
-        return save_candidate(store, candidate, std::move(rendered), output, error);
+        return save_candidate(editing, std::move(rendered), output, error);
     }
     if (command.kind == ConfigCliCommandKind::ConfigUnset) {
         if (application_keys().count(command.key) == 0) {
@@ -760,7 +707,7 @@ bool execute_config_cli(
         if (!render_application(candidate, rendered, error)) {
             return false;
         }
-        return save_candidate(store, candidate, std::move(rendered), output, error);
+        return save_candidate(editing, std::move(rendered), output, error);
     }
 
     auto profile = candidate.profiles.find(command.profile_id);
@@ -774,7 +721,7 @@ bool execute_config_cli(
         if (!render_profile(candidate, command.profile_id, rendered, error)) {
             return false;
         }
-        return save_candidate(store, candidate, std::move(rendered), output, error);
+        return save_candidate(editing, std::move(rendered), output, error);
     }
     if (profile == candidate.profiles.end()) {
         error = "profile does not exist: " + command.profile_id;
@@ -787,7 +734,7 @@ bool execute_config_cli(
         candidate.profiles.erase(profile);
         std::string rendered;
         render_profile_list(candidate, rendered);
-        return save_candidate(store, candidate, std::move(rendered), output, error);
+        return save_candidate(editing, std::move(rendered), output, error);
     }
     if (command.kind == ConfigCliCommandKind::ProfileEnable
         || command.kind == ConfigCliCommandKind::ProfileDisable) {
@@ -816,7 +763,7 @@ bool execute_config_cli(
         if (!render_profile(candidate, command.profile_id, rendered, error)) {
             return false;
         }
-        return save_candidate(store, candidate, std::move(rendered), output, error);
+        return save_candidate(editing, std::move(rendered), output, error);
     }
 
     if (command.kind == ConfigCliCommandKind::RuleList) {
@@ -848,7 +795,7 @@ bool execute_config_cli(
         if (!render_rule_list(candidate, command.profile_id, rendered, error)) {
             return false;
         }
-        return save_candidate(store, candidate, std::move(rendered), output, error);
+        return save_candidate(editing, std::move(rendered), output, error);
     }
     if (command.kind == ConfigCliCommandKind::RuleEnable
         || command.kind == ConfigCliCommandKind::RuleDisable) {
@@ -893,7 +840,7 @@ bool execute_config_cli(
             return false;
         }
     }
-    return save_candidate(store, candidate, std::move(rendered), output, error);
+    return save_candidate(editing, std::move(rendered), output, error);
 }
 
 void print_config_cli_help(std::ostream& output) {
@@ -931,7 +878,8 @@ void print_config_cli_help(std::ostream& output) {
         << "  timeouts.resolve-ms, timeouts.connect-ms, timeouts.send-ms\n"
         << "  timeouts.response-header-ms, timeouts.stream-idle-ms, timeouts.total-ms\n"
         << "  logging.path, logging.level, logging.body, logging.redact-sensitive\n"
-        << "  logging.body-limit, logging.queue-capacity, logging.flush-interval-ms\n\n"
+        << "  logging.body-limit, logging.queue-capacity, logging.max-total-size\n"
+        << "  logging.flush-interval-ms\n\n"
         << "Profile keys:\n"
         << "  protocol\n"
         << "  local.request-path, local.usage-path\n"

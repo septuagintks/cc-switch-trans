@@ -1,22 +1,21 @@
 #pragma once
 
-#include "config/app_paths.hpp"
-#include "config/config_document.hpp"
+#include "config/config_repository.hpp"
 
 #include <string>
 
 namespace ccs {
 
-class ConfigStore {
+class ConfigStore final : public ConfigRepository {
 public:
     explicit ConfigStore(AppPaths paths);
 
-    bool load(std::string& error);
-    bool save(const ConfigDocument& document, std::string& error);
+    bool load(std::string& error) override;
+    bool save(const ConfigDocument& document, std::string& error) override;
 
-    bool loaded() const;
-    const ConfigDocument& document() const;
-    const AppPaths& paths() const;
+    bool loaded() const override;
+    const ConfigDocument& document() const override;
+    const AppPaths& paths() const override;
 
 private:
     bool source_is_unchanged(std::string& error) const;

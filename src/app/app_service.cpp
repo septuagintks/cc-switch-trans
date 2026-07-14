@@ -146,6 +146,7 @@ bool AppService::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
         state_ = ServiceState::Stopped;
         snapshot_ = snapshot;
     }
+    running_server.reset();
 
     std::string restart_error;
     if (start_impl(restart_error)) {

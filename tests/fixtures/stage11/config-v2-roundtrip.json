@@ -26,6 +26,7 @@
     "redact_sensitive": false,
     "body_limit": 1048576,
     "queue_capacity": 16777216,
+    "max_total_size": 2147483648,
     "flush_interval_ms": 100
   },
   "profiles": {

@@ -101,8 +101,16 @@ void test_round_trip_and_defaults() {
     require(defaults.profiles.empty(), "default document has no profiles");
     require(defaults.application.runtime.worker_threads == 32, "default workers remain 32");
     require(defaults.application.logging.path == "logs/ccs-trans.log", "default log path");
+    require(defaults.application.logging.max_total_size == 2ULL * 1024 * 1024 * 1024,
+        "default log retention is 2 GiB");
     require(ccs::serialize_config_document(defaults, serialized, error), error);
     require(ccs::parse_config_document(serialized, reparsed, error), error);
+
+    auto without_log_limit = nlohmann::json::parse(fixture_content());
+    without_log_limit["logging"].erase("max_total_size");
+    require(parse_json(without_log_limit, reparsed, error), error);
+    require(reparsed.application.logging.max_total_size == 2ULL * 1024 * 1024 * 1024,
+        "v2 config without max_total_size uses the new default");
 }
 
 void test_strict_json_schema() {
@@ -129,6 +137,18 @@ void test_strict_json_schema() {
     invalid["logging"]["body"] = "true";
     require(!parse_json(invalid, document, error) && error.find("JSON boolean") != std::string::npos,
         "boolean strings rejected");
+
+    invalid = base;
+    invalid["logging"]["max_total_size"] = 1024;
+    require(!parse_json(invalid, document, error)
+            && error.find("too small") != std::string::npos,
+        "log total size must hold a complete bounded record");
+
+    invalid = base;
+    invalid["logging"]["max_total_size"] = 1024ULL * 1024 * 1024 * 1024 + 1;
+    require(!parse_json(invalid, document, error)
+            && error.find("supported maximum") != std::string::npos,
+        "log total size upper bound is enforced");
 
     invalid = base;
     invalid["listener"]["port"] = -1;
