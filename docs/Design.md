@@ -344,14 +344,16 @@ benchmark 输出或临时目录。
 8. Windows tray control executor/单实例单测，以及真实 GUI 子进程的自动启动、
    Start/Stop/Reload、第二实例、通知区图标、日志 drain 和退出集成测试；
 9. Windows 候选 ZIP 的固定白名单、双 executable hash、CLI/资源版本与解压后 tray
-   生命周期验证。
+   生命周期验证；
+10. Windows 11 24H2 VM 的 startup/system proxy、四档 DPI、主题、睡眠唤醒、Explorer
+    重启、重启/注销、2 小时 mixed soak 与 8 小时 idle 验证。
 
 当前边界：
 
 - listener 与 upstream transport 仍只有 Windows 实现；
-- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现；`0.5.0` 候选包已通过
-  本机自动预检，真实 startup/system proxy、DPI/主题、Explorer/休眠/注销和 soak 矩阵
-  等待 disposable VM 实测后才能定为正式发布；
+- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，`0.5.0` 已完成项目范围
+  验收。Defender/SmartScreen 未评估且 EXE 未做 Authenticode 签名；Explorer 恢复初期的
+  新 tray 短重试窗口与系统会话结束日志不保证完整是已归档限制；
 - macOS 26 arm64 的 CMake policy、preset、只读 prerequisite probe 与真机验证清单已准备；
   listener/transport/menu bar 尚未实现，当前非 Windows runtime 仍明确不可用；console CLI
   继续保持前台生命周期。

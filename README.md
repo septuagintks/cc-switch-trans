@@ -35,9 +35,25 @@ extracted tray lifecycle with:
 powershell -ExecutionPolicy Bypass -File tools/verify_windows_package.ps1
 ```
 
-Before promoting the candidate to a release, run the opt-in startup, system
-proxy, desktop UI, lifecycle, and soak checks in
-`docs/WindowsValidationChecklist.md` on a disposable Windows VM.
+Run the verifier in a user session without another `ccs-trans-tray.exe`
+instance. Its extracted-package smoke test launches a tray process, so the
+session-level single-instance guard intentionally prevents that step when the
+installed tray is already running.
+
+Windows `0.5.0` package, startup, system proxy, desktop UI, lifecycle, load,
+two-hour mixed soak, and eight-hour idle validation are complete. The frozen
+artifact hashes, results, accepted limitations, and evidence index are archived
+in `docs/WindowsValidationChecklist.md` (the historical filename is retained
+for package reproducibility).
+
+Do not replace the archived `0.5.0` ZIP with a package rebuilt from a later
+`main`: documentation and ZIP metadata will change its archive hash. Use the
+`0.5.0` tag when auditing that release and treat the archived SHA-256 as the
+identity of the tested artifact.
+
+Defender and SmartScreen were not evaluated in the test VM and are not claimed
+as passed. The two executables are not Authenticode-signed; this is a release
+provenance limitation rather than a runtime validation failure.
 
 Before building Windows tray resources, audit the additional local tools and
 canonical icon with:
@@ -323,8 +339,8 @@ src/transport/         Cross-platform interface, header policy, Windows WinHTTP
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-The Windows `0.5.0` candidate package is complete and is undergoing its final
-VM idle/soak validation. Stage 13 build policy, presets, prerequisite audit,
-and validation contract are prepared; the Apple Silicon macOS 26 listener,
-system-libcurl transport, menu bar host, login item, and packaging remain to be
-implemented. See [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
+Windows `0.5.0` implementation and project-scope validation are complete.
+Stage 13 build policy, presets, prerequisite audit, and validation contract are
+prepared; the Apple Silicon macOS 26 listener, system-libcurl transport, menu
+bar host, login item, and packaging remain to be implemented. See
+[docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).

@@ -248,7 +248,7 @@ ICNS 都从它派生到 build/package directory，不能反向编辑或提交生
 | `docs/Design.md` | 当前实现、不变量和平台边界 |
 | `docs/Reconstruction.md` | Profile/Protocol/Rule 通用架构与扩展合约 |
 | `docs/DevelopmentPlan.md` | tray、macOS 的构建顺序和验收门槛 |
-| `docs/WindowsValidationChecklist.md` | Windows 候选包的 VM 手工矩阵和证据记录 |
+| `docs/WindowsValidationChecklist.md` | Windows `0.5.0` 验证结果归档；沿用历史文件名以保持包可复现 |
 | `docs/MacOSValidationChecklist.md` | macOS 26 arm64 构建、运行、签名和真机证据记录 |
 | `docs/ProjectStructure.md` | 当前目录、依赖、target 与扩展位置 |
 | `tests/benchmark/README.md` | 可重复性能命令和结果解释 |
@@ -262,6 +262,8 @@ build/
 build-debug/
 build-release/
 build-warning/
+build-macos-release/
+build-macos-warning/
 dist/
 logs/
 tmp/
