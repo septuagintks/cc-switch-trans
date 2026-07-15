@@ -3,7 +3,7 @@
 #ifdef _WIN32
 
 #include "app/application_controller.hpp"
-#include "hosts/control_executor.hpp"
+#include "app/control_executor.hpp"
 #include "hosts/windows/windows_host_platform.hpp"
 #include "logging/logger.hpp"
 

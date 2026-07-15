@@ -9,8 +9,9 @@ bool CommandResult::succeeded() const noexcept {
 }
 
 bool CommandResult::configuration_saved() const noexcept {
-    return outcome == CommandOutcome::Succeeded
-        || outcome == CommandOutcome::SavedPendingRuntimeApply;
+    return command == MainWindowCommand::ApplyDraft
+        && (outcome == CommandOutcome::Succeeded
+            || outcome == CommandOutcome::SavedPendingRuntimeApply);
 }
 
 bool DraftState::loaded() const noexcept {
@@ -93,6 +94,8 @@ const char* main_window_error_name(MainWindowError error) noexcept {
         return "runtime_apply_failed";
     case MainWindowError::ServiceUnavailable:
         return "service_unavailable";
+    case MainWindowError::UnsavedChangesDecisionRequired:
+        return "unsaved_changes_decision_required";
     case MainWindowError::Cancelled:
         return "cancelled";
     case MainWindowError::Internal:

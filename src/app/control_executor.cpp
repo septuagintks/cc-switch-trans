@@ -1,4 +1,4 @@
-#include "hosts/control_executor.hpp"
+#include "app/control_executor.hpp"
 
 #include <utility>
 
@@ -60,7 +60,7 @@ void ControlExecutor::run() {
         try {
             task();
         } catch (...) {
-            // Host commands report their own errors. Keep the executor alive if one escapes.
+            // Control commands report their own failures. Keep the executor alive.
         }
     }
 }

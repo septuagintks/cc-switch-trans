@@ -42,6 +42,7 @@ enum class MainWindowError {
     PersistenceFailed,
     RuntimeApplyFailed,
     ServiceUnavailable,
+    UnsavedChangesDecisionRequired,
     Cancelled,
     Internal,
 };
@@ -62,6 +63,7 @@ struct CommandResult {
     std::string profile_id;
     std::string field;
     std::string detail;
+    std::optional<MainWindowCommand> recovery_command;
 
     [[nodiscard]] bool succeeded() const noexcept;
     [[nodiscard]] bool configuration_saved() const noexcept;
@@ -95,6 +97,7 @@ enum class DraftPhase {
 
 struct DraftState {
     DraftPhase phase = DraftPhase::Unloaded;
+    bool runtime_apply_pending = false;
 
     [[nodiscard]] bool loaded() const noexcept;
     [[nodiscard]] bool dirty() const noexcept;

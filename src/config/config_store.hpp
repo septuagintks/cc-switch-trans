@@ -16,6 +16,7 @@ public:
     bool loaded() const override;
     const ConfigDocument& document() const override;
     const AppPaths& paths() const override;
+    ConfigRepositoryFailure last_failure() const noexcept override;
 
 private:
     bool source_is_unchanged(std::string& error) const;
@@ -25,6 +26,7 @@ private:
     std::string source_content_;
     bool source_exists_ = false;
     bool loaded_ = false;
+    ConfigRepositoryFailure last_failure_ = ConfigRepositoryFailure::None;
 };
 
 } // namespace ccs

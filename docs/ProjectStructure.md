@@ -26,9 +26,11 @@ cc-switch-trans/
 
   src/
     app/
+      application_control.hpp
       application_controller.hpp/.cpp
       application_status.hpp
       app_service.hpp/.cpp
+      control_executor.hpp/.cpp
     config/
       app_paths.hpp/.cpp
       config_cli.hpp/.cpp
@@ -46,7 +48,6 @@ cc-switch-trans/
       url.hpp/.cpp
     hosts/
       cli_main.cpp
-      control_executor.hpp/.cpp
       host_platform.hpp/.cpp
       macos/
         instance_coordinator.hpp/.mm
@@ -66,7 +67,10 @@ cc-switch-trans/
       logger.hpp/.cpp
     presentation/
       main_window_contract.hpp/.cpp
+      main_window_view_model.hpp/.cpp
       ui_preferences.hpp/.cpp
+      ui_preferences_repository.hpp
+      ui_preferences_store.hpp/.cpp
     protocols/
       protocol_handler.hpp/.cpp
       protocol_registry.hpp/.cpp
@@ -108,6 +112,8 @@ cc-switch-trans/
       config_document_tests.cpp
       config_editing_service_tests.cpp
       presentation_contract_tests.cpp
+      ui_preferences_store_tests.cpp
+      main_window_view_model_tests.cpp
       core_tests.cpp
       application_controller_tests.cpp
       control_executor_tests.cpp
@@ -160,12 +166,12 @@ cc-switch-trans/
 
 | 目录 | 职责 |
 | --- | --- |
-| `src/app` | 进程无关的服务启动、停止、reload、rollback 与后续宿主控制状态机 |
+| `src/app` | 进程无关的服务启动、停止、reload、rollback、窄控制接口与共享 control executor |
 | `src/config` | v2 文档、共享 draft/commit 服务、repository、CLI、原子持久化、用户路径和 runtime 编译 |
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
-| `src/hosts` | CLI、Windows tray、macOS menu bar、control executor 与平台操作 |
+| `src/hosts` | CLI、Windows tray、macOS menu bar 与平台窗口/系统操作 |
 | `src/logging` | JSON Lines、有界队列、批写、2 GiB 日志族轮转/保留、error flush、drain 与 writer health |
-| `src/presentation` | 平台无关的主窗口状态/命令/关闭合同与 `ccs-trans.ui/v1` codec；不持有平台窗口或执行文件 I/O |
+| `src/presentation` | 平台无关主窗口合同、异步 ViewModel、Profile draft 命令、`ccs-trans.ui/v1` codec 与独立原子 store |
 | `src/protocols` | Responses/Chat/Messages descriptor、校验和本地错误 envelope |
 | `src/routing` | immutable RuntimeProfile 与 exact RouteTable |
 | `src/rules` | Rule factory、共享 DOM pipeline、JSON Pointer 与 `remove_tool` |
@@ -180,7 +186,7 @@ cc-switch-trans/
 
 ```text
 hosts -> presentation + app controller + platform host adapter
-presentation -> app status + standard-library value types
+presentation -> app control/status + config editing/repository + control executor
 app -> runtime snapshot + server lifecycle
 config -> routing definitions + protocols + rules + JSON
 runtime compiler -> RouteTable + ProtocolRegistry + RuleRegistry
@@ -216,6 +222,8 @@ ccs-trans-config-document-tests
 ccs-trans-config-cli-tests
 ccs-trans-config-editing-service-tests
 ccs-trans-presentation-contract-tests
+ccs-trans-ui-preferences-store-tests
+ccs-trans-main-window-view-model-tests
 ccs-trans-route-table-tests
 ccs-trans-protocol-tests
 ccs-trans-rule-pipeline-tests

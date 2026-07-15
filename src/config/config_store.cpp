@@ -104,7 +104,10 @@ public:
 #endif
     }
 
-    bool acquire(const std::filesystem::path& path, std::string& error) {
+    bool acquire(
+        const std::filesystem::path& path,
+        ConfigRepositoryFailure& failure,
+        std::string& error) {
 #ifdef _WIN32
         handle_ = CreateFileW(
             path.c_str(),
@@ -118,8 +121,10 @@ public:
             const auto code = GetLastError();
             if (code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION) {
                 error = "config is being modified by another process";
+                failure = ConfigRepositoryFailure::Busy;
             } else {
                 error = "failed to acquire config write lock: Windows error " + std::to_string(code);
+                failure = ConfigRepositoryFailure::Io;
             }
             return false;
         }
@@ -127,12 +132,16 @@ public:
         fd_ = open(path.c_str(), O_CREAT | O_RDWR, 0600);
         if (fd_ < 0) {
             error = "failed to open config write lock: " + std::string(std::strerror(errno));
+            failure = ConfigRepositoryFailure::Io;
             return false;
         }
         if (flock(fd_, LOCK_EX | LOCK_NB) != 0) {
             error = errno == EWOULDBLOCK
                 ? "config is being modified by another process"
                 : "failed to acquire config write lock: " + std::string(std::strerror(errno));
+            failure = errno == EWOULDBLOCK
+                ? ConfigRepositoryFailure::Busy
+                : ConfigRepositoryFailure::Io;
             close(fd_);
             fd_ = -1;
             return false;
@@ -241,14 +250,17 @@ ConfigStore::ConfigStore(AppPaths paths)
 
 bool ConfigStore::load(std::string& error) {
     error.clear();
+    last_failure_ = ConfigRepositoryFailure::None;
     loaded_ = false;
     bool exists = false;
     std::string content;
     if (!read_config_file(paths_.config_file, exists, content, error)) {
+        last_failure_ = ConfigRepositoryFailure::Io;
         return false;
     }
     ConfigDocument candidate;
     if (exists && !parse_config_document(content, candidate, error)) {
+        last_failure_ = ConfigRepositoryFailure::InvalidDocument;
         return false;
     }
     if (!exists) {
@@ -276,26 +288,36 @@ bool ConfigStore::source_is_unchanged(std::string& error) const {
 
 bool ConfigStore::save(const ConfigDocument& document, std::string& error) {
     error.clear();
+    last_failure_ = ConfigRepositoryFailure::None;
     if (!loaded_) {
         error = "config store must be loaded successfully before saving";
+        last_failure_ = ConfigRepositoryFailure::NotLoaded;
         return false;
     }
     std::string serialized;
     if (!serialize_config_document(document, serialized, error)) {
+        last_failure_ = ConfigRepositoryFailure::InvalidDocument;
         return false;
     }
     if (!ensure_app_directories(paths_, error)) {
+        last_failure_ = ConfigRepositoryFailure::Io;
         return false;
     }
 
     ConfigWriteLock lock;
-    if (!lock.acquire(paths_.state_directory / "config.lock", error)
-        || !source_is_unchanged(error)) {
+    if (!lock.acquire(paths_.state_directory / "config.lock", last_failure_, error)) {
+        return false;
+    }
+    if (!source_is_unchanged(error)) {
+        last_failure_ = error.find("changed since it was loaded") != std::string::npos
+            ? ConfigRepositoryFailure::Stale
+            : ConfigRepositoryFailure::Io;
         return false;
     }
 
     TemporaryFile temporary(temporary_path(paths_.config_file));
     if (!write_file(temporary.path(), serialized, error)) {
+        last_failure_ = ConfigRepositoryFailure::Io;
         return false;
     }
     bool verification_exists = false;
@@ -305,11 +327,13 @@ bool ConfigStore::save(const ConfigDocument& document, std::string& error) {
         if (error.empty()) {
             error = "temporary config file disappeared before verification";
         }
+        last_failure_ = ConfigRepositoryFailure::Io;
         return false;
     }
     ConfigDocument verified;
     if (!parse_config_document(verification_content, verified, error)) {
         error = "failed to verify temporary config file: " + error;
+        last_failure_ = ConfigRepositoryFailure::Io;
         return false;
     }
     std::string verified_serialized;
@@ -318,15 +342,20 @@ bool ConfigStore::save(const ConfigDocument& document, std::string& error) {
         if (error.empty()) {
             error = "temporary config file failed canonical round-trip verification";
         }
+        last_failure_ = ConfigRepositoryFailure::Io;
         return false;
     }
     if (!source_is_unchanged(error)) {
+        last_failure_ = error.find("changed since it was loaded") != std::string::npos
+            ? ConfigRepositoryFailure::Stale
+            : ConfigRepositoryFailure::Io;
         return false;
     }
 
     ConfigDocument next_document = document;
     std::string next_source = serialized;
     if (!replace_file(temporary.path(), paths_.config_file, error)) {
+        last_failure_ = ConfigRepositoryFailure::Io;
         return false;
     }
     temporary.release();
@@ -346,6 +375,10 @@ const ConfigDocument& ConfigStore::document() const {
 
 const AppPaths& ConfigStore::paths() const {
     return paths_;
+}
+
+ConfigRepositoryFailure ConfigStore::last_failure() const noexcept {
+    return last_failure_;
 }
 
 } // namespace ccs

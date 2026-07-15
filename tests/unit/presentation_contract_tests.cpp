@@ -142,11 +142,19 @@ void test_command_result_contract() {
     partial.error = ccs::MainWindowError::RuntimeApplyFailed;
     require(!partial.succeeded() && partial.configuration_saved(),
         "runtime reload failure distinguishes persisted from applied state");
+    ccs::CommandResult service_success;
+    service_success.command = ccs::MainWindowCommand::StartService;
+    require(service_success.succeeded() && !service_success.configuration_saved(),
+        "successful non-Apply commands do not claim configuration persistence");
     require(std::string(ccs::main_window_command_name(partial.command)) == "apply_draft"
             && std::string(ccs::main_window_error_name(partial.error)) == "runtime_apply_failed"
             && std::string(ccs::command_outcome_name(partial.outcome))
                 == "saved_pending_runtime_apply",
         "command result exposes stable cross-platform names");
+    require(std::string(ccs::main_window_error_name(
+                ccs::MainWindowError::UnsavedChangesDecisionRequired))
+            == "unsaved_changes_decision_required",
+        "dirty draft decision requirement has a stable cross-platform name");
 }
 
 void test_ui_preference_schema() {

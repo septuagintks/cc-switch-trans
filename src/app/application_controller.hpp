@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/application_control.hpp"
 #include "app/application_status.hpp"
 #include "config/app_paths.hpp"
 #include "runtime/runtime_snapshot.hpp"
@@ -24,7 +25,7 @@ bool load_runtime_snapshot(
     RuntimeSnapshotPtr& snapshot,
     std::string& error);
 
-class ApplicationController {
+class ApplicationController final : public ApplicationControl {
 public:
     explicit ApplicationController(AppPaths paths);
     ~ApplicationController();
@@ -32,11 +33,11 @@ public:
     ApplicationController(const ApplicationController&) = delete;
     ApplicationController& operator=(const ApplicationController&) = delete;
 
-    bool start(std::string& error);
-    bool reload(std::string& error);
-    bool stop(std::string& error);
-    bool shutdown(std::string& error);
-    ApplicationStatus status();
+    bool start(std::string& error) override;
+    bool reload(std::string& error) override;
+    bool stop(std::string& error) override;
+    bool shutdown(std::string& error) override;
+    ApplicationStatus status() override;
 
     const AppPaths& paths() const;
 

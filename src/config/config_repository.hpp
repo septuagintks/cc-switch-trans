@@ -7,6 +7,15 @@
 
 namespace ccs {
 
+enum class ConfigRepositoryFailure {
+    None,
+    NotLoaded,
+    Busy,
+    Stale,
+    InvalidDocument,
+    Io,
+};
+
 class ConfigRepository {
 public:
     virtual ~ConfigRepository() = default;
@@ -16,6 +25,9 @@ public:
     virtual bool loaded() const = 0;
     virtual const ConfigDocument& document() const = 0;
     virtual const AppPaths& paths() const = 0;
+    virtual ConfigRepositoryFailure last_failure() const noexcept {
+        return ConfigRepositoryFailure::None;
+    }
 };
 
 } // namespace ccs

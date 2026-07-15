@@ -4,7 +4,7 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | `0.5.0` 发行基线 + `0.6-A` presentation 合同 |
+| 实现基线 | `0.5.0` 发行基线 + `0.6-A/B` presentation 与命令层 |
 | 当前发行版 | `0.5.0-Windows-x64`；`0.5.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -150,9 +150,30 @@ UI preference schema 是严格的 `ccs-trans.ui/v1`：
 }
 ```
 
-目标路径是 `state/ui.json`，默认启用轻量模式。当前只实现 64 KiB 有界的严格 codec；原子文件
-store、跨进程写入策略和 ViewModel command 编排属于 `0.6-B`。UI preference 不进入 runtime
-config，也不触发 RuntimeSnapshot 编译。
+目标路径是 `state/ui.json`，默认启用轻量模式。文件由独立 `UiPreferencesStore` 管理，使用
+`state/ui.lock`、同目录临时文件、回读 schema 校验、revision 比较和原子替换。它不复用
+`config.lock`；缺失文件读取默认值，损坏或未知 schema 文件不会被静默覆盖。UI preference 不进入
+runtime config，也不触发 RuntimeSnapshot 编译。
+
+`0.6-B` 已实现无窗口 `MainWindowViewModel`：
+
+```text
+platform view
+  -> immutable MainWindowState snapshot
+  -> MainWindowViewModel / FIFO control executor
+     -> ConfigEditingService -> ConfigRepository
+     -> ApplicationControl -> ApplicationController
+     -> UiPreferencesRepository -> UiPreferencesStore
+```
+
+同一时刻只接受一个 control command，重复命令立即返回 `Busy`。Profile mutation 先修改 candidate
+并执行完整 config/protocol/rule/runtime 校验，成功后才替换 draft。Apply 顺序固定为 validate、
+repository commit、运行服务 reload/restart；保存成功但 runtime 应用失败时保持
+`SavedPendingRuntimeApply`，并根据 controller 最终是 Running 还是 Faulted 提供 Reload 或 Start。
+
+ViewModel 的 update handler 通过平台注入 dispatcher 回到 UI 线程。订阅 generation 让窗口注销后
+已排队 callback 自动失效，适配轻量模式的反复销毁。dispatcher 或 view callback 异常与 command
+执行隔离。当前 Windows tray 与 macOS menu 尚未构造该 ViewModel，平台主窗口接入从 `0.6-C/D` 开始。
 
 ## 配置与 CLI
 
@@ -168,7 +189,8 @@ config，也不触发 RuntimeSnapshot 编译。
     ccs-trans-host.log (tray/menu host only)
   state/
     config.lock
-    ui.json (从 0.6-B 开始由 UI preference store 创建)
+    ui.lock
+    ui.json
 ```
 
 Windows 从 `USERPROFILE` 读取用户目录，macOS 使用账户 home。配置 schema 固定为

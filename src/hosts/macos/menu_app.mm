@@ -1,7 +1,7 @@
 #include "hosts/macos/menu_app.hpp"
 
 #include "app/application_controller.hpp"
-#include "hosts/control_executor.hpp"
+#include "app/control_executor.hpp"
 #include "hosts/macos/instance_coordinator.hpp"
 #include "hosts/macos/macos_host_platform.hpp"
 #include "logging/logger.hpp"

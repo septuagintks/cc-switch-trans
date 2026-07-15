@@ -143,6 +143,7 @@ endif()
 add_library(ccs-trans-core STATIC
     src/app/application_controller.cpp
     src/app/app_service.cpp
+    src/app/control_executor.cpp
     src/config/app_paths.cpp
     src/config/config_cli.cpp
     src/config/config_document.cpp
@@ -153,7 +154,6 @@ add_library(ccs-trans-core STATIC
     src/core/request_id.cpp
     src/core/runtime_metrics.cpp
     src/core/url.cpp
-    src/hosts/control_executor.cpp
     src/hosts/host_platform.cpp
     src/logging/logger.cpp
     src/protocols/chat_handler.cpp
@@ -162,7 +162,9 @@ add_library(ccs-trans-core STATIC
     src/protocols/protocol_registry.cpp
     src/protocols/responses_handler.cpp
     src/presentation/main_window_contract.cpp
+    src/presentation/main_window_view_model.cpp
     src/presentation/ui_preferences.cpp
+    src/presentation/ui_preferences_store.cpp
     src/routing/route_table.cpp
     src/rules/generic_json_rules.cpp
     src/rules/remove_tool_rule.cpp
@@ -291,6 +293,24 @@ if(BUILD_TESTING)
     add_test(
         NAME ccs-trans-presentation-contract-tests
         COMMAND ccs-trans-presentation-contract-tests
+    )
+
+    add_executable(ccs-trans-ui-preferences-store-tests
+        tests/unit/ui_preferences_store_tests.cpp
+    )
+    target_link_libraries(ccs-trans-ui-preferences-store-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-ui-preferences-store-tests
+        COMMAND ccs-trans-ui-preferences-store-tests
+    )
+
+    add_executable(ccs-trans-main-window-view-model-tests
+        tests/unit/main_window_view_model_tests.cpp
+    )
+    target_link_libraries(ccs-trans-main-window-view-model-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-main-window-view-model-tests
+        COMMAND ccs-trans-main-window-view-model-tests
     )
 
     add_executable(ccs-trans-route-table-tests

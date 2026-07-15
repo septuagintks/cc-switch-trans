@@ -33,10 +33,10 @@ macOS SDK system libcurl process proxy。发行结论与平台验证证据见：
 
 ## 当前推进状态
 
-`0.6-A` 已于 2026-07-15 完成，当前源码仍报告 `0.5.0`，不在内部开发阶段提前修改发行版本。
-共享层已经冻结主窗口状态、命令结果、错误、关闭决策与 `ccs-trans.ui/v1` 偏好 schema；下一步是
-`0.6-B` 的 ViewModel、异步命令编排和 UI preference 原子 store。Windows Win32 与 macOS AppKit
-窗口仍分别从 `0.6-C`、`0.6-D` 开始实现。
+`0.6-A` 与 `0.6-B` 已于 2026-07-15 完成，当前源码仍报告 `0.5.0`，不在内部开发阶段提前
+修改发行版本。共享层已经冻结主窗口合同，实现异步 ViewModel、Profile draft 命令、两阶段 Apply
+结果和独立 UI preference 原子 store。下一步是 `0.6-C` 的 Windows Win32 主窗口；macOS AppKit
+窗口仍从 `0.6-D` 开始实现。
 
 ## 0.6.0 前置工作
 
@@ -164,7 +164,7 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 - schema codec 有 64 KiB 上限并拒绝未知字段、重复 key、错误类型和未知版本，解析失败不修改旧值；
 - 本阶段没有实现偏好文件 I/O、ViewModel 或平台窗口；原子 store 和异步 command 仍属于 `0.6-B`。
 
-#### 0.6-B：共享 presentation 与命令层
+#### 0.6-B：共享 presentation 与命令层（已完成，2026-07-15）
 
 1. 在共享层增加 MainWindowViewModel，只消费 ApplicationStatus、ConfigRepository snapshot 和
    ConfigEditingService；
@@ -178,6 +178,24 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 
 退出条件：无窗口的单元测试覆盖成功、validation failure、stale repository、reload failure、重复命令、
 取消 dirty draft 和 controller stopped/faulted。
+
+实现结果：
+
+- `MainWindowViewModel` 只消费 `ConfigRepository`、`ConfigEditingService`、窄
+  `ApplicationControl` 和 `UiPreferencesRepository`，不持有平台窗口；
+- Load/Create/Rename/Remove/Enable/Apply/Discard、service start/stop/reload/quit 与轻量模式命令
+  全部串行投递到共享 control executor；并行重复命令立即返回稳定 `Busy`，不进入队列；
+- Profile mutation 先作用于 candidate 并执行完整 config/protocol/rule/runtime 校验，失败不会污染 draft；
+  Rename 使用 map node 原子移动 stable id；
+- Apply 固定为 validate -> repository commit -> running service reload/restart。持久化成功但 runtime
+  应用失败进入 `SavedPendingRuntimeApply`，按 controller 最终状态提供 Reload 或 Start 恢复；
+- ConfigRepository 增加结构化 Busy/Stale/InvalidDocument/I/O 失败类别，GUI 不解析错误字符串；
+- `UiPreferencesStore` 使用独立 `state/ui.lock`、同目录临时文件、回读 schema 校验、revision 比较与
+  原子替换，不复用 `config.lock`；缺失文件使用默认值，损坏文件不会被静默覆盖；
+- update handler 通过可注入 dispatcher 回 UI 线程；订阅 generation 在窗口注销/销毁后使排队回调失效，
+  dispatcher 或 view callback 异常不会改变命令结果；
+- Release 与 warnings-as-errors 构建各通过 16/16 CTest，shared integration 通过。共享层尚未接入
+  tray/menu，用户可见主窗口从 `0.6-C` 开始。
 
 #### 0.6-C：Windows 主窗口
 

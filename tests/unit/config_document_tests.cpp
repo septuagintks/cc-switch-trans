@@ -371,11 +371,15 @@ void test_config_store_atomicity_and_revision() {
     require(!stale.save(stale_edit, error)
             && error.find("changed since it was loaded") != std::string::npos,
         "stale writer cannot overwrite a newer document");
+    require(stale.last_failure() == ccs::ConfigRepositoryFailure::Stale,
+        "stale config save exposes a structured repository failure");
     require(read_file(paths.config_file) == first_bytes, "stale save leaves newer bytes unchanged");
 
     auto invalid = first.document();
     invalid.application.runtime.worker_threads = 0;
     require(!first.save(invalid, error), "invalid candidate cannot be saved");
+    require(first.last_failure() == ccs::ConfigRepositoryFailure::InvalidDocument,
+        "invalid config save exposes a structured repository failure");
     require(read_file(paths.config_file) == first_bytes, "invalid save leaves target unchanged");
 
 #ifdef _WIN32
@@ -393,6 +397,8 @@ void test_config_store_atomicity_and_revision() {
     require(!first.save(locked_edit, error)
             && error.find("another process") != std::string::npos,
         "active cross-process writer lock is respected");
+    require(first.last_failure() == ccs::ConfigRepositoryFailure::Busy,
+        "config lock contention exposes a structured repository failure");
     CloseHandle(held_lock);
     require(read_file(paths.config_file) == first_bytes, "lock contention leaves target unchanged");
 #endif
