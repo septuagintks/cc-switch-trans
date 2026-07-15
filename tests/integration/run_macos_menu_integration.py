@@ -152,6 +152,28 @@ def cycle_windows(executable, environment, host_log, count):
         send_control(executable, environment, host_log, "cycle:1")
 
 
+def wait_for_window_resources(
+    executable, environment, host_log, baseline_probe, timeout=5
+):
+    deadline = time.monotonic() + timeout
+    last_probe = None
+    while time.monotonic() < deadline:
+        last_probe = send_control(executable, environment, host_log, "probe")
+        if (
+            last_probe.get("live_main_window_count")
+            <= baseline_probe.get("live_main_window_count")
+            and last_probe.get("live_main_window_controller_count")
+            <= baseline_probe.get("live_main_window_controller_count")
+            and last_probe.get("visible_application_window_count")
+            <= baseline_probe.get("visible_application_window_count") + 1
+        ):
+            return last_probe
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"window resources did not return to baseline: {baseline_probe} -> {last_probe}"
+    )
+
+
 def write_menu_config(home, listener_port, upstream_port):
     root = home / ".ccs-trans"
     root.mkdir(parents=True, exist_ok=True)
@@ -561,20 +583,13 @@ def main():
             == 100,
             "100 lightweight cycles did not pair every main-window create/destroy",
         )
-        final_probe = send_control(executable, environment, host_log, "probe")
+        # Closed NSWindows are retired by AppKit on subsequent run-loop turns.
+        # Wait for that bounded asynchronous cleanup instead of sampling a single
+        # intermediate turn immediately after the final close.
+        final_probe = wait_for_window_resources(
+            executable, environment, host_log, baseline_probe
+        )
         final_rss = resident_bytes(process.pid)
-        require(
-            final_probe.get("live_main_window_count")
-            <= baseline_probe.get("live_main_window_count")
-            and final_probe.get("live_main_window_controller_count")
-            <= baseline_probe.get("live_main_window_controller_count"),
-            f"100 lightweight cycles retained main-window resources: {baseline_probe} -> {final_probe}",
-        )
-        require(
-            final_probe.get("visible_application_window_count")
-            <= baseline_probe.get("visible_application_window_count") + 1,
-            f"100 lightweight cycles retained visible AppKit windows: {baseline_probe} -> {final_probe}",
-        )
         require(
             final_rss <= baseline_rss + 32 * 1024 * 1024,
             f"100 lightweight cycles retained excessive RSS: {baseline_rss} -> {final_rss}",
