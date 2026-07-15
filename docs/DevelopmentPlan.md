@@ -33,10 +33,10 @@ macOS SDK system libcurl process proxy。发行结论与平台验证证据见：
 
 ## 当前推进状态
 
-`0.6-A` 与 `0.6-B` 已于 2026-07-15 完成，Windows `0.6-C` 已于 2026-07-16 完成。当前源码
-仍报告 `0.5.0`，不在内部开发阶段提前修改发行版本。共享合同、异步 ViewModel、Profile draft
-命令、两阶段 Apply、独立 UI preference store 与原生 Win32 主窗口已经接入同一 tray 宿主。下一步
-是 `0.6-D` 的 macOS AppKit 主窗口，由 macOS 侧基于同一合同实现和验证。
+`0.6-A` 与 `0.6-B` 已于 2026-07-15 完成，Windows `0.6-C` 与 macOS `0.6-D` 已于
+2026-07-16 完成。当前源码仍报告 `0.5.0`，不在内部开发阶段提前修改发行版本。共享合同、异步
+ViewModel、Profile draft 命令、两阶段 Apply、独立 UI preference store 与两端原生主窗口已经分别
+接入既有 tray/menu 宿主。下一步由 Windows 侧审核并继续 `0.6-E/F/G`。
 
 ## 0.6.0 前置工作
 
@@ -223,7 +223,7 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
   integration 通过；最终告警构建再次验证两轮各 100 次轻量窗口生命周期、普通模式 HWND 复用、
   GDI/USER 资源稳定，以及窗口持续创建/销毁期间 16/16 SSE 完整回传、精确长度和零上游断连。
 
-#### 0.6-D：macOS 主窗口
+#### 0.6-D：macOS 主窗口（已完成，2026-07-16）
 
 1. 在现有 AppKit menu app 增加 NSWindow/NSWindowController，不建立第二套 service/controller；
 2. 与 Windows 使用相同 view-model command 和状态合同，实现 Profile 列表与基础编辑；
@@ -233,6 +233,26 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 6. 在 `.codex/HandOff.md` 记录 macOS 构建、测试和需要 Windows 主侧合并的信息。
 
 退出条件：macOS 26 arm64 clean Release/warnings build、CTest、shared integration 和菜单/窗口自动化通过。
+
+实现结果：
+
+- 既有 AppKit menu host 增加原生 `NSWindow`/`NSWindowController`，menu、窗口 ViewModel 与服务
+  command 共用一个 `ApplicationController` 和 FIFO `ControlExecutor`；没有复制 server、logger、
+  runtime compiler、route table 或 transport 初始化；
+- menu 提供唯一 “Open ccs-trans” 和持久化 Lightweight Mode；第二实例通知显示并激活主窗口。
+  普通模式隐藏复用，轻量模式解除 AppKit callback 并销毁 window/controller/view，listener 保持运行；
+- Profile Create/Rename/Remove、Enable validation、Apply/Discard、服务 Start/Stop/Reload、状态与
+  `SavedPendingRuntimeApply` 使用共享命令和状态语义。dirty close 的 Apply/Discard/Cancel 必须在命令
+  完成后继续，pending command 阻止 Quit；用户 Quit 使用两阶段 AppKit termination 排空 ViewModel
+  与 controller shutdown，SIGTERM 等强制路径仍按平台强制语义处理；
+- Auto Layout、760 x 500 最小尺寸、长文本截断/换行、显式 Tab loop、默认 Apply 按钮、Retina 与
+  light/dark probe、accessibility labels 已接入。自动标签验证通过，但未执行实际 VoiceOver 语音会话；
+- macOS 26 arm64 Release 与 warnings-as-errors 均完成 77/77 clean build、14/14 CTest；shared、proxy
+  与 menu/main-window integration 通过。100 次逐 AppKit event-loop 的轻量窗口创建/销毁精确配对，
+  window/controller 与可见窗口不增长、RSS 在阈值内；循环期间 `desktop-16` 逐响应内容、顺序、长度、
+  Content-Type 与 `[DONE]` 精确，16/16 完成且上游零断连；
+- 当前机器只有 Command Line Tools，`tools/check_stage13_prerequisites.sh` 仅完整 Xcode version 项失败；
+  SDK 26.5、Apple Clang 21、arm64 与 system libcurl probe 通过。源码版本仍为 `0.5.0`，未打包或发布。
 
 #### 0.6-E：Profile 管理闭环
 

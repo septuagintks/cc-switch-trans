@@ -51,6 +51,7 @@ cc-switch-trans/
       host_platform.hpp/.cpp
       macos/
         instance_coordinator.hpp/.mm
+        main_window.hpp/.mm
         macos_host_platform.hpp/.mm
         menu_app.hpp/.mm
         menu_main.mm
@@ -270,6 +271,7 @@ macOS 当前实现：
 ```text
 src/hosts/macos/
   instance_coordinator.hpp/.mm
+  main_window.hpp/.mm
   menu_main.mm
   menu_app.hpp/.mm
   macos_host_platform.hpp/.mm
@@ -293,6 +295,12 @@ tools/
 `assets/icons/ccs-trans-512.png` 是唯一手工维护图标母版。ICO、menu bar PNG 和可能的
 ICNS 都从它派生到 build/package directory，不能反向编辑或提交生成物。实际 socket
 文件拆分可在保持上述依赖边界的前提下调整，不要求为每个 adapter 建静态库。
+
+`main_window.*` 持有 AppKit `NSWindowController`、Auto Layout、Profile controls、dirty-close 和
+普通/轻量窗口生命周期。`menu_app.mm` 继续唯一持有 `ApplicationController`、共享 control executor、
+ViewModel、menu/status item、distributed notification 与退出编排；窗口不创建第二套 runtime。
+`run_macos_menu_integration.py` 通过隔离 `HOME` 和仅测试启用的 scoped notification 自动验证窗口
+功能、100 次资源生命周期、pending Quit，以及窗口循环期间 `desktop-16` 精确回传。
 
 `package_macos.sh` 生成正式文件名的固定白名单 ZIP，并统一对 CLI 和 `.app` 使用 ad-hoc
 签名。`verify_macos_package.sh` 校验包名、内部 checksum、arm64 slice、strict codesign 和

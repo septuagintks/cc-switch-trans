@@ -119,6 +119,7 @@ if(APPLE)
 
     add_executable(ccs-trans-menu MACOSX_BUNDLE
         src/hosts/macos/instance_coordinator.mm
+        src/hosts/macos/main_window.mm
         src/hosts/macos/macos_host_platform.mm
         src/hosts/macos/menu_app.mm
         src/hosts/macos/menu_main.mm

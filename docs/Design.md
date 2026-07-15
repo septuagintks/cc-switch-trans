@@ -4,7 +4,7 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | `0.5.0` 发行基线 + `0.6-A/B` 共享层 + `0.6-C` Windows 主窗口 |
+| 实现基线 | `0.5.0` 发行基线 + `0.6-A/B` 共享层 + `0.6-C/D` Windows/macOS 主窗口 |
 | 当前发行版 | `0.5.0-Windows-x64`；`0.5.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -125,8 +125,8 @@ CLI `run` 与 tray 的服务所有权冲突由 listener 独占绑定报告。这
 
 ## 主窗口 Presentation 合同
 
-`0.6-A` 建立跨平台主窗口合同，`0.6-B` 实现共享 ViewModel，`0.6-C` 已接入 Win32 view；
-AppKit view 留给 `0.6-D`。`MainWindowState` 聚合
+`0.6-A` 建立跨平台主窗口合同，`0.6-B` 实现共享 ViewModel，`0.6-C/D` 已分别接入
+Win32 与 AppKit view。`MainWindowState` 聚合
 `ApplicationStatus`、按 stable id 排序的 `ProfileListItem`、纯 UI selection、`DraftState`、
 最近命令结果和轻量模式。该合同只携带 C++ 值类型，不暴露 HWND、NSObject、JSON DOM、
 SQLite handle 或 mutable runtime 对象。
@@ -174,8 +174,8 @@ repository commit、运行服务 reload/restart；保存成功但 runtime 应用
 
 ViewModel 的 update handler 通过平台注入 dispatcher 回到 UI 线程。订阅 generation 让窗口注销后
 已排队 callback 自动失效，适配轻量模式的反复销毁。dispatcher 或 view callback 异常与 command
-执行隔离。Windows tray 已构造该 ViewModel，并与 tray command 共用一个 FIFO control executor；
-macOS menu 仍在 `0.6-D` 接入。
+执行隔离。Windows tray 与 macOS menu 均构造该 ViewModel，并分别与各自宿主 command 共用一个
+FIFO control executor。
 
 Windows 主窗口是独立 top-level HWND，不拥有 runtime。tray 菜单、tray 双击与第二实例通知只负责
 显示或激活窗口；关闭主窗口不会停止 listener。普通模式隐藏并缓存 HWND，轻量模式销毁所有 child
@@ -183,6 +183,14 @@ HWND/font/tooltip 资源后按最新 immutable snapshot 重建。dirty draft 必
 真正完成后才隐藏、销毁或继续退出；pending command 会阻止普通退出并保留其随后产生的 draft。退出期间
 先停用 view callback 并排空 ViewModel command，再在同一 executor 上执行 controller shutdown。布局使用
 per-monitor-v2 DPI、固定最小尺寸和动态 ListView 列宽。
+
+macOS 主窗口由一个 `NSWindowController` 管理，不拥有 runtime。menu 的唯一 Open 命令和第二实例
+distributed notification 只显示、恢复并激活窗口；关闭窗口不停止 listener。普通模式 order-out 并
+复用现有窗口，轻量模式解除 delegate/data source、关闭并释放 window/controller/view，再从最新
+snapshot 重建。AppKit 对象只在主线程访问，ViewModel dispatcher 回到主队列；退出先失效 callback、
+销毁窗口并排空共享 FIFO，再在同一 executor 上执行 controller shutdown。窗口禁用 state restoration
+和自动 tabbing，使用 Auto Layout、固定最小尺寸、显式 Tab loop、默认 Apply 按钮和 accessibility
+labels。
 
 ## 配置与 CLI
 
@@ -442,6 +450,9 @@ benchmark 输出或临时目录。
     process proxy direct/HTTP/HTTPS CONNECT/ALL_PROXY/NO_PROXY/no-fallback 矩阵；
 13. macOS AppKit host 的 Unicode/空格 home、自动 service、单实例通知、SIGTERM drain，以及
     正式文件名 ad-hoc 固定白名单 ZIP 的签名校验、解包 CLI/menu smoke。
+14. macOS AppKit 主窗口的 Profile draft、dirty close、普通/轻量生命周期、第二实例激活、
+    Retina/主题/键盘/accessibility probe、100 次资源生命周期、pending Quit、Start/Stop/Reload，
+    以及窗口循环期间 `desktop-16` 的内容、顺序、长度、结束标记和零上游断连。
 
 当前边界：
 
@@ -454,6 +465,10 @@ benchmark 输出或临时目录。
 - Windows `0.6-C` 原生主窗口已接入共享 presentation/editing/controller，普通/轻量窗口生命周期、
   基础 Profile 管理、两轮各 100 次资源压力和窗口抖动期间 `desktop-16` 已通过；它仍是未发布的
   `0.6.0` 开发状态，不改变当前源码与发行版本号；
+- macOS `0.6-D` 原生 AppKit 主窗口已接入同一共享层和 menu host，普通/轻量窗口生命周期、基础
+  Profile 管理、100 次 window/controller 资源压力、pending Quit 和窗口循环期间 `desktop-16`
+  已通过；Release 与 warnings-as-errors 均 14/14 CTest 通过。VoiceOver 实际语音会话未执行，当前
+  自动化只验证 accessibility labels；
 - macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
   图标和打包脚本已实现，`0.5.0-macOS-arm64` 已发布。正式 ZIP 按策略使用 ad-hoc 签名，
   不需要 Developer ID 或公证，也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整

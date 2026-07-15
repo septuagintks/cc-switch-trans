@@ -155,6 +155,14 @@ class Handler(BaseHTTPRequestHandler):
             self.server.metrics.sent(len(chunk))
             if chunk_interval_ms and index + 1 < chunk_count:
                 time.sleep(chunk_interval_ms / 1000)
+        if query.get("end_marker", [""])[0] == "1":
+            marker = b"data: [DONE]\n\n"
+            try:
+                self.wfile.write(marker)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return True
+            self.server.metrics.sent(len(marker))
         return False
 
     def _send_buffered(self, query):

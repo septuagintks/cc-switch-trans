@@ -2,18 +2,25 @@
 
 #include "app/application_controller.hpp"
 #include "app/control_executor.hpp"
+#include "config/config_editing_service.hpp"
+#include "config/config_store.hpp"
 #include "hosts/macos/instance_coordinator.hpp"
+#include "hosts/macos/main_window.hpp"
 #include "hosts/macos/macos_host_platform.hpp"
 #include "logging/logger.hpp"
+#include "presentation/main_window_view_model.hpp"
+#include "presentation/ui_preferences_store.hpp"
 
 #import <AppKit/AppKit.h>
 
 #include <filesystem>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -93,6 +100,12 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     ccs::ApplicationController* _controller;
     ccs::MacHostPlatform* _platform;
     ccs::ControlExecutor* _executor;
+    ccs::ConfigStore* _configRepository;
+    ccs::ConfigEditingService* _configEditing;
+    ccs::UiPreferencesStore* _uiPreferences;
+    ccs::MainWindowViewModel* _viewModel;
+    ccs::MacMainWindow* _mainWindow;
+    ccs::MainWindowStateSnapshot _viewState;
     ccs::Logger* _logger;
     ccs::ApplicationStatus _cachedStatus;
 
@@ -102,6 +115,7 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     NSMenuItem* _startMenuItem;
     NSMenuItem* _stopMenuItem;
     NSMenuItem* _reloadMenuItem;
+    NSMenuItem* _lightweightMenuItem;
     NSMenuItem* _startupMenuItem;
     NSTimer* _statusTimer;
     dispatch_source_t _sigintSource;
@@ -112,17 +126,24 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     BOOL _startupKnown;
     BOOL _startupEnabled;
     BOOL _startupRequiresApproval;
-    BOOL _popupEnabled;
+    BOOL _automationEnabled;
     BOOL _exiting;
     BOOL _shutdownComplete;
-    BOOL _terminationReplyPending;
+    BOOL _terminateAfterShutdown;
     NSInteger _exitCode;
+    std::uint64_t _lastViewCommandSequence;
     std::string _lastStatusError;
 }
 
 - (instancetype)initWithPaths:(ccs::AppPaths)paths
     executablePath:(std::filesystem::path)executablePath;
 - (NSInteger)exitCode;
+- (void)handleViewState:(ccs::MainWindowStateSnapshot)state;
+- (void)beginShutdown:(NSString*)reason;
+- (void)beginTerminationShutdown;
+- (void)logHost:(const std::string&)level
+    event:(const std::string&)event
+    fields:(const std::vector<ccs::LogField>&)fields;
 
 @end
 
@@ -137,6 +158,22 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
         _controller = new ccs::ApplicationController(*_paths);
         _platform = new ccs::MacHostPlatform();
         _executor = new ccs::ControlExecutor();
+        _configRepository = new ccs::ConfigStore(*_paths);
+        _configEditing = new ccs::ConfigEditingService(*_configRepository);
+        _uiPreferences = new ccs::UiPreferencesStore(*_paths);
+        _viewModel = new ccs::MainWindowViewModel(
+            *_configRepository,
+            *_configEditing,
+            *_controller,
+            *_uiPreferences,
+            [](std::function<void()> callback) {
+                auto* posted = new std::function<void()>(std::move(callback));
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    std::unique_ptr<std::function<void()>> owned(posted);
+                    (*owned)();
+                });
+            },
+            _executor);
     }
     return self;
 }
@@ -146,6 +183,15 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     [NSDistributedNotificationCenter.defaultCenter removeObserver:self];
     if (_statusItem != nil) {
         [NSStatusBar.systemStatusBar removeStatusItem:_statusItem];
+    }
+    if (_viewModel != nullptr) {
+        _viewModel->set_update_handler({});
+    }
+    if (_mainWindow != nullptr) {
+        _mainWindow->destroy();
+    }
+    if (_viewModel != nullptr) {
+        _viewModel->stop();
     }
     if (_executor != nullptr) {
         _executor->stop();
@@ -159,6 +205,11 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
         (void)_logger->drain(error);
     }
     delete _logger;
+    delete _mainWindow;
+    delete _viewModel;
+    delete _uiPreferences;
+    delete _configEditing;
+    delete _configRepository;
     delete _executor;
     delete _platform;
     delete _controller;
@@ -186,9 +237,21 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     if (_shutdownComplete) {
         return NSTerminateNow;
     }
-    _terminationReplyPending = YES;
-    [self beginShutdown:@"application_terminate"];
-    return NSTerminateLater;
+    if (_exiting) {
+        return NSTerminateCancel;
+    }
+    __weak CCSMenuDelegate* weak_self = self;
+    if (_mainWindow != nullptr
+        && !_mainWindow->prepare_for_application_exit([weak_self]() {
+            CCSMenuDelegate* delegate = weak_self;
+            if (delegate != nil) {
+                [delegate beginTerminationShutdown];
+            }
+        })) {
+        return NSTerminateCancel;
+    }
+    [self beginTerminationShutdown];
+    return NSTerminateCancel;
 }
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
@@ -200,6 +263,11 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     if (_sigtermSource != nil) {
         dispatch_source_cancel(_sigtermSource);
     }
+}
+
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
+    (void)sender;
+    return NO;
 }
 
 - (BOOL)initializeHost:(std::string&)error {
@@ -249,6 +317,8 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
 
     _menu = [[NSMenu alloc] initWithTitle:@"ccs-trans"];
     _menu.delegate = self;
+    [self addMenuItem:@"Open ccs-trans" action:@selector(openMainWindow:)];
+    [_menu addItem:NSMenuItem.separatorItem];
     _statusMenuItem = [[NSMenuItem alloc] initWithTitle:@"Status: stopped"
         action:nil
         keyEquivalent:@""];
@@ -262,17 +332,21 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     [_menu addItem:NSMenuItem.separatorItem];
     [self addMenuItem:@"Open Configuration" action:@selector(openConfiguration:)];
     [self addMenuItem:@"Open Logs" action:@selector(openLogs:)];
+    _lightweightMenuItem = [self addMenuItem:@"Lightweight Mode"
+        action:@selector(toggleLightweight:)];
     _startupMenuItem = [self addMenuItem:@"Launch at Login" action:@selector(toggleStartup:)];
     [_menu addItem:NSMenuItem.separatorItem];
     [self addMenuItem:@"Quit" action:@selector(quit:)];
     _statusItem.menu = _menu;
 
     NSString* notification_name = [NSString stringWithUTF8String:ccs::kMacShowMenuNotification];
+    NSString* notification_object = ns_string(path_to_utf8(
+        _paths->state_directory / "menu-host.lock"));
     [NSDistributedNotificationCenter.defaultCenter
         addObserver:self
         selector:@selector(showExistingInstance:)
         name:notification_name
-        object:nil
+        object:notification_object
         suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
 
     _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
@@ -280,8 +354,28 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
         selector:@selector(refreshStatus:)
         userInfo:nil
         repeats:YES];
-    const char* no_popup = std::getenv("CCS_TRANS_MENU_TEST_NO_POPUP");
-    _popupEnabled = no_popup == nullptr || std::string_view(no_popup) != "1";
+    const char* automation = std::getenv("CCS_TRANS_MENU_TEST_AUTOMATION");
+    _automationEnabled = automation != nullptr && std::string_view(automation) == "1";
+    __weak CCSMenuDelegate* weak_self = self;
+    _mainWindow = new ccs::MacMainWindow(
+        *_viewModel,
+        [weak_self](std::string_view event) {
+            CCSMenuDelegate* delegate = weak_self;
+            if (delegate != nil) {
+                [delegate logHost:"info" event:"main_window_lifecycle" fields:{
+                    ccs::field_string("action", std::string(event)),
+                }];
+            }
+        });
+    _viewModel->set_update_handler([weak_self](ccs::MainWindowStateSnapshot state) {
+        CCSMenuDelegate* delegate = weak_self;
+        if (delegate != nil) {
+            [delegate handleViewState:std::move(state)];
+        }
+    });
+    if (!_viewModel->submit({ccs::MainWindowCommand::LoadDraft})) {
+        [self logHost:"error" event:"main_window_draft_load_rejected" fields:{}];
+    }
     _sigintSource = [self terminationSignalSource:SIGINT];
     _sigtermSource = [self terminationSignalSource:SIGTERM];
     [self logHost:"info" event:"host_start" fields:{
@@ -336,11 +430,47 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     _stopMenuItem.enabled = !_exiting && !_serviceCommandPending && !transition
         && state == ccs::ApplicationState::Running;
     _reloadMenuItem.enabled = _stopMenuItem.enabled;
+    _lightweightMenuItem.enabled = !_exiting
+        && _viewState
+        && !_viewState->command_pending;
+    _lightweightMenuItem.state = _viewState && _viewState->lightweight_mode
+        ? NSControlStateValueOn
+        : NSControlStateValueOff;
     _startupMenuItem.enabled = !_exiting && _startupKnown;
     _startupMenuItem.state = _startupEnabled ? NSControlStateValueOn : NSControlStateValueOff;
     _startupMenuItem.title = _startupRequiresApproval
         ? @"Launch at Login (Approval Required)"
         : @"Launch at Login";
+}
+
+- (void)openMainWindow:(id)sender {
+    (void)sender;
+    if (_exiting || _mainWindow == nullptr) {
+        return;
+    }
+    std::string error;
+    const auto state = _viewState ? _viewState : _viewModel->snapshot();
+    if (!_mainWindow->show(state, error)) {
+        [self logHost:"error" event:"main_window_show_failed" fields:{
+            ccs::field_string("error", error),
+        }];
+        [self showError:@"ccs-trans window failed" detail:ns_string(error)];
+    }
+}
+
+- (void)toggleLightweight:(id)sender {
+    (void)sender;
+    if (_exiting || _viewModel == nullptr || !_viewState) {
+        return;
+    }
+    if (!_viewModel->submit({
+            ccs::MainWindowCommand::SetLightweightMode,
+            {},
+            {},
+            !_viewState->lightweight_mode})) {
+        [self showError:@"ccs-trans command busy"
+            detail:@"Wait for the current command to finish."];
+    }
 }
 
 - (void)start:(id)sender {
@@ -384,11 +514,59 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
 }
 
 - (void)showExistingInstance:(NSNotification*)notification {
-    (void)notification;
     [self logHost:"info" event:"second_instance_notified" fields:{}];
-    if (_popupEnabled && _statusItem.button != nil && !_exiting) {
-        [_statusItem.button performClick:nil];
+    if (_exiting) {
+        return;
     }
+    NSString* test_command = _automationEnabled
+        ? notification.userInfo[@"test_command"]
+        : nil;
+    if (test_command != nil && test_command.UTF8String != nullptr) {
+        std::string error;
+        const std::string command = test_command.UTF8String;
+        bool succeeded = false;
+        if (command == "show") {
+            [self openMainWindow:nil];
+            succeeded = true;
+        } else if (command == "quit") {
+            [NSApp terminate:nil];
+            succeeded = true;
+        } else if (command.starts_with("create-and-quit:")) {
+            succeeded = _executor->post([]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }) && _viewModel->submit({
+                    ccs::MainWindowCommand::CreateProfile,
+                    command.substr(std::string_view("create-and-quit:").size()),
+                });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [NSApp terminate:nil];
+            });
+        } else if (_mainWindow != nullptr) {
+            succeeded = _mainWindow->run_test_command(command, error);
+        }
+        [self logHost:(succeeded ? "info" : "error")
+            event:"main_window_test_command"
+            fields:{
+                ccs::field_string("command", command),
+                ccs::field_bool("succeeded", succeeded),
+                ccs::field_string("error", error),
+                ccs::field_bool("window_exists",
+                    _mainWindow != nullptr && _mainWindow->exists()),
+                ccs::field_bool("window_visible",
+                    _mainWindow != nullptr && _mainWindow->visible()),
+                ccs::field_number("application_window_count",
+                    static_cast<long long>(NSApp.windows.count)),
+                ccs::field_number("visible_application_window_count",
+                    static_cast<long long>(
+                        [NSWindow windowNumbersWithOptions:0].count)),
+                ccs::field_number("live_main_window_count",
+                    ccs::MacMainWindow::live_window_count()),
+                ccs::field_number("live_main_window_controller_count",
+                    ccs::MacMainWindow::live_controller_count()),
+            }];
+        return;
+    }
+    [self openMainWindow:nil];
 }
 
 - (void)postCommand:(MenuCommand)command startupEnabled:(BOOL)startupEnabled {
@@ -501,6 +679,9 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     }
     const auto previous_state = _cachedStatus.state;
     _cachedStatus = result->status;
+    if (_viewModel != nullptr) {
+        _viewModel->refresh_application_status();
+    }
     _startupKnown = result->startup_known;
     _startupEnabled = result->startup_enabled;
     _startupRequiresApproval = result->startup_requires_approval;
@@ -547,6 +728,53 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     }
 }
 
+- (void)handleViewState:(ccs::MainWindowStateSnapshot)state {
+    if (!state) {
+        return;
+    }
+    const bool previous_lightweight = _viewState && _viewState->lightweight_mode;
+    _viewState = std::move(state);
+    _cachedStatus = _viewState->application;
+    if (_mainWindow != nullptr) {
+        _mainWindow->update(_viewState);
+    }
+
+    if (_viewState->last_command
+        && !_viewState->command_pending
+        && _viewState->last_command->sequence > _lastViewCommandSequence) {
+        const auto& result = *_viewState->last_command;
+        _lastViewCommandSequence = result.sequence;
+        [self logHost:(result.succeeded() || result.configuration_saved() ? "info" : "error")
+            event:"main_window_command_complete"
+            fields:{
+                ccs::field_string("command", ccs::main_window_command_name(result.command)),
+                ccs::field_string("outcome", ccs::command_outcome_name(result.outcome)),
+                ccs::field_string("error", ccs::main_window_error_name(result.error)),
+                ccs::field_string("detail", result.detail),
+            }];
+        if (!_automationEnabled
+            && !result.succeeded()
+            && !result.configuration_saved()
+            && result.error != ccs::MainWindowError::Cancelled) {
+            [self showError:@"ccs-trans command failed"
+                detail:(result.detail.empty() ? @"Open Logs for details." : ns_string(result.detail))];
+        }
+    }
+
+    if (!previous_lightweight
+        && _viewState->lightweight_mode
+        && _mainWindow != nullptr
+        && ccs::resolve_cached_main_window(
+                _viewState->draft,
+                _mainWindow->exists(),
+                _mainWindow->visible(),
+                true)
+            == ccs::CachedWindowAction::Destroy) {
+        _mainWindow->destroy();
+    }
+    [self updateMenu];
+}
+
 - (void)beginShutdown:(NSString*)reason {
     if (_exiting) {
         return;
@@ -563,6 +791,15 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     [self logHost:"info" event:"host_shutdown_start" fields:{
         ccs::field_string("reason", reason.UTF8String == nullptr ? "unknown" : reason.UTF8String),
     }];
+    if (_viewModel != nullptr) {
+        _viewModel->set_update_handler({});
+    }
+    if (_mainWindow != nullptr) {
+        _mainWindow->destroy();
+    }
+    if (_viewModel != nullptr) {
+        _viewModel->stop();
+    }
 
     CCSMenuDelegate* delegate = self;
     if (!_executor->post([delegate]() {
@@ -576,6 +813,11 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
         })) {
         [self finishShutdown:NO error:"control executor rejected shutdown"];
     }
+}
+
+- (void)beginTerminationShutdown {
+    _terminateAfterShutdown = YES;
+    [self beginShutdown:@"application_terminate"];
 }
 
 - (void)finishShutdown:(BOOL)succeeded error:(const std::string&)error {
@@ -592,8 +834,8 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
             NSLog(@"ccs-trans host logger drain failed: %@", ns_string(drain_error));
         }
     }
-    if (_terminationReplyPending) {
-        [NSApp replyToApplicationShouldTerminate:YES];
+    if (_terminateAfterShutdown) {
+        [NSApp terminate:nil];
     } else {
         [NSApp stop:nil];
         NSEvent* wake_event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined

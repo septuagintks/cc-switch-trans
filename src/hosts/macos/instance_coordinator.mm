@@ -3,8 +3,10 @@
 #import <Foundation/Foundation.h>
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <string_view>
 #include <sys/file.h>
 #include <unistd.h>
 #include <utility>
@@ -48,14 +50,28 @@ MacInstanceAcquireResult MacInstanceCoordinator::acquire(std::string& error) {
 bool MacInstanceCoordinator::notify_existing(std::string& error) const {
     error.clear();
     NSString* name = [NSString stringWithUTF8String:kMacShowMenuNotification];
-    if (name == nil) {
-        error = "failed to construct the menu host notification name";
+    NSString* object = [NSString stringWithUTF8String:lock_path_.c_str()];
+    if (name == nil || object == nil) {
+        error = "failed to construct the menu host notification identity";
         return false;
+    }
+    NSDictionary* user_info = nil;
+    const char* automation = std::getenv("CCS_TRANS_MENU_TEST_AUTOMATION");
+    const char* test_command = std::getenv("CCS_TRANS_MENU_TEST_COMMAND");
+    if (automation != nullptr
+        && std::string_view(automation) == "1"
+        && test_command != nullptr) {
+        NSString* command = [NSString stringWithUTF8String:test_command];
+        if (command == nil) {
+            error = "failed to construct the menu host test command";
+            return false;
+        }
+        user_info = @{ @"test_command": command };
     }
     [NSDistributedNotificationCenter.defaultCenter
         postNotificationName:name
-        object:nil
-        userInfo:nil
+        object:object
+        userInfo:user_info
         deliverImmediately:YES];
     return true;
 }

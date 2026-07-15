@@ -45,14 +45,15 @@ Local Windows builds produce the console CLI `build/ccs-trans.exe` and the GUI
 tray host `build/ccs-trans-tray.exe`. Double-clicking the tray host starts all
 enabled Profiles without opening a console window.
 
-The current post-`0.5.0` source also contains the completed Windows `0.6-C`
-native main window. Open it from the tray menu, by double-clicking the tray
-icon, or by launching a second tray instance. It provides service controls and
-basic Profile create, rename, remove, enable, Apply, and Discard operations.
-Lightweight mode destroys a closed main window while leaving the tray and
-listener running; normal mode hides and reuses it. This is development status,
-not a `0.6.0` release: binaries continue to report `0.5.0` until the remaining
-cross-platform stages and release validation are complete.
+The current post-`0.5.0` source contains the completed native main-window work
+through Windows `0.6-C` and macOS `0.6-D`. Open it from the tray/menu-bar menu,
+by double-clicking the Windows tray icon, or by launching a second desktop-host
+instance. Both native views provide service controls and basic Profile create,
+rename, remove, enable, Apply, and Discard operations through the same shared
+ViewModel. Lightweight mode destroys a closed main window while leaving the
+desktop host and listener running; normal mode hides and reuses it. This is
+development status, not a `0.6.0` release: binaries continue to report `0.5.0`
+until the remaining stages and release validation are complete.
 
 Create the fixed-whitelist Windows package from a Release build:
 
@@ -422,6 +423,12 @@ python3 tests/integration/run_integration.py build-macos-release/ccs-trans
 python3 tests/integration/run_macos_proxy_integration.py build-macos-release/ccs-trans
 python3 tests/integration/run_macos_menu_integration.py build-macos-release/ccs-trans.app
 ```
+
+The menu integration also exercises the AppKit main window: activation and
+second-instance routing, Profile draft operations, dirty-close branches,
+normal/lightweight lifecycles, keyboard/accessibility/layout probes, 100
+lightweight open/close cycles, service controls, pending-command Quit, and 16
+concurrent exact SSE streams while windows are rebuilt.
 
 Load and rule-pipeline benchmarks are documented in
 [tests/benchmark/README.md](tests/benchmark/README.md). Generated results stay
