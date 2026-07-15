@@ -161,6 +161,8 @@ add_library(ccs-trans-core STATIC
     src/protocols/protocol_handler.cpp
     src/protocols/protocol_registry.cpp
     src/protocols/responses_handler.cpp
+    src/presentation/main_window_contract.cpp
+    src/presentation/ui_preferences.cpp
     src/routing/route_table.cpp
     src/rules/generic_json_rules.cpp
     src/rules/remove_tool_rule.cpp
@@ -280,6 +282,15 @@ if(BUILD_TESTING)
     add_test(
         NAME ccs-trans-config-editing-service-tests
         COMMAND ccs-trans-config-editing-service-tests
+    )
+
+    add_executable(ccs-trans-presentation-contract-tests
+        tests/unit/presentation_contract_tests.cpp
+    )
+    target_link_libraries(ccs-trans-presentation-contract-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-presentation-contract-tests
+        COMMAND ccs-trans-presentation-contract-tests
     )
 
     add_executable(ccs-trans-route-table-tests

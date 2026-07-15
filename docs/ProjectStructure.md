@@ -27,6 +27,7 @@ cc-switch-trans/
   src/
     app/
       application_controller.hpp/.cpp
+      application_status.hpp
       app_service.hpp/.cpp
     config/
       app_paths.hpp/.cpp
@@ -63,6 +64,9 @@ cc-switch-trans/
         windows_host_platform.hpp/.cpp
     logging/
       logger.hpp/.cpp
+    presentation/
+      main_window_contract.hpp/.cpp
+      ui_preferences.hpp/.cpp
     protocols/
       protocol_handler.hpp/.cpp
       protocol_registry.hpp/.cpp
@@ -103,6 +107,7 @@ cc-switch-trans/
       config_cli_tests.cpp
       config_document_tests.cpp
       config_editing_service_tests.cpp
+      presentation_contract_tests.cpp
       core_tests.cpp
       application_controller_tests.cpp
       control_executor_tests.cpp
@@ -160,6 +165,7 @@ cc-switch-trans/
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
 | `src/hosts` | CLI、Windows tray、macOS menu bar、control executor 与平台操作 |
 | `src/logging` | JSON Lines、有界队列、批写、2 GiB 日志族轮转/保留、error flush、drain 与 writer health |
+| `src/presentation` | 平台无关的主窗口状态/命令/关闭合同与 `ccs-trans.ui/v1` codec；不持有平台窗口或执行文件 I/O |
 | `src/protocols` | Responses/Chat/Messages descriptor、校验和本地错误 envelope |
 | `src/routing` | immutable RuntimeProfile 与 exact RouteTable |
 | `src/rules` | Rule factory、共享 DOM pipeline、JSON Pointer 与 `remove_tool` |
@@ -173,7 +179,8 @@ cc-switch-trans/
 ## 依赖方向
 
 ```text
-hosts -> app controller + platform host adapter
+hosts -> presentation + app controller + platform host adapter
+presentation -> app status + standard-library value types
 app -> runtime snapshot + server lifecycle
 config -> routing definitions + protocols + rules + JSON
 runtime compiler -> RouteTable + ProtocolRegistry + RuleRegistry
@@ -186,6 +193,7 @@ core -> C++ standard library
 禁止反向依赖：
 
 - `core`、`routing`、`rules` 不得 include Windows、Cocoa 或 curl 类型；
+- `presentation` 不得 include Win32、AppKit、JSON DOM、SQLite 或 mutable RuntimeSnapshot 类型；
 - `transport` 不判断 Provider host、Profile id 或 LLM JSON 字段；
 - `server` 不按 protocol/rule 字符串写业务分支；
 - `hosts` 不复制 compiler、RouteTable、logger 或 transport 初始化；
@@ -207,6 +215,7 @@ ccs-trans-local-socket-tests
 ccs-trans-config-document-tests
 ccs-trans-config-cli-tests
 ccs-trans-config-editing-service-tests
+ccs-trans-presentation-contract-tests
 ccs-trans-route-table-tests
 ccs-trans-protocol-tests
 ccs-trans-rule-pipeline-tests

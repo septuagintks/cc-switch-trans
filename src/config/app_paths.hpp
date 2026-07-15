@@ -12,6 +12,7 @@ struct AppPaths {
     std::filesystem::path default_log_file;
     std::filesystem::path host_log_file;
     std::filesystem::path state_directory;
+    std::filesystem::path ui_preferences_file;
 };
 
 AppPaths make_app_paths(const std::filesystem::path& root);

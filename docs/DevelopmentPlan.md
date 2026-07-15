@@ -31,9 +31,16 @@ macOS SDK system libcurl process proxy。发行结论与平台验证证据见：
 `0.6.0` 先建立这个边界，`0.7.0` 才替换 Profile/Rule 的存储后端。请求热路径继续只读取
 已编译的 immutable RuntimeSnapshot，不在每个请求中查询文件、GUI 状态或数据库。
 
+## 当前推进状态
+
+`0.6-A` 已于 2026-07-15 完成，当前源码仍报告 `0.5.0`，不在内部开发阶段提前修改发行版本。
+共享层已经冻结主窗口状态、命令结果、错误、关闭决策与 `ccs-trans.ui/v1` 偏好 schema；下一步是
+`0.6-B` 的 ViewModel、异步命令编排和 UI preference 原子 store。Windows Win32 与 macOS AppKit
+窗口仍分别从 `0.6-C`、`0.6-D` 开始实现。
+
 ## 0.6.0 前置工作
 
-前置实现已于 2026-07-15 完成，仓库仍报告 `0.5.0`，直到正式开始 `0.6.0` 产品功能：
+前置实现已于 2026-07-15 完成：
 
 - [x] `logging.max_total_size`、唯一 CLI key、2 GiB 默认值和旧 v2 缺字段默认读取；
 - [x] active + archive 总量限制、完整 JSONL 轮转、旧超限文件压缩、日志族 OS lock 和 64 MiB
@@ -132,7 +139,7 @@ rename/lock 真机行为进入 `0.6-G` 候选矩阵。
 
 ### 具体开发步骤
 
-#### 0.6-A：冻结交互与状态合同
+#### 0.6-A：冻结交互与状态合同（已完成，2026-07-15）
 
 1. 冻结主窗口信息结构：左侧 Profile 列表，右侧当前 Profile 基础状态，顶部服务状态与明确操作；
 2. Profile 列表按稳定 id 排序，当前选择只是 UI 状态，不改变启用或路由优先级；
@@ -145,6 +152,17 @@ rename/lock 真机行为进入 `0.6-G` 候选矩阵。
 
 退出条件：形成可单测的 MainWindowState、ProfileListItem、DraftState、CommandResult 和 UI preference
 schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
+
+实现结果：
+
+- `src/presentation/main_window_contract.*` 提供共享值类型、稳定命令/结果/错误名、服务操作状态、
+  stable id 排序和纯 UI Profile 选择；
+- 关闭合同区分 Hide、Destroy、Apply/Discard 后关闭、Cancel 与 command busy；切换到轻量模式时，
+  clean hidden cache 立即销毁，dirty cache 必须先决策；
+- `ccs-trans.ui/v1` 固定为严格 JSON schema，当前唯一字段是
+  `main_window.lightweight_mode`，默认 `true`，路径固定为 `state/ui.json`；
+- schema codec 有 64 KiB 上限并拒绝未知字段、重复 key、错误类型和未知版本，解析失败不修改旧值；
+- 本阶段没有实现偏好文件 I/O、ViewModel 或平台窗口；原子 store 和异步 command 仍属于 `0.6-B`。
 
 #### 0.6-B：共享 presentation 与命令层
 

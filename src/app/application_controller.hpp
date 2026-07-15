@@ -1,9 +1,9 @@
 #pragma once
 
+#include "app/application_status.hpp"
 #include "config/app_paths.hpp"
 #include "runtime/runtime_snapshot.hpp"
 
-#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -23,26 +23,6 @@ bool load_runtime_snapshot(
     const RuntimeLoadOptions& options,
     RuntimeSnapshotPtr& snapshot,
     std::string& error);
-
-enum class ApplicationState {
-    Stopped,
-    Starting,
-    Running,
-    Reloading,
-    Stopping,
-    Faulted,
-    Shutdown,
-};
-
-struct ApplicationStatus {
-    ApplicationState state = ApplicationState::Stopped;
-    std::string listener_host;
-    std::uint16_t listener_port = 0;
-    std::string last_error;
-    int last_exit_code = 0;
-};
-
-const char* application_state_name(ApplicationState state);
 
 class ApplicationController {
 public:
