@@ -114,6 +114,12 @@ public:
         return "custom_rule";
     }
 
+    const ccs::RuleDescriptor& descriptor() const noexcept override {
+        static const ccs::RuleDescriptor value{
+            "custom_rule", "rule.custom_rule", false, {}};
+        return value;
+    }
+
     bool compile(
         const ccs::RuleDefinition& definition,
         const ccs::ProtocolHandler&,
@@ -127,6 +133,34 @@ public:
         compiled = std::make_shared<const NoopRule>(definition.id.value);
         return true;
     }
+};
+
+class DescriptorFactory final : public ccs::RuleFactory {
+public:
+    DescriptorFactory(std::string type, ccs::RuleDescriptor descriptor)
+        : type_(std::move(type))
+        , descriptor_(std::move(descriptor)) {}
+
+    std::string_view type() const noexcept override {
+        return type_;
+    }
+
+    const ccs::RuleDescriptor& descriptor() const noexcept override {
+        return descriptor_;
+    }
+
+    bool compile(
+        const ccs::RuleDefinition&,
+        const ccs::ProtocolHandler&,
+        std::shared_ptr<const ccs::CompiledRule>&,
+        std::string& error) const override {
+        error = "descriptor-only test factory";
+        return false;
+    }
+
+private:
+    std::string type_;
+    ccs::RuleDescriptor descriptor_;
 };
 
 std::string read_file(const std::filesystem::path& path) {
@@ -229,6 +263,102 @@ void test_registry_and_compile_validation() {
             && error.find("protocol handler") != std::string::npos
             && untouched != nullptr,
         "failed compile leaves output pipeline unchanged");
+}
+
+void test_rule_descriptors() {
+    const auto registry = ccs::builtin_rule_registry();
+    const std::vector<ccs::RuleDescriptor> expected = {
+        {
+            "remove_field",
+            "rule.remove_field",
+            false,
+            {{"path", "rule.option.path", ccs::RuleOptionValueType::JsonPointer, true, 0}},
+        },
+        {
+            "remove_tool",
+            "rule.remove_tool",
+            true,
+            {{"tool", "rule.option.tool", ccs::RuleOptionValueType::String, true, 0}},
+        },
+        {
+            "set_field",
+            "rule.set_field",
+            false,
+            {
+                {"path", "rule.option.path", ccs::RuleOptionValueType::JsonPointer, true, 0},
+                {"value", "rule.option.value", ccs::RuleOptionValueType::JsonValue, true, 1},
+            },
+        },
+    };
+    require(registry->descriptors() == expected,
+        "builtin Rule descriptors are complete, exact, and sorted by stable type");
+    require(registry->find_descriptor("remove_tool") != nullptr
+            && *registry->find_descriptor("remove_tool") == expected[1]
+            && registry->find_descriptor("future_rule") == nullptr,
+        "Rule descriptors support stable lookup without exposing factories");
+    require(std::string(ccs::rule_option_value_type_name(ccs::RuleOptionValueType::String))
+                == "string"
+            && std::string(ccs::rule_option_value_type_name(ccs::RuleOptionValueType::JsonValue))
+                == "json_value"
+            && std::string(ccs::rule_option_value_type_name(ccs::RuleOptionValueType::JsonPointer))
+                == "json_pointer"
+            && std::string(ccs::rule_option_value_type_name(
+                   static_cast<ccs::RuleOptionValueType>(999)))
+                == "unknown",
+        "Rule option value types have stable serialization names");
+
+    const auto rejected = [](
+                              std::string type,
+                              ccs::RuleDescriptor descriptor,
+                              std::string_view expected_error) {
+        ccs::RuleRegistry candidate;
+        std::string error;
+        require(!candidate.register_factory(
+                    std::make_shared<const DescriptorFactory>(
+                        std::move(type), std::move(descriptor)),
+                    error)
+                && error.find(expected_error) != std::string::npos,
+            "invalid Rule descriptor was not rejected: " + error);
+    };
+    rejected(
+        "custom_rule",
+        {"other_rule", "rule.custom_rule", false, {}},
+        "does not match");
+    rejected(
+        "custom_rule",
+        {"custom_rule", "Rule Custom", false, {}},
+        "display name key");
+    rejected(
+        "custom_rule",
+        {
+            "custom_rule",
+            "rule.custom_rule",
+            false,
+            {
+                {"value", "rule.option.value", ccs::RuleOptionValueType::String, true, 0},
+                {"value", "rule.option.other", ccs::RuleOptionValueType::String, false, 1},
+            },
+        },
+        "duplicate option");
+    rejected(
+        "custom_rule",
+        {
+            "custom_rule",
+            "rule.custom_rule",
+            false,
+            {{"value", "rule.option.value", ccs::RuleOptionValueType::String, true, 1}},
+        },
+        "not contiguous");
+    rejected(
+        "custom_rule",
+        {
+            "custom_rule",
+            "rule.custom_rule",
+            false,
+            {{"value", "rule.option.value",
+                static_cast<ccs::RuleOptionValueType>(999), true, 0}},
+        },
+        "value type");
 }
 
 void test_runtime_compiler_rule_registry_snapshot() {
@@ -509,6 +639,7 @@ void test_remove_tool_fixture() {
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"registry and compile validation", test_registry_and_compile_validation},
+        {"Rule descriptors", test_rule_descriptors},
         {"runtime compiler rule registry snapshot", test_runtime_compiler_rule_registry_snapshot},
         {"pipeline parse order and rollback", test_pipeline_parse_order_and_rollback},
         {"JSON Pointer semantics", test_json_pointer_semantics},

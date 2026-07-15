@@ -4,7 +4,7 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | `0.5.0` 发行基线 + `0.6-A/B` 共享层 + `0.6-C/D` Windows/macOS 主窗口 |
+| 实现基线 | `0.5.0` 发行基线 + `0.6-A` 至 `0.6-F` 功能实现；`0.6-G` 候选验证中 |
 | 当前发行版 | `0.5.0-Windows-x64`；`0.5.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -126,7 +126,7 @@ CLI `run` 与 tray 的服务所有权冲突由 listener 独占绑定报告。这
 ## 主窗口 Presentation 合同
 
 `0.6-A` 建立跨平台主窗口合同，`0.6-B` 实现共享 ViewModel，`0.6-C/D` 已分别接入
-Win32 与 AppKit view。`MainWindowState` 聚合
+Win32 与 AppKit view，`0.6-E` 完成 Profile 管理闭环。`MainWindowState` 聚合
 `ApplicationStatus`、按 stable id 排序的 `ProfileListItem`、纯 UI selection、`DraftState`、
 最近命令结果和轻量模式。该合同只携带 C++ 值类型，不暴露 HWND、NSObject、JSON DOM、
 SQLite handle 或 mutable runtime 对象。
@@ -171,6 +171,13 @@ platform view
 并执行完整 config/protocol/rule/runtime 校验，成功后才替换 draft。Apply 顺序固定为 validate、
 repository commit、运行服务 reload/restart；保存成功但 runtime 应用失败时保持
 `SavedPendingRuntimeApply`，并根据 controller 最终是 Running 还是 Faulted 提供 Reload 或 Start。
+
+Profile 列表项还携带总 Rule 数与 enabled Rule 数。Profile readiness 的无效路径、未知 Protocol
+和 Rule 编译错误始终保留所属 Profile id。GUI 与 CLI 并发修改仍由 ConfigStore source revision
+保护：旧 GUI Apply 返回 `RepositoryStale` 且保留 dirty draft，不会覆盖外部写入。独立的
+`ReloadDraft` 命令从磁盘重建编辑快照；dirty 时必须显式选择 Discard 或 Cancel，不能静默覆盖。
+重载尽量保留仍存在的 stable selection，否则选择排序后的第一个 Profile。服务 `ReloadService`
+只应用已保存配置，与 `ReloadDraft` 的编辑恢复职责严格分开。
 
 ViewModel 的 update handler 通过平台注入 dispatcher 回到 UI 线程。订阅 generation 让窗口注销后
 已排队 callback 自动失效，适配轻量模式的反复销毁。dispatcher 或 view callback 异常与 command
@@ -306,6 +313,13 @@ remove_field(path)
 remove_tool(tool)
 ```
 
+`0.6-F` 为上述三个既有 Rule 冻结平台无关 descriptor，不增加推测性的 Rule 类型。
+`RuleDescriptor` 提供稳定 type、显示名 key、是否依赖 Protocol 专用布局和按顺序排列的 option；
+`RuleOptionDescriptor` 提供 option 名、显示名 key、`string`/`json_value`/`json_pointer` 值类型、
+required 与 order。registry 在 factory 注册时拒绝类型错配、非法 key、重复 option、非连续顺序
+和未知值类型，并提供稳定排序枚举及按 type 查询。descriptor 只服务配置编译与编辑界面，不进入
+每请求 Rule 执行热路径，也不改变 `ccs-trans.config/v2`。
+
 Generic Rule 使用 RFC 6901 JSON Pointer。目标必须已经存在，不创建中间对象；array
 index 严格拒绝 `-`、前导零、非数字和越界。`set_field` 允许空 pointer 替换 root，
 `remove_field` 禁止删除 root。
@@ -439,7 +453,8 @@ benchmark 输出或临时目录。
 7. ApplicationController 启停/reload/端口冲突/shutdown，以及 HostPlatform 默认配置和
    fake startup registry 单测；
 8. Windows tray control executor/单实例单测，以及真实 GUI 子进程的自动启动、主窗口/Profile
-   draft、普通/轻量生命周期、Start/Stop/Reload、第二实例、通知区图标、日志 drain 和退出集成测试；
+   draft、Rule 摘要、CLI/GUI stale Apply 与 Reload Draft、普通/轻量生命周期、Start/Stop/Reload、
+   第二实例、通知区图标、日志 drain 和退出集成测试；
 9. Windows 候选 ZIP 的固定白名单、双 executable hash、CLI/资源版本与解压后 tray
    生命周期验证；
 10. Windows 11 24H2 VM 的 startup/system proxy、四档 DPI、主题、睡眠唤醒、Explorer
@@ -450,9 +465,10 @@ benchmark 输出或临时目录。
     process proxy direct/HTTP/HTTPS CONNECT/ALL_PROXY/NO_PROXY/no-fallback 矩阵；
 13. macOS AppKit host 的 Unicode/空格 home、自动 service、单实例通知、SIGTERM drain，以及
     正式文件名 ad-hoc 固定白名单 ZIP 的签名校验、解包 CLI/menu smoke。
-14. macOS AppKit 主窗口的 Profile draft、dirty close、普通/轻量生命周期、第二实例激活、
-    Retina/主题/键盘/accessibility probe、100 次资源生命周期、pending Quit、Start/Stop/Reload，
-    以及窗口循环期间 `desktop-16` 的内容、顺序、长度、结束标记和零上游断连。
+14. macOS AppKit 主窗口的 Profile draft、Rule 摘要、CLI/GUI stale Apply 与 Reload Draft、dirty
+    close、普通/轻量生命周期、第二实例激活、Retina/主题/键盘/accessibility probe、100 次资源
+    生命周期、pending Quit、Start/Stop/Reload，以及窗口循环期间 `desktop-16` 的内容、顺序、
+    长度、结束标记和零上游断连。
 
 当前边界：
 
@@ -462,13 +478,17 @@ benchmark 输出或临时目录。
   `0.5.0-Windows-x64` 已发布并完成项目范围验收。Defender/SmartScreen 未评估且 EXE 未做
   Authenticode 签名；Explorer 恢复初期的新 tray 短重试窗口与系统会话结束日志不保证完整
   是已归档限制；
-- Windows `0.6-C` 原生主窗口已接入共享 presentation/editing/controller，普通/轻量窗口生命周期、
-  基础 Profile 管理、两轮各 100 次资源压力和窗口抖动期间 `desktop-16` 已通过；它仍是未发布的
-  `0.6.0` 开发状态，不改变当前源码与发行版本号；
+- Windows `0.6-C/E/F` 候选已接入 Profile Rule 摘要、显式 Reload Draft 和 CLI/GUI stale 防覆盖；
+  两个全新目录分别完成 81/81 Release 与 warnings-as-errors clean build、各 16/16 CTest，shared
+  integration 与两套 tray GUI integration 通过。两轮各 100 次资源压力和窗口抖动期间
+  `desktop-16` 仍通过；当前仍是未发布候选，不改变源码与发行版本号；
 - macOS `0.6-D` 原生 AppKit 主窗口已接入同一共享层和 menu host，普通/轻量窗口生命周期、基础
   Profile 管理、100 次 window/controller 资源压力、pending Quit 和窗口循环期间 `desktop-16`
   已通过；Release 与 warnings-as-errors 均 14/14 CTest 通过。VoiceOver 实际语音会话未执行，当前
   自动化只验证 accessibility labels；
+- `0.6-E/F` 改动了共享 presentation/rule 合同与 AppKit view，因此上述 macOS `0.6-D` 证据不能
+  替代最终候选复验；必须对同一候选 commit 重新执行 clean build、CTest、shared/proxy/menu
+  integration、资源循环与发行包验证后才能关闭 `0.6-G`；
 - macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
   图标和打包脚本已实现，`0.5.0-macOS-arm64` 已发布。正式 ZIP 按策略使用 ad-hoc 签名，
   不需要 Developer ID 或公证，也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整

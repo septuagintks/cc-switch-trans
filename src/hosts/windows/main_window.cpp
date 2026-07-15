@@ -336,7 +336,7 @@ bool WindowsMainWindow::create_controls(std::string& error) {
         WC_STATICW,
         L"",
         SS_LEFT | SS_EDITCONTROL,
-        0);
+        kMainProfileStatusId);
     footer_separator_ = create_control(0, WC_STATICW, L"", SS_ETCHEDHORZ, 0);
     command_status_ = create_control(
         0,
@@ -344,6 +344,8 @@ bool WindowsMainWindow::create_controls(std::string& error) {
         L"",
         SS_LEFT | SS_CENTERIMAGE | SS_ENDELLIPSIS,
         0);
+    reload_draft_button_ = create_control(
+        0, WC_BUTTONW, L"Reload Draft", BS_PUSHBUTTON, kMainReloadDraftId);
     apply_button_ = create_control(
         0, WC_BUTTONW, L"Apply", BS_DEFPUSHBUTTON, kMainApplyId);
     discard_button_ = create_control(
@@ -362,7 +364,7 @@ bool WindowsMainWindow::create_controls(std::string& error) {
         instance_,
         nullptr);
 
-    const std::array<HWND, 24> required = {
+    const std::array<HWND, 25> required = {
         status_text_,
         listener_text_,
         start_button_,
@@ -386,6 +388,7 @@ bool WindowsMainWindow::create_controls(std::string& error) {
         profile_status_,
         footer_separator_,
         command_status_,
+        reload_draft_button_,
         apply_button_,
     };
     if (std::any_of(required.begin(), required.end(), [](HWND control) {
@@ -423,6 +426,9 @@ bool WindowsMainWindow::create_controls(std::string& error) {
     add_tooltip(add_profile_button_, L"Create a disabled Profile draft");
     add_tooltip(remove_profile_button_, L"Remove the selected Profile from the draft");
     add_tooltip(rename_profile_button_, L"Rename the selected Profile in the draft");
+    add_tooltip(
+        reload_draft_button_,
+        L"Reload Profile configuration from disk; unsaved changes require confirmation");
     create_fonts();
     apply_fonts();
     if (error_brush_ == nullptr) {
@@ -477,7 +483,7 @@ void WindowsMainWindow::destroy_fonts() noexcept {
 }
 
 void WindowsMainWindow::apply_fonts() {
-    const std::array<HWND, 21> normal_controls = {
+    const std::array<HWND, 22> normal_controls = {
         status_text_,
         listener_text_,
         start_button_,
@@ -498,6 +504,7 @@ void WindowsMainWindow::apply_fonts() {
         readiness_value_,
         profile_status_,
         command_status_,
+        reload_draft_button_,
         apply_button_,
     };
     for (const auto control : normal_controls) {
@@ -644,6 +651,7 @@ void WindowsMainWindow::layout_controls() {
     MoveWindow(footer_separator_, margin, height - footer_height + scale(8), width - margin * 2, scale(2), TRUE);
     const int footer_y = height - scale(43);
     const int action_width = scale(88);
+    const int reload_draft_width = scale(112);
     MoveWindow(discard_button_, width - margin - action_width, footer_y, action_width, button_height, TRUE);
     MoveWindow(
         apply_button_,
@@ -653,10 +661,18 @@ void WindowsMainWindow::layout_controls() {
         button_height,
         TRUE);
     MoveWindow(
+        reload_draft_button_,
+        width - margin - action_width * 2 - reload_draft_width - gap * 2,
+        footer_y,
+        reload_draft_width,
+        button_height,
+        TRUE);
+    MoveWindow(
         command_status_,
         margin,
         footer_y,
-        std::max(0, width - margin * 2 - action_width * 2 - gap * 2),
+        std::max(0,
+            width - margin * 2 - action_width * 2 - reload_draft_width - gap * 3),
         button_height,
         TRUE);
 }
@@ -728,7 +744,13 @@ void WindowsMainWindow::render_profile_details() {
         : std::wstring{L"Not configured"};
     SetWindowTextW(protocol_value_, protocol.c_str());
     SetWindowTextW(readiness_value_, readiness_text(profile->readiness));
-    SetWindowTextW(profile_status_, utf8_to_wide(profile->status_detail).c_str());
+    std::wstring detail = L"Rules: "
+        + std::to_wstring(profile->enabled_rule_count) + L" enabled / "
+        + std::to_wstring(profile->rule_count) + L" total";
+    if (!profile->status_detail.empty()) {
+        detail += L"\r\n\r\n" + utf8_to_wide(profile->status_detail);
+    }
+    SetWindowTextW(profile_status_, detail.c_str());
 }
 
 void WindowsMainWindow::render_command_status() {
@@ -772,6 +794,9 @@ void WindowsMainWindow::update_enabled_states() {
     EnableWindow(rename_profile_edit_, !pending && has_profile);
     EnableWindow(rename_profile_button_, !pending && has_profile);
     EnableWindow(enabled_checkbox_, !pending && has_profile);
+    EnableWindow(
+        reload_draft_button_,
+        !pending && state_->draft.loaded() && !state_->draft.busy());
     EnableWindow(apply_button_, !pending && state_->draft.dirty());
     EnableWindow(discard_button_, !pending && state_->draft.dirty());
 }
@@ -853,6 +878,28 @@ void WindowsMainWindow::handle_command(int id, int notification_code) {
     case kMainApplyId:
         if (notification_code == BN_CLICKED) {
             submit({MainWindowCommand::ApplyDraft});
+        }
+        break;
+    case kMainReloadDraftId:
+        if (notification_code == BN_CLICKED) {
+            if (!state_->draft.dirty()) {
+                submit({MainWindowCommand::ReloadDraft});
+                break;
+            }
+            if (MessageBoxW(
+                    window_,
+                    L"Discard unsaved Profile changes and reload the configuration from disk?",
+                    L"Reload Profile Configuration",
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
+                == IDYES) {
+                submit({
+                    MainWindowCommand::ReloadDraft,
+                    {},
+                    {},
+                    false,
+                    UnsavedChangesDecision::Discard,
+                });
+            }
         }
         break;
     case kMainDiscardId:
@@ -1139,6 +1186,7 @@ LRESULT WindowsMainWindow::handle_message(
         profile_status_ = nullptr;
         footer_separator_ = nullptr;
         command_status_ = nullptr;
+        reload_draft_button_ = nullptr;
         apply_button_ = nullptr;
         discard_button_ = nullptr;
         rendered_profile_id_.clear();

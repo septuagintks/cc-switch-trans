@@ -17,3 +17,5 @@ inline constexpr int kMainLightweightId = 2010;
 inline constexpr int kMainServiceStartId = 2011;
 inline constexpr int kMainServiceStopId = 2012;
 inline constexpr int kMainServiceReloadId = 2013;
+inline constexpr int kMainReloadDraftId = 2014;
+inline constexpr int kMainProfileStatusId = 2015;

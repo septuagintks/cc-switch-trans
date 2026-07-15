@@ -229,6 +229,19 @@ public:
         return "set_field";
     }
 
+    const RuleDescriptor& descriptor() const noexcept override {
+        static const RuleDescriptor value{
+            "set_field",
+            "rule.set_field",
+            false,
+            {
+                {"path", "rule.option.path", RuleOptionValueType::JsonPointer, true, 0},
+                {"value", "rule.option.value", RuleOptionValueType::JsonValue, true, 1},
+            },
+        };
+        return value;
+    }
+
     bool compile(
         const RuleDefinition& definition,
         const ProtocolHandler& protocol,
@@ -260,6 +273,18 @@ class RemoveFieldRuleFactory final : public RuleFactory {
 public:
     std::string_view type() const noexcept override {
         return "remove_field";
+    }
+
+    const RuleDescriptor& descriptor() const noexcept override {
+        static const RuleDescriptor value{
+            "remove_field",
+            "rule.remove_field",
+            false,
+            {
+                {"path", "rule.option.path", RuleOptionValueType::JsonPointer, true, 0},
+            },
+        };
+        return value;
     }
 
     bool compile(

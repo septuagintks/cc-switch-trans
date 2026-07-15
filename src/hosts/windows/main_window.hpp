@@ -135,6 +135,7 @@ private:
     HWND profile_status_ = nullptr;
     HWND footer_separator_ = nullptr;
     HWND command_status_ = nullptr;
+    HWND reload_draft_button_ = nullptr;
     HWND apply_button_ = nullptr;
     HWND discard_button_ = nullptr;
     HWND tooltip_ = nullptr;

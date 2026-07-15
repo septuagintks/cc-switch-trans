@@ -176,7 +176,7 @@ cc-switch-trans/
 | `src/presentation` | 平台无关主窗口合同、异步 ViewModel、Profile draft 命令、`ccs-trans.ui/v1` codec 与独立原子 store |
 | `src/protocols` | Responses/Chat/Messages descriptor、校验和本地错误 envelope |
 | `src/routing` | immutable RuntimeProfile 与 exact RouteTable |
-| `src/rules` | Rule factory、共享 DOM pipeline、JSON Pointer 与 `remove_tool` |
+| `src/rules` | Rule factory、平台无关 descriptor、共享 DOM pipeline、JSON Pointer 与 `remove_tool` |
 | `src/runtime` | 不可变 RuntimeSnapshot 的聚合类型 |
 | `src/server` | 单 listener、FIFO worker、generation、路由/Rule/transport 编排 |
 | `src/transport` | 跨平台 upstream 接口、header policy 与平台网络实现 |
@@ -263,8 +263,9 @@ ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Win
 只编译进 `ccs-trans-tray.exe`；`main_window.*` 持有 Win32 top-level/child HWND 和 DPI 布局，
 `tray_app.*` 持有宿主生命周期并把共享 ViewModel callback 派发回 UI thread。`ApplicationController`、
 control executor、presentation 与 HostPlatform 接口编译进共享 core，CLI 已复用共享 runtime loader。
-`run_tray_integration.py` 使用隔离 instance suffix 自动验证基础 Profile 编辑、dirty close、普通/轻量
-窗口、第二实例、两轮各 100 次资源生命周期，以及窗口抖动期间 `desktop-16` 完整回传。
+`run_tray_integration.py` 使用隔离 instance suffix 自动验证基础 Profile 编辑、Rule 摘要、CLI/GUI
+stale Apply 与显式 Reload Draft、dirty close、普通/轻量窗口、第二实例、两轮各 100 次资源生命周期，
+以及窗口抖动期间 `desktop-16` 完整回传。
 
 macOS 当前实现：
 
@@ -300,7 +301,8 @@ ICNS 都从它派生到 build/package directory，不能反向编辑或提交生
 普通/轻量窗口生命周期。`menu_app.mm` 继续唯一持有 `ApplicationController`、共享 control executor、
 ViewModel、menu/status item、distributed notification 与退出编排；窗口不创建第二套 runtime。
 `run_macos_menu_integration.py` 通过隔离 `HOME` 和仅测试启用的 scoped notification 自动验证窗口
-功能、100 次资源生命周期、pending Quit，以及窗口循环期间 `desktop-16` 精确回传。
+功能、Rule 摘要、CLI/GUI stale Apply 与显式 Reload Draft、100 次资源生命周期、pending Quit，
+以及窗口循环期间 `desktop-16` 精确回传。
 
 `package_macos.sh` 生成正式文件名的固定白名单 ZIP，并统一对 CLI 和 `.app` 使用 ad-hoc
 签名。`verify_macos_package.sh` 校验包名、内部 checksum、arm64 slice、strict codesign 和

@@ -81,6 +81,8 @@ struct ProfileListItem {
     std::optional<std::string> protocol;
     ProfileReadiness readiness = ProfileReadiness::Incomplete;
     std::string status_detail;
+    std::size_t rule_count = 0;
+    std::size_t enabled_rule_count = 0;
 
     bool operator==(const ProfileListItem&) const = default;
 };

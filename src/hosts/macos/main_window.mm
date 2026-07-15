@@ -156,8 +156,10 @@ private:
     NSButton* _enabledCheckbox;
     NSTextField* _protocolValue;
     NSTextField* _readinessValue;
+    NSTextField* _rulesValue;
     NSTextField* _profileDetail;
     NSTextField* _commandStatus;
+    NSButton* _reloadDraftButton;
     NSButton* _applyButton;
     NSButton* _discardButton;
     BOOL _updating;
@@ -172,6 +174,7 @@ private:
 - (BOOL)validateLayout:(std::string&)error;
 - (BOOL)validateKeyboard:(std::string&)error;
 - (BOOL)validateRetina:(std::string&)error;
+- (BOOL)validateProfileRuleSummary:(std::string&)error;
 
 @end
 
@@ -292,6 +295,7 @@ private:
     _enabledCheckbox.accessibilityLabel = @"Profile enabled";
     _protocolValue = label(@"No Profile selected", @"Profile protocol");
     _readinessValue = label(@"", @"Profile readiness");
+    _rulesValue = label(@"", @"Profile Rule summary");
     _profileDetail = label(@"", @"Profile validation detail");
     _profileDetail.lineBreakMode = NSLineBreakByWordWrapping;
     _profileDetail.maximumNumberOfLines = 0;
@@ -300,6 +304,7 @@ private:
     NSGridView* detailsGrid = [NSGridView gridViewWithViews:@[
         @[label(@"Protocol", @"Protocol label"), _protocolValue],
         @[label(@"Readiness", @"Readiness label"), _readinessValue],
+        @[label(@"Rules", @"Rules label"), _rulesValue],
         @[label(@"Details", @"Validation details label"), _profileDetail],
     ]];
     detailsGrid.rowSpacing = 12.0;
@@ -328,14 +333,18 @@ private:
 
     _commandStatus = label(@"", @"Command status");
     _commandStatus.lineBreakMode = NSLineBreakByTruncatingTail;
+    _reloadDraftButton = push_button(
+        @"Reload Draft", self, @selector(reloadDraft:), @"Reload Profile configuration from disk");
     _applyButton = push_button(@"Apply", self, @selector(applyDraft:), @"Apply Profile changes");
     _discardButton = push_button(@"Discard", self, @selector(discardDraft:), @"Discard Profile changes");
     NSStackView* footer = [NSStackView stackViewWithViews:@[
-        _commandStatus, _applyButton, _discardButton]];
+        _commandStatus, _reloadDraftButton, _applyButton, _discardButton]];
     footer.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     footer.alignment = NSLayoutAttributeCenterY;
     footer.spacing = 8.0;
     [_commandStatus setContentHuggingPriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_reloadDraftButton setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_applyButton setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -378,7 +387,8 @@ private:
     _profileTable.nextKeyView = _renameField;
     _renameField.nextKeyView = _renameButton;
     _renameButton.nextKeyView = _enabledCheckbox;
-    _enabledCheckbox.nextKeyView = _applyButton;
+    _enabledCheckbox.nextKeyView = _reloadDraftButton;
+    _reloadDraftButton.nextKeyView = _applyButton;
     _applyButton.nextKeyView = _discardButton;
     _discardButton.nextKeyView = _newProfileField;
 }
@@ -492,6 +502,7 @@ private:
         _enabledCheckbox.state = NSControlStateValueOff;
         _protocolValue.stringValue = @"No Profile selected";
         _readinessValue.stringValue = @"";
+        _rulesValue.stringValue = @"";
         _profileDetail.stringValue = @"";
     } else {
         if (utf8_string(_renameField.stringValue) != profile->id) {
@@ -504,6 +515,9 @@ private:
             ? ns_string(*profile->protocol)
             : @"Not configured";
         _readinessValue.stringValue = readiness_text(profile->readiness);
+        _rulesValue.stringValue = [NSString stringWithFormat:@"%zu enabled / %zu total",
+            profile->enabled_rule_count,
+            profile->rule_count];
         _profileDetail.stringValue = ns_string(profile->status_detail);
     }
 
@@ -537,6 +551,7 @@ private:
     _renameField.enabled = !pending && has_profile;
     _renameButton.enabled = !pending && has_profile;
     _enabledCheckbox.enabled = !pending && has_profile;
+    _reloadDraftButton.enabled = !pending && state->draft.loaded() && !state->draft.busy();
     _applyButton.enabled = !pending && state->draft.dirty();
     _discardButton.enabled = !pending && state->draft.dirty();
     _updating = NO;
@@ -568,7 +583,8 @@ private:
         _serviceStatus, _listenerStatus, _startButton, _stopButton, _reloadButton,
         _lightweightCheckbox, _profileTable, _newProfileField, _addButton, _removeButton,
         _renameField, _renameButton, _enabledCheckbox, _protocolValue, _readinessValue,
-        _profileDetail, _commandStatus, _applyButton, _discardButton,
+        _rulesValue, _profileDetail, _commandStatus, _reloadDraftButton, _applyButton,
+        _discardButton,
     ];
     for (NSView* control in required_controls) {
         if (control.accessibilityLabel.length == 0) {
@@ -587,7 +603,7 @@ private:
     }
     NSSet<NSView*>* required = [NSSet setWithArray:@[
         _newProfileField, _addButton, _removeButton, _profileTable, _renameField,
-        _renameButton, _enabledCheckbox, _applyButton, _discardButton,
+        _renameButton, _enabledCheckbox, _reloadDraftButton, _applyButton, _discardButton,
     ]];
     NSMutableSet<NSView*>* visited = [NSMutableSet set];
     NSView* current = _newProfileField;
@@ -609,6 +625,23 @@ private:
     error.clear();
     if (self.window.backingScaleFactor < 2.0) {
         error = "main window is not on a Retina backing scale";
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)validateProfileRuleSummary:(std::string&)error {
+    error.clear();
+    if (_owner == nullptr || _owner->selected_profile() == nullptr) {
+        error = "Profile Rule summary probe requires a selected Profile";
+        return NO;
+    }
+    const auto* profile = _owner->selected_profile();
+    NSString* expected = [NSString stringWithFormat:@"%zu enabled / %zu total",
+        profile->enabled_rule_count,
+        profile->rule_count];
+    if (![_rulesValue.stringValue isEqualToString:expected]) {
+        error = "Profile Rule summary does not match the shared snapshot";
         return NO;
     }
     return YES;
@@ -704,6 +737,31 @@ private:
 - (void)applyDraft:(id)sender {
     (void)sender;
     if (_owner != nullptr) _owner->submit({ccs::MainWindowCommand::ApplyDraft});
+}
+
+- (void)reloadDraft:(id)sender {
+    (void)sender;
+    if (_owner == nullptr) return;
+    const auto state = _owner->state();
+    if (state == nullptr || !state->draft.dirty()) {
+        _owner->submit({ccs::MainWindowCommand::ReloadDraft});
+        return;
+    }
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"Reload Profile Configuration?";
+    alert.informativeText = @"Discard unsaved Profile changes and reload the configuration from disk?";
+    [alert addButtonWithTitle:@"Discard and Reload"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] == NSAlertFirstButtonReturn && _owner != nullptr) {
+        _owner->submit({
+            ccs::MainWindowCommand::ReloadDraft,
+            {},
+            {},
+            false,
+            ccs::UnsavedChangesDecision::Discard,
+        });
+    }
 }
 
 - (void)discardDraft:(id)sender {
@@ -957,6 +1015,9 @@ bool MacMainWindow::Impl::run_test_command(std::string_view command, std::string
     if (command == "probe:retina") {
         return controller_ != nil && [controller_ validateRetina:error];
     }
+    if (command == "probe:profile-rule-summary") {
+        return controller_ != nil && [controller_ validateProfileRuleSummary:error];
+    }
     if (command == "resize:min") {
         if (controller_ == nil) {
             error = "resize:min requires an existing main window";
@@ -1028,6 +1089,16 @@ bool MacMainWindow::Impl::run_test_command(std::string_view command, std::string
         submit({MainWindowCommand::ApplyDraft});
     } else if (command == "discard") {
         submit({MainWindowCommand::DiscardDraft});
+    } else if (command == "reload-draft") {
+        submit({MainWindowCommand::ReloadDraft});
+    } else if (command == "reload-draft:discard") {
+        submit({
+            MainWindowCommand::ReloadDraft,
+            {},
+            {},
+            false,
+            UnsavedChangesDecision::Discard,
+        });
     } else if (command == "start") {
         submit({MainWindowCommand::StartService});
     } else if (command == "stop") {

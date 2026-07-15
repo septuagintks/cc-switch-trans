@@ -42,6 +42,8 @@ MAIN_RENAME_PROFILE_EDIT = 2005
 MAIN_RENAME_PROFILE = 2006
 MAIN_PROFILE_ENABLED = 2007
 MAIN_APPLY = 2008
+MAIN_RELOAD_DRAFT = 2014
+MAIN_PROFILE_STATUS = 2015
 IDYES = 6
 IDNO = 7
 VK_HOME = 0x24
@@ -571,6 +573,9 @@ def main() -> int:
         )
         run_cli(cli, env, "profile", "set", "tray-test", "upstream.request-path", "/v1/responses")
         run_cli(cli, env, "profile", "enable", "tray-test")
+        run_cli(cli, env, "rule", "add", "tray-test", "remove-image", "remove_tool")
+        run_cli(cli, env, "rule", "set", "tray-test", "remove-image", "tool", "image_gen")
+        run_cli(cli, env, "rule", "enable", "tray-test", "remove-image")
 
         startup_backup = read_startup_value() if args.confirm_startup_mutation else None
         if args.confirm_startup_mutation:
@@ -667,6 +672,12 @@ def main() -> int:
             reused = wait_for_window(main_window_class, tray_window_title, True)
             require(reused == main_window, "normal mode did not reuse the hidden main window")
             wait_for_visibility(reused, True)
+            require(
+                control_text(reused, MAIN_PROFILE_STATUS).startswith(
+                    "Rules: 1 enabled / 1 total"
+                ),
+                "Windows Profile detail did not render the Rule summary",
+            )
 
             # Profile draft create, rename, validation, Apply, checkbox, and Remove.
             set_control_text(reused, MAIN_NEW_PROFILE_EDIT, "gui-draft")
@@ -727,6 +738,37 @@ def main() -> int:
             result = wait_for_view_command(host_log, "apply_draft", before)
             require(result.get("outcome") == "succeeded", "GUI removal Apply failed")
             require("gui-renamed" not in read_config(home)["profiles"], "removed GUI Profile persisted")
+
+            # A CLI write after the GUI loaded its repository must make Apply stale.
+            # Reload Draft requires an explicit discard and then exposes the CLI state.
+            set_control_text(reused, MAIN_NEW_PROFILE_EDIT, "z-gui-stale")
+            before = view_command_count(host_log, "create_profile")
+            click_control(reused, MAIN_ADD_PROFILE)
+            result = wait_for_view_command(host_log, "create_profile", before)
+            require(result.get("outcome") == "succeeded", "stale-test GUI create failed")
+            run_cli(cli, env, "profile", "create", "cli-external")
+            before = view_command_count(host_log, "apply_draft")
+            click_control(reused, MAIN_APPLY)
+            result = wait_for_view_command(host_log, "apply_draft", before)
+            require(
+                result.get("outcome") == "failed"
+                and result.get("error") == "repository_stale",
+                f"GUI Apply did not reject an external CLI write: {result}",
+            )
+            current_config = read_config(home)["profiles"]
+            require(
+                "cli-external" in current_config and "z-gui-stale" not in current_config,
+                "stale GUI Apply overwrote or lost the CLI state",
+            )
+            before = view_command_count(host_log, "reload_draft")
+            click_control_async(reused, MAIN_RELOAD_DRAFT)
+            answer_dialog("Reload Profile Configuration", IDYES)
+            result = wait_for_view_command(host_log, "reload_draft", before)
+            require(result.get("outcome") == "succeeded", f"Reload Draft failed: {result}")
+            require(
+                control_text(reused, MAIN_RENAME_PROFILE_EDIT) == "cli-external",
+                "Reload Draft did not publish the external Profile or stable first selection",
+            )
 
             # Re-enable lightweight mode while visible; close must then destroy.
             before = view_command_count(host_log, "set_lightweight_mode")

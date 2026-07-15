@@ -11,6 +11,18 @@ namespace ccs {
 
 namespace {
 
+std::string with_profile_context(
+    const std::string& profile_id,
+    std::string detail) {
+    const auto prefix = "profile " + profile_id;
+    if (detail == prefix
+        || detail.starts_with(prefix + " ")
+        || detail.starts_with(prefix + ":")) {
+        return detail;
+    }
+    return prefix + ": " + detail;
+}
+
 ProfileListItem make_profile_list_item(
     const std::string& profile_id,
     const ProfileDefinition& profile,
@@ -19,6 +31,11 @@ ProfileListItem make_profile_list_item(
     ProfileListItem item;
     item.id = profile_id;
     item.enabled = profile.enabled;
+    item.rule_count = profile.rules.size();
+    item.enabled_rule_count = static_cast<std::size_t>(std::count_if(
+        profile.rules.begin(), profile.rules.end(), [](const RuleDefinition& rule) {
+            return rule.enabled;
+        }));
     if (profile.protocol) {
         item.protocol = profile.protocol->value;
     }
@@ -26,30 +43,31 @@ ProfileListItem make_profile_list_item(
     std::string error;
     if (!validate_profile_definition(profile_id, profile, false, error)) {
         item.readiness = ProfileReadiness::Invalid;
-        item.status_detail = std::move(error);
+        item.status_detail = with_profile_context(profile_id, std::move(error));
         return item;
     }
     if (!validate_profile_definition(profile_id, profile, true, error)) {
         item.readiness = ProfileReadiness::Incomplete;
-        item.status_detail = std::move(error);
+        item.status_detail = with_profile_context(profile_id, std::move(error));
         return item;
     }
 
     const auto handler = protocols->find(profile.protocol->value);
     if (!handler) {
         item.readiness = ProfileReadiness::Invalid;
-        item.status_detail = "unknown protocol: " + profile.protocol->value;
+        item.status_detail = with_profile_context(
+            profile_id, "unknown protocol: " + profile.protocol->value);
         return item;
     }
     if (!protocols->validate_profile(handler, profile_id, profile, error)) {
         item.readiness = ProfileReadiness::Invalid;
-        item.status_detail = std::move(error);
+        item.status_detail = with_profile_context(profile_id, std::move(error));
         return item;
     }
     std::shared_ptr<const CompiledPipeline> pipeline;
     if (!rules->compile_pipeline(profile.rules, handler, pipeline, error)) {
         item.readiness = ProfileReadiness::Invalid;
-        item.status_detail = std::move(error);
+        item.status_detail = with_profile_context(profile_id, std::move(error));
         return item;
     }
     item.readiness = ProfileReadiness::Ready;

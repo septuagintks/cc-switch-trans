@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -234,6 +235,18 @@ ccs::ProfileDefinition complete_profile(const std::string& prefix) {
     return profile;
 }
 
+ccs::RuleDefinition enabled_rule(
+    std::string id,
+    std::string type,
+    std::map<std::string, nlohmann::json> options) {
+    ccs::RuleDefinition rule;
+    rule.id.value = std::move(id);
+    rule.enabled = true;
+    rule.type = std::move(type);
+    rule.options = std::move(options);
+    return rule;
+}
+
 ccs::MainWindowStateSnapshot wait_for_result(
     ccs::MainWindowViewModel& view_model,
     ccs::MainWindowCommand command) {
@@ -283,7 +296,14 @@ struct Fixture {
 
 void test_load_profile_commands_and_stopped_apply() {
     Fixture fixture;
-    fixture.repository.mutable_document().profiles.emplace("zeta", complete_profile("/zeta"));
+    auto zeta = complete_profile("/zeta");
+    zeta.rules.push_back(enabled_rule(
+        "remove-image", "remove_tool", {{"tool", "image_gen"}}));
+    auto disabled_rule = enabled_rule(
+        "remove-field", "remove_field", {{"path", "/metadata"}});
+    disabled_rule.enabled = false;
+    zeta.rules.push_back(std::move(disabled_rule));
+    fixture.repository.mutable_document().profiles.emplace("zeta", std::move(zeta));
     fixture.repository.mutable_document().profiles.emplace("alpha", complete_profile("/alpha"));
     fixture.preferences.preferences_.lightweight_mode = false;
 
@@ -295,6 +315,9 @@ void test_load_profile_commands_and_stopped_apply() {
             && state->profiles[0].id == "alpha"
             && state->profiles[1].id == "zeta",
         "LoadDraft applies preferences and stable Profile ordering");
+    require(state->profiles[1].rule_count == 2
+            && state->profiles[1].enabled_rule_count == 1,
+        "Profile list exposes total and enabled Rule counts");
 
     state = submit_and_wait(
         fixture.view_model,
@@ -369,6 +392,36 @@ void test_stale_save_and_runtime_reload_recovery() {
             && !stale.repository.document().profiles.contains("renamed"),
         "stale Apply cannot overwrite repository state");
 
+    stale.repository.mutable_document().profiles.clear();
+    stale.repository.mutable_document().profiles.emplace(
+        "external-alpha", complete_profile("/external-alpha"));
+    stale.repository.mutable_document().profiles.emplace(
+        "external-zeta", complete_profile("/external-zeta"));
+    state = submit_and_wait(stale.view_model, {ccs::MainWindowCommand::ReloadDraft});
+    require(state->last_command->error
+                == ccs::MainWindowError::UnsavedChangesDecisionRequired
+            && state->draft.phase == ccs::DraftPhase::Dirty
+            && ccs::find_profile_list_item(*state, "renamed") != nullptr
+            && ccs::find_profile_list_item(*state, "external-alpha") == nullptr,
+        "Reload Draft never overwrites a dirty GUI draft without an explicit decision");
+    state = submit_and_wait(
+        stale.view_model,
+        {ccs::MainWindowCommand::ReloadDraft, {}, {}, false,
+            ccs::UnsavedChangesDecision::Cancel});
+    require(state->last_command->outcome == ccs::CommandOutcome::Cancelled
+            && ccs::find_profile_list_item(*state, "renamed") != nullptr,
+        "Reload Draft Cancel preserves the stale GUI draft");
+    state = submit_and_wait(
+        stale.view_model,
+        {ccs::MainWindowCommand::ReloadDraft, {}, {}, false,
+            ccs::UnsavedChangesDecision::Discard});
+    require(state->last_command->succeeded()
+            && state->draft.phase == ccs::DraftPhase::Clean
+            && ccs::find_profile_list_item(*state, "renamed") == nullptr
+            && ccs::find_profile_list_item(*state, "external-alpha") != nullptr
+            && state->selected_profile_id == "external-alpha",
+        "explicit Reload Draft Discard loads external state and selects the first stable Profile");
+
     Fixture running;
     running.repository.mutable_document().profiles.emplace("first", complete_profile("/first"));
     running.application.set_state(ccs::ApplicationState::Running);
@@ -413,6 +466,68 @@ void test_stale_save_and_runtime_reload_recovery() {
             && !state->draft.runtime_apply_pending
             && state->application.state == ccs::ApplicationState::Running,
         "Start recovery applies the saved configuration after a fault");
+}
+
+void test_reload_selection_and_profile_validation_details() {
+    Fixture selection;
+    selection.repository.mutable_document().profiles.emplace(
+        "alpha", complete_profile("/alpha"));
+    selection.repository.mutable_document().profiles.emplace(
+        "zeta", complete_profile("/zeta"));
+    (void)submit_and_wait(selection.view_model, {ccs::MainWindowCommand::LoadDraft});
+    auto state = submit_and_wait(
+        selection.view_model,
+        {ccs::MainWindowCommand::SelectProfile, "zeta"});
+    require(state->selected_profile_id == "zeta",
+        "test selected the Profile that must survive reload");
+    selection.repository.mutable_document().profiles.emplace(
+        "middle", complete_profile("/middle"));
+    state = submit_and_wait(selection.view_model, {ccs::MainWindowCommand::ReloadDraft});
+    require(state->last_command->succeeded()
+            && state->selected_profile_id == "zeta"
+            && state->profiles.size() == 3,
+        "Reload Draft preserves a selected stable Profile that still exists");
+
+    Fixture validation;
+    auto unknown_protocol = complete_profile("/unknown");
+    unknown_protocol.enabled = false;
+    unknown_protocol.protocol = ccs::ProtocolId{"future_protocol"};
+    validation.repository.mutable_document().profiles.emplace(
+        "unknown-protocol", std::move(unknown_protocol));
+
+    auto invalid_path = complete_profile("/invalid");
+    invalid_path.enabled = false;
+    invalid_path.local.request_path = "relative/path";
+    validation.repository.mutable_document().profiles.emplace(
+        "invalid-path", std::move(invalid_path));
+
+    auto invalid_rule = complete_profile("/rule");
+    invalid_rule.enabled = false;
+    invalid_rule.rules.push_back(enabled_rule(
+        "future", "future_rule", {}));
+    validation.repository.mutable_document().profiles.emplace(
+        "invalid-rule", std::move(invalid_rule));
+
+    state = submit_and_wait(validation.view_model, {ccs::MainWindowCommand::LoadDraft});
+    for (const auto& profile_id : {"unknown-protocol", "invalid-path", "invalid-rule"}) {
+        const auto* item = ccs::find_profile_list_item(*state, profile_id);
+        require(item != nullptr
+                && item->readiness == ccs::ProfileReadiness::Invalid
+                && item->status_detail.find("profile " + std::string(profile_id))
+                    != std::string::npos,
+            "Profile validation detail identifies its owning Profile: "
+                + std::string(profile_id));
+    }
+    require(ccs::find_profile_list_item(*state, "unknown-protocol")
+                    ->status_detail.find("unknown protocol")
+                != std::string::npos
+            && ccs::find_profile_list_item(*state, "invalid-path")
+                    ->status_detail.find("local.request_path")
+                != std::string::npos
+            && ccs::find_profile_list_item(*state, "invalid-rule")
+                    ->status_detail.find("unknown type")
+                != std::string::npos,
+        "Protocol, path, and Rule failures retain actionable field detail");
 }
 
 void test_duplicate_command_and_callback_invalidation() {
@@ -522,6 +637,7 @@ int main() {
     try {
         test_load_profile_commands_and_stopped_apply();
         test_stale_save_and_runtime_reload_recovery();
+        test_reload_selection_and_profile_validation_details();
         test_duplicate_command_and_callback_invalidation();
         test_preference_failure_preserves_published_value();
         test_route_collision_is_classified_without_mutating_draft();

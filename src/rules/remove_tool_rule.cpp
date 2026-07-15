@@ -109,6 +109,18 @@ public:
         return "remove_tool";
     }
 
+    const RuleDescriptor& descriptor() const noexcept override {
+        static const RuleDescriptor value{
+            "remove_tool",
+            "rule.remove_tool",
+            true,
+            {
+                {"tool", "rule.option.tool", RuleOptionValueType::String, true, 0},
+            },
+        };
+        return value;
+    }
+
     bool compile(
         const RuleDefinition& definition,
         const ProtocolHandler& protocol,

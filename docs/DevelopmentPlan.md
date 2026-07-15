@@ -33,10 +33,11 @@ macOS SDK system libcurl process proxy。发行结论与平台验证证据见：
 
 ## 当前推进状态
 
-`0.6-A` 与 `0.6-B` 已于 2026-07-15 完成，Windows `0.6-C` 与 macOS `0.6-D` 已于
-2026-07-16 完成。当前源码仍报告 `0.5.0`，不在内部开发阶段提前修改发行版本。共享合同、异步
-ViewModel、Profile draft 命令、两阶段 Apply、独立 UI preference store 与两端原生主窗口已经分别
-接入既有 tray/menu 宿主。下一步由 Windows 侧审核并继续 `0.6-E/F/G`。
+`0.6-A` 至 `0.6-F` 已于 2026-07-16 完成功能实现。当前源码仍报告 `0.5.0`，不在候选验证前
+提前修改发行版本。共享合同、异步 ViewModel、Profile draft 命令、两阶段 Apply、独立 UI
+preference store、两端原生主窗口、CLI/GUI stale 防覆盖、显式 Reload Draft 和 Rule descriptor
+均已接入。当前进入 `0.6-G`：Windows 候选基线已通过，待同一 commit 的 macOS 复验、双平台
+长测、打包和版本收口。
 
 ## 0.6.0 前置工作
 
@@ -254,7 +255,7 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 - 当前机器只有 Command Line Tools，`tools/check_stage13_prerequisites.sh` 仅完整 Xcode version 项失败；
   SDK 26.5、Apple Clang 21、arm64 与 system libcurl probe 通过。源码版本仍为 `0.5.0`，未打包或发布。
 
-#### 0.6-E：Profile 管理闭环
+#### 0.6-E：Profile 管理闭环（已完成，2026-07-16）
 
 1. 完成空列表、单 Profile、多 Profile、disabled draft 和当前选择恢复；
 2. Create 默认生成 disabled 空 draft，不能未经补全直接启用；
@@ -265,7 +266,19 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 
 退出条件：用户不打开原始 JSON 即可完成基本 Profile 名称、启用状态和多 Profile 列表管理。
 
-#### 0.6-F：请求体 Rule 能力准备
+实现结果：
+
+- `ProfileListItem` 增加总 Rule 数与 enabled Rule 数；两端原生窗口在当前 Profile 详情中显示摘要；
+- Reload Draft 成为独立可见操作，与服务 Reload 分离。clean draft 直接重读磁盘，dirty draft 必须
+  明确 Discard 或 Cancel；重载尽量保留仍存在的 stable selection，否则选择排序后的首项；
+- ConfigStore source revision 继续作为 CLI/GUI 并发边界。外部 CLI 写入后，旧 GUI Apply 返回
+  `RepositoryStale` 并保留 dirty draft；显式 Reload/Discard 后才采用外部状态，不会覆盖或丢失它；
+- route collision、未知 Protocol、无效 path 和 Rule 编译错误在 Profile readiness 中保留所属
+  Profile id 与可操作细节；空、单、多 Profile 和 disabled incomplete draft 仍使用同一状态合同；
+- ViewModel 单测与 Windows 真实 GUI 子进程集成覆盖 stale Apply、无决策拒绝、Cancel、Discard、
+  外部状态加载、选择恢复和重启后的磁盘状态。macOS 同等集成脚本已扩展，进入 `0.6-G` 真机复验。
+
+#### 0.6-F：请求体 Rule 能力准备（已完成，2026-07-16）
 
 1. 为 RuleRegistry 增加平台无关 descriptor：type、显示名 key、option 名、值类型、required 和顺序；
 2. 根据实际请求改写需求冻结本版本新增 Rule，不以 GUI 便利性改变 pipeline 语义；
@@ -276,7 +289,17 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 退出条件：`0.7.0` 文本编辑器和 `0.8.0` 可视化控件都能消费同一 descriptor，不在平台 view
 硬编码 Rule 类型。
 
-#### 0.6-G：候选验证与发布
+实现结果：
+
+- 冻结现有 `set_field`、`remove_field`、`remove_tool` 三种 Rule，不增加缺乏真实需求依据的类型；
+- `RuleDescriptor` 提供 type、显示名 key、Protocol 专用标记与有序 options；option descriptor 提供
+  name、显示名 key、`string`/`json_value`/`json_pointer` 值类型、required 和 order；
+- registry 提供按 type 查询与稳定排序枚举，并在 factory 注册时拒绝类型错配、非法 key、重复
+  option、非连续 order 与未知值类型；精确 descriptor 合同和全部拒绝分支已有单测；
+- descriptor 不修改 config schema、不进入请求热路径。空 pipeline 零 parse、非空一次 parse、仅
+  modified 时一次 serialize 的现有执行合同未改变；`0.6.0` GUI 只消费 Rule 数量摘要。
+
+#### 0.6-G：候选验证与发布（进行中）
 
 1. 两个平台 clean Release、warnings-as-errors、全部 CTest、shared integration 与平台 GUI 自动化；
 2. 五档短负载、Rule microbenchmark、日志强制多轮轮转、2 小时 mixed 和 8 小时 idle；
@@ -286,6 +309,12 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 6. 测试完成后才把版本号、README、Design、ProjectStructure 和 release archive 固定为 `0.6.0`。
 
 退出条件：功能、迁移、性能、资源和双平台包均达到本文件“完成定义”，再创建签名 tag。
+
+当前 Windows 候选证据：两个全新构建目录分别完成 81/81 Release 与 warnings-as-errors clean
+build、各 16/16 CTest；两套 shared integration 与两套 tray GUI integration 均通过。GUI 集成覆盖
+Rule 摘要、真实 CLI/GUI stale Apply 与 Reload Draft 恢复、两轮各 100 次轻量窗口资源循环，以及
+窗口持续重建期间 16/16 SSE 精确长度和零上游断连。五档短负载、Rule microbenchmark、长测、
+最终包与平台真机项仍按本阶段清单执行；macOS 必须复验包含 `0.6-E/F` 的同一候选 commit。
 
 ### 验收重点
 

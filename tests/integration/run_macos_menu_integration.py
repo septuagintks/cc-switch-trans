@@ -131,6 +131,22 @@ def send_view_command(executable, environment, host_log, control, view_command):
     )
 
 
+def run_cli(executable, environment, *arguments):
+    result = subprocess.run(
+        [str(executable), *arguments],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    require(
+        result.returncode == 0,
+        f"CLI command failed ({' '.join(arguments)}): {result.stderr or result.stdout}",
+    )
+
+
 def cycle_windows(executable, environment, host_log, count):
     for _ in range(count):
         send_control(executable, environment, host_log, "cycle:1")
@@ -175,7 +191,14 @@ def write_menu_config(home, listener_port, upstream_port):
                     "base_url": f"http://127.0.0.1:{upstream_port}",
                     "request_path": "/v1/responses",
                 },
-                "rules": [],
+                "rules": [
+                    {
+                        "id": "remove-image",
+                        "enabled": True,
+                        "type": "remove_tool",
+                        "tool": "image_gen",
+                    }
+                ],
             }
         },
     }
@@ -301,7 +324,9 @@ def main():
         else ROOT / "build-macos-release" / "ccs-trans.app"
     )
     executable = app / "Contents" / "MacOS" / "ccs-trans"
+    cli = app.parent / "ccs-trans"
     require(executable.is_file(), f"missing app executable: {executable}")
+    require(cli.is_file(), f"missing CLI executable: {cli}")
 
     home = ROOT / "tmp" / f"macOS menu 测试 {time.time_ns()}"
     listener_port = free_port()
@@ -368,6 +393,7 @@ def main():
             "resize:min",
             "appearance:light",
             "appearance:dark",
+            "probe:profile-rule-summary",
         ):
             send_control(executable, environment, host_log, probe)
 
@@ -415,6 +441,46 @@ def main():
         )
         send_view_command(executable, environment, host_log, "apply", "apply_draft")
         require("gui-renamed" not in read_config(config_path)["profiles"], "Remove was not saved")
+
+        # Exercise a real CLI/GUI concurrent edit against ConfigStore. The stale
+        # GUI Apply must not overwrite disk; explicit Reload/Discard adopts it.
+        send_view_command(
+            executable, environment, host_log, "create:z-gui-stale", "create_profile"
+        )
+        run_cli(cli, environment, "profile", "create", "cli-external")
+        stale = send_view_command(
+            executable, environment, host_log, "apply", "apply_draft"
+        )
+        require(
+            stale.get("outcome") == "failed"
+            and stale.get("error") == "repository_stale",
+            f"GUI Apply did not reject an external CLI write: {stale}",
+        )
+        require(
+            "cli-external" in read_config(config_path)["profiles"]
+            and "z-gui-stale" not in read_config(config_path)["profiles"],
+            "stale GUI Apply overwrote or lost the CLI state",
+        )
+        undecided = send_view_command(
+            executable, environment, host_log, "reload-draft", "reload_draft"
+        )
+        require(
+            undecided.get("outcome") == "rejected"
+            and undecided.get("error") == "unsaved_changes_decision_required",
+            f"dirty Reload Draft did not require an explicit decision: {undecided}",
+        )
+        reloaded = send_view_command(
+            executable,
+            environment,
+            host_log,
+            "reload-draft:discard",
+            "reload_draft",
+        )
+        require(reloaded.get("outcome") == "succeeded", f"Reload Draft failed: {reloaded}")
+        selected = send_view_command(
+            executable, environment, host_log, "select:cli-external", "select_profile"
+        )
+        require(selected.get("outcome") == "succeeded", "external Profile was not loaded")
 
         # Dirty close Cancel keeps the window/draft, Discard retires it, and Apply saves it.
         send_view_command(

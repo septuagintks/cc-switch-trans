@@ -45,15 +45,18 @@ Local Windows builds produce the console CLI `build/ccs-trans.exe` and the GUI
 tray host `build/ccs-trans-tray.exe`. Double-clicking the tray host starts all
 enabled Profiles without opening a console window.
 
-The current post-`0.5.0` source contains the completed native main-window work
-through Windows `0.6-C` and macOS `0.6-D`. Open it from the tray/menu-bar menu,
+The current post-`0.5.0` source contains the completed `0.6-A` through `0.6-F`
+implementation. Open the native main window from the tray/menu-bar menu,
 by double-clicking the Windows tray icon, or by launching a second desktop-host
 instance. Both native views provide service controls and basic Profile create,
-rename, remove, enable, Apply, and Discard operations through the same shared
-ViewModel. Lightweight mode destroys a closed main window while leaving the
-desktop host and listener running; normal mode hides and reuses it. This is
-development status, not a `0.6.0` release: binaries continue to report `0.5.0`
-until the remaining stages and release validation are complete.
+rename, remove, enable, Apply, Discard, and Reload Draft operations through the
+same shared ViewModel. Reload Draft is distinct from service Reload; a dirty
+draft requires explicit discard confirmation before disk state can replace it.
+Each Profile shows enabled and total Rule counts. Lightweight mode destroys a
+closed main window while leaving the desktop host and listener running; normal
+mode hides and reuses it. This is still candidate status, not a `0.6.0` release:
+binaries continue to report `0.5.0` until `0.6-G` cross-platform validation and
+packaging are complete.
 
 Create the fixed-whitelist Windows package from a Release build:
 
@@ -401,10 +404,11 @@ python tests/integration/run_tray_integration.py \
 ```
 
 The Windows tray integration uses an isolated user directory and instance name.
-It covers main-window Profile commands, dirty-close and pending-command exit
-decisions, normal and lightweight window lifetimes, service controls, second-instance activation,
-GDI/USER stability across repeated window creation, and 16 concurrent SSE
-responses while the window is repeatedly created and destroyed.
+It covers main-window Profile commands, CLI/GUI stale-write rejection and
+explicit Reload Draft recovery, Rule summaries, dirty-close and pending-command
+exit decisions, normal and lightweight window lifetimes, service controls,
+second-instance activation, GDI/USER stability across repeated window creation,
+and 16 concurrent SSE responses while the window is repeatedly rebuilt.
 
 The opt-in Windows proxy matrix temporarily changes and then restores the
 current-user proxy:
@@ -425,7 +429,8 @@ python3 tests/integration/run_macos_menu_integration.py build-macos-release/ccs-
 ```
 
 The menu integration also exercises the AppKit main window: activation and
-second-instance routing, Profile draft operations, dirty-close branches,
+second-instance routing, Profile draft operations, CLI/GUI stale-write rejection
+and explicit Reload Draft recovery, Rule summaries, dirty-close branches,
 normal/lightweight lifecycles, keyboard/accessibility/layout probes, 100
 lightweight open/close cycles, service controls, pending-command Quit, and 16
 concurrent exact SSE streams while windows are rebuilt.
