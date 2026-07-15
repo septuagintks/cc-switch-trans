@@ -33,10 +33,10 @@ macOS SDK system libcurl process proxy。发行结论与平台验证证据见：
 
 ## 当前推进状态
 
-`0.6-A` 与 `0.6-B` 已于 2026-07-15 完成，当前源码仍报告 `0.5.0`，不在内部开发阶段提前
-修改发行版本。共享层已经冻结主窗口合同，实现异步 ViewModel、Profile draft 命令、两阶段 Apply
-结果和独立 UI preference 原子 store。下一步是 `0.6-C` 的 Windows Win32 主窗口；macOS AppKit
-窗口仍从 `0.6-D` 开始实现。
+`0.6-A` 与 `0.6-B` 已于 2026-07-15 完成，Windows `0.6-C` 已于 2026-07-16 完成。当前源码
+仍报告 `0.5.0`，不在内部开发阶段提前修改发行版本。共享合同、异步 ViewModel、Profile draft
+命令、两阶段 Apply、独立 UI preference store 与原生 Win32 主窗口已经接入同一 tray 宿主。下一步
+是 `0.6-D` 的 macOS AppKit 主窗口，由 macOS 侧基于同一合同实现和验证。
 
 ## 0.6.0 前置工作
 
@@ -197,7 +197,7 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 - Release 与 warnings-as-errors 构建各通过 16/16 CTest，shared integration 通过。共享层尚未接入
   tray/menu，用户可见主窗口从 `0.6-C` 开始。
 
-#### 0.6-C：Windows 主窗口
+#### 0.6-C：Windows 主窗口（已完成，2026-07-16）
 
 1. 在 `ccs-trans-tray` 增加原生 Win32 top-level window 与唯一“打开主界面”菜单命令；
 2. 实现固定最小尺寸、DPI-aware 布局、Profile 列表、名称编辑、启用 checkbox 和增删命令；
@@ -207,6 +207,21 @@ schema；不包含 HWND、NSObject、JSON DOM 或 SQLite 类型。
 6. 增加隐藏窗口自动化和 100 次 open/close 资源计数测试。
 
 退出条件：Windows GUI 功能闭环、普通/轻量两种生命周期通过，`desktop-16` 打开与关闭窗口时无请求失败。
+
+实现结果：
+
+- `ccs-trans-tray` 已增加 DPI-aware 原生 Win32 主窗口，提供服务 Start/Stop/Reload、Profile 列表、
+  Create/Rename/Remove、Enable/Disable、Apply 与 Discard；不完整 Profile 在启用前由共享校验拒绝；
+- tray 菜单提供唯一“Open ccs-trans”和“Lightweight mode”命令；双击 tray 图标与启动第二实例均
+  激活同一主窗口。普通模式隐藏并复用 HWND，轻量模式关闭后销毁并按共享快照重建；
+- dirty close 与退出统一执行 Apply/Discard/Cancel；pending command 会阻止普通退出，避免新产生的
+  dirty draft 被静默丢弃。ViewModel callback 投递回 Win32 UI thread，主窗口、tray 和服务控制
+  共用一个 `ApplicationController` 与 FIFO `ControlExecutor`；
+- `WM_NCDESTROY` 清理全部 child HWND/font/tooltip 引用。Per-monitor-v2 DPI、固定最小尺寸与动态
+  ListView 列宽已接入；120 DPI 下默认和最小尺寸的 13 个交互控件均保持有效边界；
+- clean Release 与 warnings-as-errors 构建各通过 16/16 CTest，shared integration 和两套 tray GUI
+  integration 通过；最终告警构建再次验证两轮各 100 次轻量窗口生命周期、普通模式 HWND 复用、
+  GDI/USER 资源稳定，以及窗口持续创建/销毁期间 16/16 SSE 完整回传、精确长度和零上游断连。
 
 #### 0.6-D：macOS 主窗口
 

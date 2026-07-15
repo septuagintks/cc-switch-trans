@@ -19,6 +19,7 @@ namespace {
 constexpr UINT kTrayCallbackMessage = WM_APP + 1;
 constexpr UINT kCommandResultMessage = WM_APP + 2;
 constexpr UINT kShutdownCompleteMessage = WM_APP + 3;
+constexpr UINT kViewCallbackMessage = WM_APP + 4;
 constexpr UINT_PTR kStatusTimer = 1;
 constexpr UINT kStatusTimerIntervalMs = 1000;
 constexpr UINT kTrayIconId = 1;
@@ -31,6 +32,8 @@ constexpr UINT kMenuOpenConfig = 1004;
 constexpr UINT kMenuOpenLogs = 1005;
 constexpr UINT kMenuStartup = 1006;
 constexpr UINT kMenuExit = 1007;
+constexpr UINT kMenuOpenMain = 1008;
+constexpr UINT kMenuLightweight = 1009;
 
 std::wstring utf8_to_wide(const std::string& value) {
     if (value.empty()) {
@@ -69,13 +72,36 @@ std::string path_to_utf8(const std::filesystem::path& path) {
 TrayApplication::TrayApplication(
     HINSTANCE instance,
     AppPaths paths,
-    std::filesystem::path executable_path)
+    std::filesystem::path executable_path,
+    std::wstring window_class,
+    std::wstring window_title,
+    std::wstring main_window_class)
     : instance_(instance)
     , paths_(std::move(paths))
     , executable_path_(std::move(executable_path))
-    , controller_(paths_) {}
+    , window_class_(std::move(window_class))
+    , window_title_(std::move(window_title))
+    , main_window_class_(std::move(main_window_class))
+    , controller_(paths_)
+    , config_repository_(paths_)
+    , config_editing_(config_repository_)
+    , ui_preferences_(paths_)
+    , view_model_(
+          config_repository_,
+          config_editing_,
+          controller_,
+          ui_preferences_,
+          [this](std::function<void()> callback) {
+              dispatch_view_callback(std::move(callback));
+          },
+          &executor_) {}
 
 TrayApplication::~TrayApplication() {
+    view_model_.set_update_handler({});
+    if (main_window_) {
+        main_window_->destroy();
+    }
+    view_model_.stop();
     executor_.stop();
     if (!shutdown_complete_) {
         std::string error;
@@ -141,6 +167,24 @@ bool TrayApplication::initialize(std::string& error) {
         return false;
     }
 
+    main_window_ = std::make_unique<WindowsMainWindow>(
+        instance_,
+        icon_,
+        view_model_,
+        main_window_class_,
+        window_title_,
+        [this](std::string_view event) {
+            log_host("info", "main_window_lifecycle", {
+                field_string("action", std::string(event)),
+            });
+        });
+    view_model_.set_update_handler([this](MainWindowStateSnapshot state) {
+        handle_view_state(std::move(state));
+    });
+    if (!view_model_.submit({MainWindowCommand::LoadDraft})) {
+        log_host("error", "main_window_draft_load_rejected");
+    }
+
     taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
     if (SetTimer(window_, kStatusTimer, kStatusTimerIntervalMs, nullptr) == 0) {
         error = windows_error_message("failed to create tray status timer", GetLastError());
@@ -189,7 +233,7 @@ bool TrayApplication::register_window(std::string& error) {
     window_class.hIcon = icon_;
     window_class.hIconSm = icon_;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    window_class.lpszClassName = kTrayWindowClass;
+    window_class.lpszClassName = window_class_.c_str();
     if (RegisterClassExW(&window_class) == 0) {
         error = windows_error_message("failed to register tray window class", GetLastError());
         return false;
@@ -197,8 +241,8 @@ bool TrayApplication::register_window(std::string& error) {
 
     window_ = CreateWindowExW(
         0,
-        kTrayWindowClass,
-        L"ccs-trans",
+        window_class_.c_str(),
+        window_title_.c_str(),
         WS_OVERLAPPED,
         0,
         0,
@@ -268,12 +312,16 @@ void TrayApplication::show_menu() {
     const bool transition = state == ApplicationState::Starting
         || state == ApplicationState::Reloading
         || state == ApplicationState::Stopping;
-    const bool can_start = !service_command_pending_ && !transition
+    const bool view_command_pending = view_state_ && view_state_->command_pending;
+    const bool can_start = !service_command_pending_ && !view_command_pending && !transition
         && (state == ApplicationState::Stopped || state == ApplicationState::Faulted);
-    const bool can_stop = !service_command_pending_ && !transition
+    const bool can_stop = !service_command_pending_ && !view_command_pending && !transition
         && state == ApplicationState::Running;
     const bool can_reload = can_stop;
 
+    (void)AppendMenuW(menu, MF_STRING, kMenuOpenMain, L"Open ccs-trans");
+    SetMenuDefaultItem(menu, kMenuOpenMain, FALSE);
+    (void)AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     const auto status = status_text(cached_status_);
     (void)AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, kMenuStatus, status.c_str());
     (void)AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -284,6 +332,13 @@ void TrayApplication::show_menu() {
     (void)AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     (void)AppendMenuW(menu, MF_STRING, kMenuOpenConfig, L"Open configuration");
     (void)AppendMenuW(menu, MF_STRING, kMenuOpenLogs, L"Open logs");
+    UINT lightweight_flags = MF_STRING;
+    if (!view_state_ || view_command_pending) {
+        lightweight_flags |= MF_GRAYED;
+    } else if (view_state_->lightweight_mode) {
+        lightweight_flags |= MF_CHECKED;
+    }
+    (void)AppendMenuW(menu, lightweight_flags, kMenuLightweight, L"Lightweight mode");
     UINT startup_flags = MF_STRING;
     if (!startup_known_) {
         startup_flags |= MF_GRAYED;
@@ -307,6 +362,107 @@ void TrayApplication::show_menu() {
     DestroyMenu(menu);
     if (selected != 0) {
         PostMessageW(window_, WM_COMMAND, MAKEWPARAM(selected, 0), 0);
+    }
+}
+
+void TrayApplication::show_main_window() {
+    if (exiting_ || !main_window_) {
+        return;
+    }
+    std::string error;
+    const auto state = view_state_ ? view_state_ : view_model_.snapshot();
+    if (!main_window_->show(state, error)) {
+        log_host("error", "main_window_show_failed", {field_string("error", error)});
+        show_notification(
+            L"ccs-trans window failed",
+            utf8_to_wide(error),
+            NIIF_ERROR);
+    }
+}
+
+void TrayApplication::set_lightweight_mode(bool enabled) {
+    if (exiting_) {
+        return;
+    }
+    if (!view_model_.submit({
+            MainWindowCommand::SetLightweightMode, {}, {}, enabled})) {
+        show_notification(
+            L"ccs-trans command busy",
+            L"Wait for the current command to finish.",
+            NIIF_WARNING);
+    }
+}
+
+void TrayApplication::request_exit(const std::string& reason, bool force) {
+    if (exiting_) {
+        return;
+    }
+    if (!force && main_window_ && !main_window_->prepare_for_application_exit(
+            [this, reason]() { begin_exit(reason); })) {
+        return;
+    }
+    begin_exit(reason);
+}
+
+void TrayApplication::dispatch_view_callback(std::function<void()> callback) {
+    auto* posted = new std::function<void()>(std::move(callback));
+    if (window_ == nullptr
+        || !PostMessageW(
+            window_, kViewCallbackMessage, 0, reinterpret_cast<LPARAM>(posted))) {
+        delete posted;
+    }
+}
+
+void TrayApplication::handle_view_state(MainWindowStateSnapshot state) {
+    if (!state) {
+        return;
+    }
+    const auto previous_status = cached_status_;
+    const bool previous_lightweight = view_state_ && view_state_->lightweight_mode;
+    view_state_ = std::move(state);
+    cached_status_ = view_state_->application;
+    if (main_window_) {
+        main_window_->update(view_state_);
+    }
+
+    if (view_state_->last_command
+        && !view_state_->command_pending
+        && view_state_->last_command->sequence > last_view_command_sequence_) {
+        const auto& result = *view_state_->last_command;
+        last_view_command_sequence_ = result.sequence;
+        log_host(result.succeeded() || result.configuration_saved() ? "info" : "error",
+            "main_window_command_complete", {
+                field_string("command", main_window_command_name(result.command)),
+                field_string("outcome", command_outcome_name(result.outcome)),
+                field_string("error", main_window_error_name(result.error)),
+                field_string("detail", result.detail),
+            });
+        if (!result.succeeded()
+            && !result.configuration_saved()
+            && result.error != MainWindowError::Cancelled) {
+            show_notification(
+                L"ccs-trans command failed",
+                result.detail.empty() ? L"Open logs for details." : utf8_to_wide(result.detail),
+                NIIF_ERROR);
+        }
+    }
+
+    if (previous_status.state != cached_status_.state) {
+        log_host("info", "host_state_changed", {
+            field_string("previous_state", application_state_name(previous_status.state)),
+            field_string("state", application_state_name(cached_status_.state)),
+            field_number("exit_code", cached_status_.last_exit_code),
+            field_string("error", cached_status_.last_error),
+        });
+    }
+    if (!previous_lightweight && view_state_->lightweight_mode && main_window_
+        && resolve_cached_main_window(
+                view_state_->draft,
+                main_window_->exists(),
+                main_window_->visible(),
+                true)
+            == CachedWindowAction::Destroy) {
+        main_window_->destroy();
     }
 }
 
@@ -429,6 +585,7 @@ void TrayApplication::handle_command_result(std::unique_ptr<CommandResult> resul
 
     const auto previous_state = cached_status_.state;
     cached_status_ = result->status;
+    view_model_.refresh_application_status();
     startup_known_ = result->startup_known;
     startup_enabled_ = result->startup_enabled;
 
@@ -472,6 +629,11 @@ void TrayApplication::begin_exit(const std::string& reason) {
         return;
     }
     exiting_ = true;
+    view_model_.set_update_handler({});
+    if (main_window_) {
+        main_window_->destroy();
+    }
+    view_model_.stop();
     KillTimer(window_, kStatusTimer);
     remove_tray_icon();
     log_host("info", "host_shutdown_start", {field_string("reason", reason)});
@@ -578,14 +740,16 @@ LRESULT TrayApplication::handle_message(UINT message, WPARAM wparam, LPARAM lpar
     }
     if (message == tray_show_message()) {
         log_host("info", "second_instance_notified");
-        show_menu();
+        show_main_window();
         return 0;
     }
 
     switch (message) {
     case kTrayCallbackMessage: {
         const UINT event = LOWORD(lparam);
-        if (event == WM_CONTEXTMENU || event == WM_LBUTTONUP || event == WM_RBUTTONUP
+        if (event == WM_LBUTTONDBLCLK) {
+            show_main_window();
+        } else if (event == WM_CONTEXTMENU || event == WM_LBUTTONUP || event == WM_RBUTTONUP
             || event == NIN_SELECT || event == NIN_KEYSELECT) {
             show_menu();
         }
@@ -593,6 +757,9 @@ LRESULT TrayApplication::handle_message(UINT message, WPARAM wparam, LPARAM lpar
     }
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
+        case kMenuOpenMain:
+            show_main_window();
+            break;
         case kMenuStart:
             post_command(Command::Start);
             break;
@@ -608,11 +775,14 @@ LRESULT TrayApplication::handle_message(UINT message, WPARAM wparam, LPARAM lpar
         case kMenuOpenLogs:
             post_command(Command::OpenLogs);
             break;
+        case kMenuLightweight:
+            set_lightweight_mode(!(view_state_ && view_state_->lightweight_mode));
+            break;
         case kMenuStartup:
             post_command(Command::SetStartup, !startup_enabled_);
             break;
         case kMenuExit:
-            begin_exit("menu");
+            request_exit("menu");
             break;
         default:
             break;
@@ -627,6 +797,14 @@ LRESULT TrayApplication::handle_message(UINT message, WPARAM wparam, LPARAM lpar
         handle_command_result(std::unique_ptr<CommandResult>(
             reinterpret_cast<CommandResult*>(lparam)));
         return 0;
+    case kViewCallbackMessage: {
+        std::unique_ptr<std::function<void()>> callback(
+            reinterpret_cast<std::function<void()>*>(lparam));
+        if (callback && *callback) {
+            (*callback)();
+        }
+        return 0;
+    }
     case kShutdownCompleteMessage: {
         std::unique_ptr<std::string> error(reinterpret_cast<std::string*>(lparam));
         finish_exit(wparam != 0, error ? std::move(*error) : std::string{});
@@ -636,11 +814,11 @@ LRESULT TrayApplication::handle_message(UINT message, WPARAM wparam, LPARAM lpar
         return TRUE;
     case WM_ENDSESSION:
         if (wparam != 0) {
-            begin_exit("session_end");
+            request_exit("session_end", true);
         }
         return 0;
     case WM_CLOSE:
-        begin_exit("window_close");
+        request_exit("window_close");
         return 0;
     case WM_DESTROY:
         PostQuitMessage(exit_code_);

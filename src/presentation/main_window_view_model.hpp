@@ -46,7 +46,8 @@ public:
         ConfigEditingService& editing,
         ApplicationControl& application,
         UiPreferencesRepository& preferences,
-        MainWindowDispatcher dispatcher = {});
+        MainWindowDispatcher dispatcher = {},
+        ControlExecutor* shared_executor = nullptr);
     ~MainWindowViewModel();
 
     MainWindowViewModel(const MainWindowViewModel&) = delete;
@@ -54,6 +55,7 @@ public:
 
     void set_update_handler(MainWindowUpdateHandler handler);
     MainWindowStateSnapshot snapshot() const;
+    void refresh_application_status();
     bool submit(MainWindowCommandRequest request);
     void stop();
 
@@ -104,7 +106,8 @@ private:
     std::shared_ptr<CallbackState> callback_state_;
     std::uint64_t next_sequence_ = 1;
     bool accepting_ = true;
-    ControlExecutor executor_;
+    std::unique_ptr<ControlExecutor> owned_executor_;
+    ControlExecutor& executor_;
 };
 
 } // namespace ccs

@@ -4,7 +4,7 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | `0.5.0` 发行基线 + `0.6-A/B` presentation 与命令层 |
+| 实现基线 | `0.5.0` 发行基线 + `0.6-A/B` 共享层 + `0.6-C` Windows 主窗口 |
 | 当前发行版 | `0.5.0-Windows-x64`；`0.5.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -68,8 +68,8 @@ Codex / cc-switch / other client
 ```text
 CLI management -> ConfigStore
 CLI run -> shared runtime loader -> AppService
-Windows tray / macOS menu host -> ApplicationController -> AppService
-Future native main window -> shared presentation contract -> editing/controller services
+Windows tray/main window / macOS menu host -> ApplicationController -> AppService
+Native main window -> shared presentation contract -> editing/controller services
 AppService -> Server
 Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + UpstreamTransport
 UpstreamTransport -> HTTP types + cancellation + platform implementation
@@ -77,7 +77,7 @@ UpstreamTransport -> HTTP types + cancellation + platform implementation
 
 | 模块 | 当前职责 | 禁止承担 |
 | --- | --- | --- |
-| `src/hosts` | v2 CLI、Windows tray、macOS menu、平台操作、退出码、服务启停 | 路由、规则或 transport 逻辑 |
+| `src/hosts` | v2 CLI、Windows tray/main window、macOS menu、平台操作、退出码、服务启停 | 路由、规则或 transport 逻辑 |
 | `src/app` | start/reload/rollback/stop/wait 生命周期 | 解析协议或平台 UI |
 | `src/config` | schema、CLI、原子持久化、runtime 编译 | 请求期扫描 Profile |
 | `src/routing` | immutable Profile、两级 hash RouteTable | 解析规则 option |
@@ -125,7 +125,8 @@ CLI `run` 与 tray 的服务所有权冲突由 listener 独占绑定报告。这
 
 ## 主窗口 Presentation 合同
 
-`0.6-A` 只建立跨平台主窗口合同，尚未创建 Win32 或 AppKit 主窗口。`MainWindowState` 聚合
+`0.6-A` 建立跨平台主窗口合同，`0.6-B` 实现共享 ViewModel，`0.6-C` 已接入 Win32 view；
+AppKit view 留给 `0.6-D`。`MainWindowState` 聚合
 `ApplicationStatus`、按 stable id 排序的 `ProfileListItem`、纯 UI selection、`DraftState`、
 最近命令结果和轻量模式。该合同只携带 C++ 值类型，不暴露 HWND、NSObject、JSON DOM、
 SQLite handle 或 mutable runtime 对象。
@@ -173,7 +174,15 @@ repository commit、运行服务 reload/restart；保存成功但 runtime 应用
 
 ViewModel 的 update handler 通过平台注入 dispatcher 回到 UI 线程。订阅 generation 让窗口注销后
 已排队 callback 自动失效，适配轻量模式的反复销毁。dispatcher 或 view callback 异常与 command
-执行隔离。当前 Windows tray 与 macOS menu 尚未构造该 ViewModel，平台主窗口接入从 `0.6-C/D` 开始。
+执行隔离。Windows tray 已构造该 ViewModel，并与 tray command 共用一个 FIFO control executor；
+macOS menu 仍在 `0.6-D` 接入。
+
+Windows 主窗口是独立 top-level HWND，不拥有 runtime。tray 菜单、tray 双击与第二实例通知只负责
+显示或激活窗口；关闭主窗口不会停止 listener。普通模式隐藏并缓存 HWND，轻量模式销毁所有 child
+HWND/font/tooltip 资源后按最新 immutable snapshot 重建。dirty draft 必须等待 Apply/Discard command
+真正完成后才隐藏、销毁或继续退出；pending command 会阻止普通退出并保留其随后产生的 draft。退出期间
+先停用 view callback 并排空 ViewModel command，再在同一 executor 上执行 controller shutdown。布局使用
+per-monitor-v2 DPI、固定最小尺寸和动态 ListView 列宽。
 
 ## 配置与 CLI
 
@@ -421,8 +430,8 @@ benchmark 输出或临时目录。
    microbenchmark；
 7. ApplicationController 启停/reload/端口冲突/shutdown，以及 HostPlatform 默认配置和
    fake startup registry 单测；
-8. Windows tray control executor/单实例单测，以及真实 GUI 子进程的自动启动、
-   Start/Stop/Reload、第二实例、通知区图标、日志 drain 和退出集成测试；
+8. Windows tray control executor/单实例单测，以及真实 GUI 子进程的自动启动、主窗口/Profile
+   draft、普通/轻量生命周期、Start/Stop/Reload、第二实例、通知区图标、日志 drain 和退出集成测试；
 9. Windows 候选 ZIP 的固定白名单、双 executable hash、CLI/资源版本与解压后 tray
    生命周期验证；
 10. Windows 11 24H2 VM 的 startup/system proxy、四档 DPI、主题、睡眠唤醒、Explorer
@@ -442,6 +451,9 @@ benchmark 输出或临时目录。
   `0.5.0-Windows-x64` 已发布并完成项目范围验收。Defender/SmartScreen 未评估且 EXE 未做
   Authenticode 签名；Explorer 恢复初期的新 tray 短重试窗口与系统会话结束日志不保证完整
   是已归档限制；
+- Windows `0.6-C` 原生主窗口已接入共享 presentation/editing/controller，普通/轻量窗口生命周期、
+  基础 Profile 管理、两轮各 100 次资源压力和窗口抖动期间 `desktop-16` 已通过；它仍是未发布的
+  `0.6.0` 开发状态，不改变当前源码与发行版本号；
 - macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
   图标和打包脚本已实现，`0.5.0-macOS-arm64` 已发布。正式 ZIP 按策略使用 ad-hoc 签名，
   不需要 Developer ID 或公证，也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整

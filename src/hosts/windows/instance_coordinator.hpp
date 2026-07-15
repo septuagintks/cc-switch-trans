@@ -21,7 +21,10 @@ enum class InstanceAcquireResult {
 
 class InstanceCoordinator {
 public:
-    explicit InstanceCoordinator(std::wstring mutex_name = kTrayMutexName);
+    explicit InstanceCoordinator(
+        std::wstring mutex_name = kTrayMutexName,
+        std::wstring window_class = kTrayWindowClass,
+        std::wstring window_title = {});
     ~InstanceCoordinator();
 
     InstanceCoordinator(const InstanceCoordinator&) = delete;
@@ -32,6 +35,8 @@ public:
 
 private:
     std::wstring mutex_name_;
+    std::wstring window_class_;
+    std::wstring window_title_;
     HANDLE mutex_ = nullptr;
 };
 

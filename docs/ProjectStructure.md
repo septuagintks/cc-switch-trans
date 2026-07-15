@@ -57,6 +57,7 @@ cc-switch-trans/
         startup_registration.hpp/.mm
       windows/
         instance_coordinator.hpp/.cpp
+        main_window.hpp/.cpp
         resource_ids.hpp
         startup_registration.hpp/.cpp
         tray_app.hpp/.cpp
@@ -252,14 +253,17 @@ Windows tray 验证与打包入口：
 
 ```text
 tests/integration/
-  Windows startup mutation opt-in test
+  run_tray_integration.py
 tools/
   package_windows.ps1
 ```
 
 ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Windows tray source
-只编译进 `ccs-trans-tray.exe`；`ApplicationController`、control executor 与 HostPlatform
-接口编译进共享 core，CLI 已复用共享 runtime loader。
+只编译进 `ccs-trans-tray.exe`；`main_window.*` 持有 Win32 top-level/child HWND 和 DPI 布局，
+`tray_app.*` 持有宿主生命周期并把共享 ViewModel callback 派发回 UI thread。`ApplicationController`、
+control executor、presentation 与 HostPlatform 接口编译进共享 core，CLI 已复用共享 runtime loader。
+`run_tray_integration.py` 使用隔离 instance suffix 自动验证基础 Profile 编辑、dirty close、普通/轻量
+窗口、第二实例、两轮各 100 次资源生命周期，以及窗口抖动期间 `desktop-16` 完整回传。
 
 macOS 当前实现：
 

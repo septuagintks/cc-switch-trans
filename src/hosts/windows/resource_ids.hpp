@@ -1,3 +1,19 @@
 #pragma once
 
 #define IDI_CCS_TRANS 101
+
+inline constexpr wchar_t kMainWindowClass[] = L"ccs-trans.MainWindow";
+
+inline constexpr int kMainProfileListId = 2001;
+inline constexpr int kMainNewProfileEditId = 2002;
+inline constexpr int kMainAddProfileId = 2003;
+inline constexpr int kMainRemoveProfileId = 2004;
+inline constexpr int kMainRenameProfileEditId = 2005;
+inline constexpr int kMainRenameProfileId = 2006;
+inline constexpr int kMainProfileEnabledId = 2007;
+inline constexpr int kMainApplyId = 2008;
+inline constexpr int kMainDiscardId = 2009;
+inline constexpr int kMainLightweightId = 2010;
+inline constexpr int kMainServiceStartId = 2011;
+inline constexpr int kMainServiceStopId = 2012;
+inline constexpr int kMainServiceReloadId = 2013;

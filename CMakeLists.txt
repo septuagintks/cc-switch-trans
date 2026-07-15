@@ -231,12 +231,19 @@ if(WIN32)
     )
 
     add_executable(ccs-trans-tray WIN32
+        src/hosts/windows/main_window.cpp
         src/hosts/windows/tray_app.cpp
         src/hosts/windows/tray_main.cpp
         "${CCS_TRANS_GENERATED_DIR}/ccs-trans-tray.rc"
     )
     target_compile_definitions(ccs-trans-tray PRIVATE UNICODE _UNICODE)
-    target_link_libraries(ccs-trans-tray PRIVATE ccs-trans-core shell32 ole32 user32)
+    target_link_libraries(ccs-trans-tray PRIVATE
+        ccs-trans-core
+        comctl32
+        shell32
+        ole32
+        user32
+    )
     if(MINGW)
         target_link_options(ccs-trans-tray PRIVATE -municode)
     endif()

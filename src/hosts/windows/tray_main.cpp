@@ -2,12 +2,14 @@
 
 #include "config/app_paths.hpp"
 #include "hosts/windows/instance_coordinator.hpp"
+#include "hosts/windows/resource_ids.hpp"
 #include "hosts/windows/tray_app.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -23,6 +25,31 @@ bool executable_path(std::filesystem::path& path, std::string& error) {
     }
     path = std::filesystem::path(buffer.data());
     return true;
+}
+
+std::wstring test_instance_suffix() {
+    const DWORD required = GetEnvironmentVariableW(
+        L"CCS_TRANS_TRAY_TEST_INSTANCE_SUFFIX", nullptr, 0);
+    if (required <= 1 || required > 128) {
+        return {};
+    }
+    std::wstring value(static_cast<std::size_t>(required), L'\0');
+    const DWORD written = GetEnvironmentVariableW(
+        L"CCS_TRANS_TRAY_TEST_INSTANCE_SUFFIX",
+        value.data(),
+        required);
+    if (written == 0 || written >= required) {
+        return {};
+    }
+    value.resize(written);
+    const bool valid = std::all_of(value.begin(), value.end(), [](wchar_t ch) {
+        return (ch >= L'a' && ch <= L'z')
+            || (ch >= L'A' && ch <= L'Z')
+            || (ch >= L'0' && ch <= L'9')
+            || ch == L'-'
+            || ch == L'_';
+    });
+    return valid ? value : std::wstring{};
 }
 
 void show_error(const std::string& error) {
@@ -50,7 +77,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     (void)SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    ccs::InstanceCoordinator coordinator;
+    const auto suffix = test_instance_suffix();
+    const auto qualified = [&](const wchar_t* base) {
+        return suffix.empty() ? std::wstring{base} : std::wstring{base} + L"." + suffix;
+    };
+    const auto mutex_name = qualified(ccs::kTrayMutexName);
+    const auto tray_window_class = qualified(ccs::kTrayWindowClass);
+    const auto main_window_class = qualified(kMainWindowClass);
+    const auto window_title = suffix.empty()
+        ? std::wstring{L"ccs-trans"}
+        : std::wstring{L"ccs-trans test "} + suffix;
+    ccs::InstanceCoordinator coordinator(
+        mutex_name, tray_window_class, window_title);
     std::string error;
     const auto acquired = coordinator.acquire(error);
     if (acquired == ccs::InstanceAcquireResult::AlreadyRunning) {
@@ -72,7 +110,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
-    ccs::TrayApplication application(instance, std::move(paths), std::move(executable));
+    ccs::TrayApplication application(
+        instance,
+        std::move(paths),
+        std::move(executable),
+        tray_window_class,
+        window_title,
+        main_window_class);
     const int exit_code = application.run();
     if (SUCCEEDED(com_result)) {
         CoUninitialize();

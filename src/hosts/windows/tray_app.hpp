@@ -4,14 +4,20 @@
 
 #include "app/application_controller.hpp"
 #include "app/control_executor.hpp"
+#include "config/config_editing_service.hpp"
+#include "config/config_store.hpp"
+#include "hosts/windows/main_window.hpp"
 #include "hosts/windows/windows_host_platform.hpp"
 #include "logging/logger.hpp"
+#include "presentation/main_window_view_model.hpp"
+#include "presentation/ui_preferences_store.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,7 +29,10 @@ public:
     TrayApplication(
         HINSTANCE instance,
         AppPaths paths,
-        std::filesystem::path executable_path);
+        std::filesystem::path executable_path,
+        std::wstring window_class,
+        std::wstring window_title,
+        std::wstring main_window_class);
     ~TrayApplication();
 
     TrayApplication(const TrayApplication&) = delete;
@@ -60,6 +69,11 @@ private:
     bool add_tray_icon(std::string& error);
     void remove_tray_icon();
     void show_menu();
+    void show_main_window();
+    void set_lightweight_mode(bool enabled);
+    void request_exit(const std::string& reason, bool force = false);
+    void dispatch_view_callback(std::function<void()> callback);
+    void handle_view_state(MainWindowStateSnapshot state);
     void show_notification(const std::wstring& title, const std::wstring& message, DWORD flags);
     void post_command(Command command, bool startup_enabled = false);
     void handle_command_result(std::unique_ptr<CommandResult> result);
@@ -80,9 +94,18 @@ private:
     UINT taskbar_created_message_ = 0;
     AppPaths paths_;
     std::filesystem::path executable_path_;
+    std::wstring window_class_;
+    std::wstring window_title_;
+    std::wstring main_window_class_;
     ApplicationController controller_;
     WindowsHostPlatform platform_;
     ControlExecutor executor_;
+    ConfigStore config_repository_;
+    ConfigEditingService config_editing_;
+    UiPreferencesStore ui_preferences_;
+    MainWindowViewModel view_model_;
+    std::unique_ptr<WindowsMainWindow> main_window_;
+    MainWindowStateSnapshot view_state_;
     std::unique_ptr<Logger> logger_;
     ApplicationStatus cached_status_;
     bool tray_icon_added_ = false;
@@ -94,6 +117,7 @@ private:
     bool exiting_ = false;
     bool shutdown_complete_ = false;
     std::string last_status_error_;
+    std::uint64_t last_view_command_sequence_ = 0;
     int exit_code_ = 0;
 };
 

@@ -4,6 +4,7 @@
 #include "rules/rule_registry.hpp"
 
 #include <algorithm>
+#include <future>
 #include <utility>
 
 namespace ccs {
@@ -62,14 +63,19 @@ MainWindowViewModel::MainWindowViewModel(
     ConfigEditingService& editing,
     ApplicationControl& application,
     UiPreferencesRepository& preferences,
-    MainWindowDispatcher dispatcher)
+    MainWindowDispatcher dispatcher,
+    ControlExecutor* shared_executor)
     : repository_(repository)
     , editing_(editing)
     , application_(application)
     , preferences_(preferences)
     , preference_values_(make_default_ui_preferences())
     , dispatcher_(std::move(dispatcher))
-    , callback_state_(std::make_shared<CallbackState>()) {
+    , callback_state_(std::make_shared<CallbackState>())
+    , owned_executor_(shared_executor == nullptr
+              ? std::make_unique<ControlExecutor>()
+              : nullptr)
+    , executor_(shared_executor != nullptr ? *shared_executor : *owned_executor_) {
     state_.application = application_.status();
     state_.lightweight_mode = preference_values_.lightweight_mode;
 }
@@ -98,6 +104,13 @@ void MainWindowViewModel::set_update_handler(MainWindowUpdateHandler handler) {
 MainWindowStateSnapshot MainWindowViewModel::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return snapshot_locked();
+}
+
+void MainWindowViewModel::refresh_application_status() {
+    const auto status = application_.status();
+    publish_state_change([&](MainWindowState& state) {
+        state.application = status;
+    });
 }
 
 bool MainWindowViewModel::submit(MainWindowCommandRequest request) {
@@ -169,7 +182,15 @@ void MainWindowViewModel::stop() {
         callback_state_->handler = {};
         ++callback_state_->generation;
     }
-    executor_.stop();
+    if (owned_executor_) {
+        owned_executor_->stop();
+        return;
+    }
+    auto drained = std::make_shared<std::promise<void>>();
+    auto ready = drained->get_future();
+    if (executor_.post([drained]() { drained->set_value(); })) {
+        ready.wait();
+    }
 }
 
 void MainWindowViewModel::execute(

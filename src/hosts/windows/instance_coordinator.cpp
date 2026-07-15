@@ -10,8 +10,13 @@
 
 namespace ccs {
 
-InstanceCoordinator::InstanceCoordinator(std::wstring mutex_name)
-    : mutex_name_(std::move(mutex_name)) {}
+InstanceCoordinator::InstanceCoordinator(
+    std::wstring mutex_name,
+    std::wstring window_class,
+    std::wstring window_title)
+    : mutex_name_(std::move(mutex_name))
+    , window_class_(std::move(window_class))
+    , window_title_(std::move(window_title)) {}
 
 InstanceCoordinator::~InstanceCoordinator() {
     if (mutex_ != nullptr) {
@@ -40,7 +45,9 @@ InstanceAcquireResult InstanceCoordinator::acquire(std::string& error) {
 bool InstanceCoordinator::notify_existing(std::string& error) const {
     error.clear();
     for (int attempt = 0; attempt < 40; ++attempt) {
-        const HWND window = FindWindowW(kTrayWindowClass, nullptr);
+        const HWND window = FindWindowW(
+            window_class_.c_str(),
+            window_title_.empty() ? nullptr : window_title_.c_str());
         if (window != nullptr) {
             if (PostMessageW(window, tray_show_message(), 0, 0)) {
                 return true;

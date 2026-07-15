@@ -45,6 +45,15 @@ Local Windows builds produce the console CLI `build/ccs-trans.exe` and the GUI
 tray host `build/ccs-trans-tray.exe`. Double-clicking the tray host starts all
 enabled Profiles without opening a console window.
 
+The current post-`0.5.0` source also contains the completed Windows `0.6-C`
+native main window. Open it from the tray menu, by double-clicking the tray
+icon, or by launching a second tray instance. It provides service controls and
+basic Profile create, rename, remove, enable, Apply, and Discard operations.
+Lightweight mode destroys a closed main window while leaving the tray and
+listener running; normal mode hides and reuses it. This is development status,
+not a `0.6.0` release: binaries continue to report `0.5.0` until the remaining
+cross-platform stages and release validation are complete.
+
 Create the fixed-whitelist Windows package from a Release build:
 
 ```text
@@ -386,7 +395,15 @@ complete model context, so log files must be treated as sensitive data.
 ```text
 ctest --test-dir build --output-on-failure
 python tests/integration/run_integration.py build/ccs-trans.exe
+python tests/integration/run_tray_integration.py \
+  --tray build/ccs-trans-tray.exe --cli build/ccs-trans.exe
 ```
+
+The Windows tray integration uses an isolated user directory and instance name.
+It covers main-window Profile commands, dirty-close and pending-command exit
+decisions, normal and lightweight window lifetimes, service controls, second-instance activation,
+GDI/USER stability across repeated window creation, and 16 concurrent SSE
+responses while the window is repeatedly created and destroyed.
 
 The opt-in Windows proxy matrix temporarily changes and then restores the
 current-user proxy:
@@ -418,8 +435,9 @@ docs/                  Design and development documentation
 src/app/               Shared service lifecycle and reload rollback
 src/config/            v2 CLI, document store, validation, runtime compiler
 src/core/              HTTP data, cancellation, URL, timeout, and global metrics
-src/hosts/             Executable entry points
+src/hosts/             CLI, tray/menu hosts, and native platform windows
 src/logging/           Structured asynchronous logging
+src/presentation/      Shared main-window state, commands, and UI preferences
 src/protocols/         Responses, Chat, and Messages handlers/registry
 src/routing/           Immutable Profiles and exact RouteTable
 src/rules/             Rule factories, registry, and compiled pipelines
