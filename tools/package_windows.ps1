@@ -76,6 +76,7 @@ $documents = @(
     "Archived/MacOSValidationCheckResult.md",
     "Archived/Reconstruction.md",
     "Archived/Release-0.5.0.md",
+    "Archived/Release-0.6.0.md",
     "Archived/WindowsValidationCheckResult.md"
 )
 foreach ($document in $documents) {

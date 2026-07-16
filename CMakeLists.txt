@@ -12,7 +12,7 @@ if(CMAKE_HOST_APPLE)
     endif()
 endif()
 
-project(ccs_trans VERSION 0.5.0 LANGUAGES CXX)
+project(ccs_trans VERSION 0.6.0 LANGUAGES CXX)
 
 if(APPLE)
     enable_language(OBJCXX)

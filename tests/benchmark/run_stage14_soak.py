@@ -262,7 +262,7 @@ def main():
             "executable": {
                 "path": str(exe),
                 "sha256": sha256(exe),
-                "version": executable_version(exe) if args.host == "cli" else "0.5.0",
+                "version": executable_version(exe) if args.host == "cli" else "0.6.0",
             },
             "environment": {
                 "platform": platform.platform(),

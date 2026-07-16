@@ -3,12 +3,12 @@
 set -eu
 
 if [ "$#" -ne 1 ]; then
-    printf 'usage: %s <ccs-trans-0.5.0-macOS-arm64.zip>\n' "$0" >&2
+    printf 'usage: %s <ccs-trans-0.6.0-macOS-arm64.zip>\n' "$0" >&2
     exit 2
 fi
 
 archive=$1
-expected_name=ccs-trans-0.5.0-macOS-arm64.zip
+expected_name=ccs-trans-0.6.0-macOS-arm64.zip
 archive_name=$(basename "$archive")
 [ "$archive_name" = "$expected_name" ] || {
     printf 'unexpected archive name: %s\n' "$(basename "$archive")" >&2
@@ -18,7 +18,7 @@ archive_name=$(basename "$archive")
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/ccs-trans-verify.XXXXXX")
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 ditto -x -k "$archive" "$temporary_directory"
-root="$temporary_directory/ccs-trans-0.5.0-macOS-arm64"
+root="$temporary_directory/ccs-trans-0.6.0-macOS-arm64"
 [ -d "$root/ccs-trans.app" ] && [ -x "$root/ccs-trans" ] || {
     printf 'archive is missing the app or CLI\n' >&2
     exit 1

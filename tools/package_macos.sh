@@ -34,7 +34,7 @@ build_directory=$(CDPATH= cd "$build_directory" && pwd)
 mkdir -p "$output_directory"
 output_directory=$(CDPATH= cd "$output_directory" && pwd)
 
-version=0.5.0
+version=0.6.0
 distribution=ccs-trans-$version-macOS-arm64
 application_source="$build_directory/ccs-trans.app"
 cli_source="$build_directory/ccs-trans"
@@ -52,7 +52,7 @@ cp "$repository_root/README.md" "$stage/README.md"
 for document in Design.md DevelopmentPlan.md ProjectStructure.md; do
     cp "$repository_root/docs/$document" "$stage/docs/$document"
 done
-for document in MacOSValidationCheckResult.md Reconstruction.md Release-0.5.0.md; do
+for document in MacOSValidationCheckResult.md Reconstruction.md Release-0.5.0.md Release-0.6.0.md; do
     cp "$repository_root/docs/Archived/$document" "$stage/docs/Archived/$document"
 done
 cp "$repository_root/third_party/nlohmann/LICENSE.MIT" "$stage/licenses/nlohmann-LICENSE.MIT"

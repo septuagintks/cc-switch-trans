@@ -4,8 +4,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | `0.5.0` 发行基线 + `0.6-A` 至 `0.6-F` 功能实现；`0.6-G` 候选验证中 |
-| 当前发行版 | `0.5.0-Windows-x64`；`0.5.0-macOS-arm64`（ad-hoc 签名） |
+| 实现基线 | `0.6.0` 双平台发行基线 |
+| 当前发行版 | `0.6.0-Windows-x64`；`0.6.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
 | 本地入口 | 应用级单 listener，默认 `127.0.0.1:15723` |
@@ -16,8 +16,8 @@
 本文描述当前生产路径。历史重构目标与扩展约束见
 [Reconstruction.md](Archived/Reconstruction.md)，
 后续顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
-[ProjectStructure.md](ProjectStructure.md)，`0.5.0` 双平台发布结论见
-[Release-0.5.0.md](Archived/Release-0.5.0.md)。
+[ProjectStructure.md](ProjectStructure.md)，当前双平台发布结论见
+[Release-0.6.0.md](Archived/Release-0.6.0.md)。
 
 ## 项目定位
 
@@ -358,7 +358,9 @@ accept
 
 RequestGeneration 持有 RuntimeSnapshot、UpstreamTransport 和 Logger。请求进入编排后一直持有同一
 generation；reload 后的新请求读取新 generation，in-flight 请求继续使用旧 Profile、
-pipeline、upstream 和限制。
+pipeline、upstream 和限制。旧 generation 在最后一个对应请求结束后自动释放；同时保留的旧
+generation 数受 `max_connections` 间接限制，但长 SSE 配合连续 reload 仍可能保留多份 snapshot、
+transport 和 logger，因此后续版本需要显式 current/peak retired-generation 指标和 churn 测试。
 
 listener 的 request header 上限固定为 64 KiB，只接受 HTTP/1.0/1.1 与单一有效
 `Content-Length` framing；重复/非法 Content-Length、request `Transfer-Encoding` 和畸形
@@ -377,6 +379,11 @@ RuntimeCompiler，因此 route collision 不会落盘。
 
 默认 `max_connections=64` 覆盖执行中和排队连接。超过容量返回 503，不建立无界队列。
 默认 `worker_threads=32` 是按需 worker 上限；启动预热 `min(8, worker_threads)`。
+
+默认 request/response body 上限分别是 100 MiB。单请求限制保证解析和缓冲有界，但启用 Rule 时
+同一请求可能短暂同时持有 raw body、JSON DOM 和 serialized body；多个大请求并行时，单请求限制
+不能替代全进程内存预算。`0.7-A` 在改变默认值前先增加 inflight-byte 记账、预算耗尽行为和并发
+大 body 测试。SSE response 始终按 chunk 转发和记录，不为日志或响应处理累计完整流 body。
 
 metrics 只记录全局资源维度，避免 Profile 数量造成无界 cardinality。Profile/protocol/
 route 只进入每请求日志。并存 generation 的 logger 使用 active-writer 计数，旧 writer
@@ -470,27 +477,24 @@ benchmark 输出或临时目录。
     生命周期、pending Quit、Start/Stop/Reload，以及窗口循环期间 `desktop-16` 的内容、顺序、
     长度、结束标记和零上游断连。
 
-当前边界：
+`0.6.0` 发行边界：
 
-- listener 的共享编排已使用 Windows/POSIX local-socket adapter；Windows 使用 WinHTTP，
-  macOS 使用 SDK system libcurl；
-- Windows tray、双击后台运行、点击菜单和 startup adapter 已实现，
-  `0.5.0-Windows-x64` 已发布并完成项目范围验收。Defender/SmartScreen 未评估且 EXE 未做
-  Authenticode 签名；Explorer 恢复初期的新 tray 短重试窗口与系统会话结束日志不保证完整
-  是已归档限制；
-- Windows `0.6-C/E/F` 候选已接入 Profile Rule 摘要、显式 Reload Draft 和 CLI/GUI stale 防覆盖；
-  两个全新目录分别完成 81/81 Release 与 warnings-as-errors clean build、各 16/16 CTest，shared
-  integration 与两套 tray GUI integration 通过。两轮各 100 次资源压力和窗口抖动期间
-  `desktop-16` 仍通过；当前仍是未发布候选，不改变源码与发行版本号；
-- macOS `0.6-D` 原生 AppKit 主窗口已接入同一共享层和 menu host，普通/轻量窗口生命周期、基础
-  Profile 管理、100 次 window/controller 资源压力、pending Quit 和窗口循环期间 `desktop-16`
-  已通过；Release 与 warnings-as-errors 均 14/14 CTest 通过。VoiceOver 实际语音会话未执行，当前
-  自动化只验证 accessibility labels；
-- `0.6-E/F` 改动了共享 presentation/rule 合同与 AppKit view，因此上述 macOS `0.6-D` 证据不能
-  替代最终候选复验；必须对同一候选 commit 重新执行 clean build、CTest、shared/proxy/menu
-  integration、资源循环与发行包验证后才能关闭 `0.6-G`；
-- macOS 26 arm64 的 CLI、AppKit menu host、单实例、`SMAppService.mainAppService` adapter、
-  图标和打包脚本已实现，`0.5.0-macOS-arm64` 已发布。正式 ZIP 按策略使用 ad-hoc 签名，
-  不需要 Developer ID 或公证，也不声明发布者身份或 Gatekeeper 信任。当前机器缺少完整
-  Xcode.app，登录项 mutation 和手工 Finder/UI 证据未执行；短负载/Rule matrix 和缩短的
-  15 分钟 mixed、30 分钟 idle 已通过，原 2 小时/8 小时与其余项目作为发布时接受限制归档。
+- listener 的共享编排使用 Windows/POSIX local-socket adapter；Windows 使用 WinHTTP，macOS
+  使用 selected SDK system libcurl；
+- 两平台原生主窗口共用 presentation、repository、controller 和 FIFO executor，不建立第二套
+  runtime；普通/轻量生命周期、Profile draft、stale recovery 和 Rule summary 已对齐；
+- Windows 两个全新目录分别完成 81/81 Release/warnings build、各 16/16 CTest、shared 与 tray
+  integration；两轮各 100 次窗口资源循环和窗口重建期间 `desktop-16` 精确回传通过；
+- Windows 五档短负载、Rule matrix 和 2 小时 mixed 通过；mixed 共 18,176 条 SSE、两组 Usage
+  各 13,632 次，零失败，后半程 working set/handle/thread 斜率均为负；
+- Windows 8 小时 CLI idle 期间日志零增长，working set 8,476 -> 1,368 KiB，handle/thread 后半程
+  斜率为 0，停止后连接、worker 和日志队列全部排空；该项不冒充 tray GUI 8 小时常驻测试；
+- macOS 最终候选重新执行 clean build、CTest、shared/proxy/menu integration、五档短负载、Rule
+  matrix 和 100 次 AppKit 资源循环；2 小时 mixed 共 16,800 条 SSE、25,200 次 Usage，零失败，
+  后半程 RSS/fd/thread 稳定；
+- macOS 8 小时 AppKit menu idle 的 RSS 47.0 -> 29.7 MiB、fd 45 -> 45、threads 21 -> 17，日志
+  零增长且退出 drain 完整；两次 live vmmap 完全稳定，固定系统 XPC 保留未增长；
+- Windows EXE 未做 Authenticode，Defender/SmartScreen 未评估；macOS 正式 ZIP 使用 ad-hoc
+  签名，不执行 Developer ID、公证或 staple，也不声明发布者身份或 Gatekeeper 信任；
+- 当前 macOS 构建机只有 Command Line Tools，完整 Xcode、实际 VoiceOver 语音会话和需要真实系统
+  mutation 的项目按 [Release-0.6.0.md](Archived/Release-0.6.0.md) 记录为未执行或接受限制。

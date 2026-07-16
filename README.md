@@ -1,9 +1,9 @@
 # ccs-trans
 
-`ccs-trans` is a local LLM API request transformation proxy. Base version
-`0.5.0` is complete and published for Windows 11 x64 and macOS 26 arm64. The
-Windows distribution is `0.5.0-Windows-x64`; the ad-hoc signed macOS
-distribution is `0.5.0-macOS-arm64`.
+`ccs-trans` is a local LLM API request transformation proxy. Version `0.6.0`
+is the current Windows 11 x64 and macOS 26 arm64 baseline. The Windows
+distribution is `0.6.0-Windows-x64`; the ad-hoc signed macOS distribution is
+`0.6.0-macOS-arm64`.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
@@ -16,21 +16,21 @@ All platforms share one numeric base version. Distribution identifiers append
 the system and architecture with fixed casing:
 
 ```text
-0.5.0-Windows-x64
-0.5.0-macOS-arm64
+0.6.0-Windows-x64
+0.6.0-macOS-arm64
 ```
 
 Package names use the full identifier, for example
-`ccs-trans-0.5.0-Windows-x64.zip`. CMake `PROJECT_VERSION`, CLI `--version`,
+`ccs-trans-0.6.0-Windows-x64.zip`. CMake `PROJECT_VERSION`, CLI `--version`,
 Windows version resources, and macOS bundle version fields remain numeric
-`0.5.0`; the platform suffix identifies the release artifact rather than
+`0.6.0`; the platform suffix identifies the release artifact rather than
 changing the application protocol or configuration version.
 
-The published release is
-[v0.5.0](https://github.com/septuagintks/cc-switch-trans/releases/tag/0.5.0).
-Its final status, source provenance, asset hashes, validation scope, and
-accepted limitations are archived in
-[Release-0.5.0.md](docs/Archived/Release-0.5.0.md).
+The signed source tag is `0.6.0`. Its implementation scope, source provenance,
+validation matrix, package policy, and accepted limitations are archived in
+[Release-0.6.0.md](docs/Archived/Release-0.6.0.md). External ZIP hashes are
+recorded in the signed annotated tag and release handoff so the archives do not
+contain a self-referential checksum.
 
 ## Build
 
@@ -45,8 +45,7 @@ Local Windows builds produce the console CLI `build/ccs-trans.exe` and the GUI
 tray host `build/ccs-trans-tray.exe`. Double-clicking the tray host starts all
 enabled Profiles without opening a console window.
 
-The current post-`0.5.0` source contains the completed `0.6-A` through `0.6-F`
-implementation. Open the native main window from the tray/menu-bar menu,
+Open the native main window from the tray/menu-bar menu,
 by double-clicking the Windows tray icon, or by launching a second desktop-host
 instance. Both native views provide service controls and basic Profile create,
 rename, remove, enable, Apply, Discard, and Reload Draft operations through the
@@ -54,9 +53,8 @@ same shared ViewModel. Reload Draft is distinct from service Reload; a dirty
 draft requires explicit discard confirmation before disk state can replace it.
 Each Profile shows enabled and total Rule counts. Lightweight mode destroys a
 closed main window while leaving the desktop host and listener running; normal
-mode hides and reuses it. This is still candidate status, not a `0.6.0` release:
-binaries continue to report `0.5.0` until `0.6-G` cross-platform validation and
-packaging are complete.
+mode hides and reuses it. Profile storage remains `ccs-trans.config/v2` in this
+version; SQLite and complete field editing begin in `0.7.0`.
 
 Create the fixed-whitelist Windows package from a Release build:
 
@@ -74,23 +72,21 @@ extracted tray lifecycle with:
 powershell -ExecutionPolicy Bypass -File tools/verify_windows_package.ps1
 ```
 
-Run the verifier in a user session without another `ccs-trans-tray.exe`
-instance. Its extracted-package smoke test launches a tray process, so the
-session-level single-instance guard intentionally prevents that step when the
-installed tray is already running.
+The extracted-package smoke uses an isolated user directory and a unique test
+instance identity, so it can run while an installed tray instance is active.
+It does not mutate the real startup registration or user configuration.
 
 For a non-release static archive check while a tray is running, append
 `-SkipTrayIntegration`. The verifier emits a warning; that mode does not count
 as complete release verification.
 
-Windows `0.5.0-Windows-x64` startup, system proxy, desktop UI, lifecycle, load,
-two-hour mixed soak, and eight-hour idle validation are complete. After the
-shared macOS listener work landed, the Windows asset was rebuilt from the final
-`0.5.0` shared implementation and revalidated on Windows. Historical VM evidence
-remains in
+Windows `0.6.0-Windows-x64` clean builds, shared and GUI integration, exact SSE
+concurrency, five load profiles, Rule matrix, two-hour mixed soak, eight-hour
+idle, fixed package whitelist, version resources, and extracted-package smoke
+are summarized in [Release-0.6.0.md](docs/Archived/Release-0.6.0.md).
+Historical `0.5.0` VM evidence remains in
 [WindowsValidationCheckResult.md](docs/Archived/WindowsValidationCheckResult.md);
-the final cross-platform result is in
-[Release-0.5.0.md](docs/Archived/Release-0.5.0.md).
+it is not the current package result.
 
 Defender and SmartScreen were not evaluated in the test VM and are not claimed
 as passed. The two executables are not Authenticode-signed; this is a release
@@ -129,16 +125,18 @@ Create and verify the ad-hoc signed fixed-whitelist release ZIP with:
 
 ```text
 ./tools/package_macos.sh --build-dir build-macos-release --output-dir dist
-./tools/verify_macos_package.sh dist/ccs-trans-0.5.0-macOS-arm64.zip
+./tools/verify_macos_package.sh dist/ccs-trans-0.6.0-macOS-arm64.zip
 ```
 
 The package script always signs the CLI and `.app` with `Signature=adhoc`, the
 hardened runtime option, and no timestamp. It does not use a Developer ID
 identity, submit for notarization, staple a ticket, or claim Gatekeeper trust.
 This means the archive has no verifiable publisher identity and a quarantined
-download may require explicit user approval before launch. Final evidence and
-accepted manual-test gaps are archived in
-[MacOSValidationCheckResult.md](docs/Archived/MacOSValidationCheckResult.md).
+download may require explicit user approval before launch. Current evidence and
+accepted manual-test gaps are in
+[Release-0.6.0.md](docs/Archived/Release-0.6.0.md). The historical
+[MacOSValidationCheckResult.md](docs/Archived/MacOSValidationCheckResult.md)
+remains the `0.5.0` platform archive.
 
 ## Configuration Root
 
@@ -458,8 +456,8 @@ src/transport/         Cross-platform interface, Windows WinHTTP, macOS libcurl
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-Both `0.5.0-Windows-x64` and `0.5.0-macOS-arm64` are complete and published.
-The macOS package is ad-hoc signed by policy and does not establish publisher
-identity, notarization, or Gatekeeper trust. Full results are archived under
-`docs/Archived`; future-version ordering and carried constraints are in
+Both `0.6.0-Windows-x64` and `0.6.0-macOS-arm64` are built from the same signed
+source tag. The macOS package is ad-hoc signed by policy and does not establish
+publisher identity, notarization, or Gatekeeper trust. Full results are
+archived under `docs/Archived`; future-version ordering and carried constraints are in
 [docs/DevelopmentPlan.md](docs/DevelopmentPlan.md).
