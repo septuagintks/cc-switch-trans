@@ -23,6 +23,7 @@ cc-switch-trans/
       WindowsValidationCheckResult.md
     Design.md
     DevelopmentPlan.md
+    Planning-0.7.0.md
     ProjectStructure.md
 
   src/
@@ -317,6 +318,7 @@ ViewModel、menu/status item、distributed notification 与退出编排；窗口
 | `docs/Design.md` | 当前实现、不变量和平台边界 |
 | `docs/Archived/Reconstruction.md` | 阶段 11 Profile/Protocol/Rule 通用化架构归档 |
 | `docs/DevelopmentPlan.md` | 后续版本进入顺序、性能门槛、发布纪律和延后项 |
+| `docs/Planning-0.7.0.md` | `0.7.0` 资源预算、SQLite、迁移、GUI、测试与提交的开工合同 |
 | `docs/Archived/Release-0.5.0.md` | `0.5.0` 双平台发布、溯源、回归和接受限制归档 |
 | `docs/Archived/Release-0.6.0.md` | `0.6.0` GUI/Profile/Rule 基线、双平台候选验证和发行溯源归档 |
 | `docs/Archived/WindowsValidationCheckResult.md` | `0.5.0-Windows-x64` 验证结果归档 |

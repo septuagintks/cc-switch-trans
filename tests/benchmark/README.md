@@ -75,6 +75,11 @@ process resources, and the latest runtime metrics snapshot. The mock listen
 backlog is 128 so connection bursts measure the proxy instead of Python's small
 default accept queue.
 
+`source_ref` preserves the caller's label. `source_commit` resolves that label
+to a peeled commit, so an annotated release tag records its target commit rather
+than the tag object. `git_commit` and `git_dirty` still describe the benchmark
+script worktree independently.
+
 Profiles are short comparison runs, not soak tests or release SLOs:
 
 | Profile | Purpose |

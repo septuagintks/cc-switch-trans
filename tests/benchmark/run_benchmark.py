@@ -120,7 +120,10 @@ def git_commit():
 def resolve_git_ref(value):
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", value], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
+            ["git", "rev-parse", f"{value}^{{commit}}"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return "unknown"

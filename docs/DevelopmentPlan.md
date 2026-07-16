@@ -17,6 +17,7 @@ ConfigRepository/ConfigEditingService 合同提交配置。
 
 `0.6.0` 的实现、测试、资源结果、发行物溯源和接受限制统一归档在
 [Release-0.6.0.md](Archived/Release-0.6.0.md)。历史 `0.5.0` 文档保持只读，不再作为当前状态来源。
+`0.7.0` 已完成开工合同，具体实现以 [Planning-0.7.0.md](Planning-0.7.0.md) 为唯一专项计划。
 
 ## 版本顺序
 
@@ -36,93 +37,23 @@ SQL、GUI 查询或 Rule descriptor 枚举。
 目标是把 Profile/Rule 从单体 JSON 文档迁入事务型存储，并让 GUI 覆盖 Profile 字段、应用级
 配置和文本 Rule 编辑。迁移不能改变路由、SSE、Usage、Rule 顺序或上游转发语义。
 
-### 0.7-A：内存与性能基线
+详细数据合同、故障行为、schema、迁移状态机、GUI 信息架构、性能门槛和提交边界统一由
+[Planning-0.7.0.md](Planning-0.7.0.md) 维护。总计划只保留阶段顺序：
 
-在引入 SQLite 和更复杂编辑器前先固定资源合同：
+1. `0.7-A0/A1/A2/A3`：冻结未改代码的双平台性能基线，再实现全进程 inflight budget、
+   generation/queue metrics、logger/control executor 与 macOS cURL/header 资源硬化；
+2. `0.7-B`：从官方来源锁定并 vendoring SQLite amalgamation，建立双平台静态 C 目标和许可证证据；
+3. `0.7-C`：实现 SQLite RAII、schema v1、revision、Profile/Rule CRUD 与事务/锁/损坏测试；
+4. `0.7-D`：实现 config v3、组合 repository、跨文件恢复日志与显式 v2 migration；
+5. `0.7-E`：实现 field descriptor、typed command、CLI 后端迁移与 canonical Rule 文本模型；
+6. `0.7-F`：完成 Win32 Profiles/Rules/Settings 三视图；
+7. `0.7-G`：交接并完成 AppKit 对等实现；
+8. `0.7-H`：完成数据/故障矩阵、负载与常驻测试、双平台同提交打包和签名发布。
 
-1. 为 raw HTTP 接收、parsed request body、Rule JSON DOM、serialized rewritten body、buffered
-   response、non-streaming send frame 和 body-log staging 建立全进程 inflight-byte 记账；单请求大小
-   限制和 logger queue 容量不能代替全局内存预算；
-2. 明确预算耗尽时采用有界排队还是本地拒绝，并提供稳定状态码、错误类型和 metrics；不得等待时
-   同时保留未记账的大 body；
-3. 增加 current/peak retired generation 与在途请求计数，验证连续 reload 加长 SSE 时旧
-   RuntimeSnapshot、transport 和 logger 只保留到对应请求结束；指标保持全局低 cardinality；
-4. 给 macOS cURL slot 构造和其他 native handle 异常路径补齐 RAII，覆盖分配失败、初始化失败和
-   callback 提前终止；为 macOS upstream response headers 增加显式聚合上限；
-5. 让 logger 入队在 allocation failure 下保持 queue、pending counters 和 metrics 一致；限制或记账
-   producer 在线程本地渲染的记录，并为 GUI control executor 增加容量或等价的 command coalescing；
-6. 增加并发大 body、Rule parse/serialize、reload churn、客户端中断、allocation fault injection 和
-   shutdown 资源测试；记录 private/RSS、handle/fd、线程、连接、generation、control task 和 logger
-   queue 曲线；
-7. 保持默认 `worker_threads=32`、`max_connections=64`、日志 queue 16 MiB 和运行日志 2 GiB，
-   除非新基准证明需要改变；不以提高上限掩盖副本或生命周期问题。
-
-退出条件：常规 8-16 路负载无资源回退；压力场景的内存、generation、连接和队列有明确上限；
-空 Rule pipeline 仍为零 JSON parse，非空 pipeline 最多一次 parse/serialize。
-
-### 0.7-B：SQLite 合同与依赖
-
-1. 选择并固定 SQLite source/version、编译选项、threading mode 和许可证；Windows/macOS 使用同一
-   版本，不依赖机器上偶然存在的动态库；
-2. schema 包含 Profile stable id、排序、protocol、local/upstream 字段、Rule 顺序、enabled 状态、
-   schema version 和 repository revision；
-3. 使用外键、唯一约束、CHECK 和事务保证不存在孤立 Rule、重复顺序或部分 Profile；
-4. 数据库存放在 `~/.ccs-trans/profiles.db`。listener、runtime、timeouts 和 logging 等应用级设置
-   继续由严格 config 文档保存；
-5. 定义 WAL/rollback journal、busy timeout、checkpoint、同步级别、临时文件和异常退出恢复策略；
-6. 所有 SQL 参数绑定，错误转换为稳定 repository failure，不把 SQL 文本或敏感值写入日志。
-
-退出条件：空库初始化、schema round-trip、约束失败、只读目录、锁冲突、损坏数据库和进程中断均有
-确定结果；数据库文件和第三方许可证进入两平台固定包白名单。
-
-### 0.7-C：迁移与 repository
-
-1. ConfigRepository 演进为可组合 snapshot：应用设置来自 config，Profile/Rule 来自 SQLite；
-2. 提供显式的一次性 v2 JSON Profile 导入，导入前备份原文，整批事务提交，失败完整回滚；
-3. 重复导入必须可识别，不静默覆盖已经编辑的数据库；成功后保留可审计 migration marker；
-4. CLI 与 GUI 共享 optimistic revision/stale 检测，跨进程并发修改不得 last-writer-wins；
-5. repository commit 成功但 runtime reload 失败继续使用 `SavedPendingRuntimeApply`，不伪装为数据库
-   回滚；
-6. RuntimeCompiler 从一个只读组合 snapshot 构建完整 generation，编译成功后才发布；请求期禁止
-   SQL、lazy Rule 查询或持有数据库锁。
-
-退出条件：迁移前后相同输入得到等价 RuntimeSnapshot；CLI/GUI 并发、崩溃恢复、备份恢复、重复
-导入和卸载后数据保留均有自动测试。
-
-### 0.7-D：Profile 与全局字段 GUI
-
-1. Profile 页面增加 protocol、本地 request/Usage path、upstream base/request/Usage path 与启用
-   状态；按字段类型使用输入框、选择器和 checkbox；
-2. 全局设置页覆盖 listener、worker、连接数、body limits、timeouts 和 logging；二元设置使用
-   checkbox，枚举使用菜单，数值使用带范围校验的输入控件；
-3. Windows 与 macOS 消费相同 field descriptor、错误和 command result，不在平台 view 复制校验；
-4. draft 导航、Apply/Discard/Reload、dirty close、stale recovery 与当前 Profile 管理保持一致；
-5. 大 Profile 列表和字段更新使用增量 view model，不因单字段编辑重建无关窗口；
-6. 完成 DPI/Retina、light/dark、键盘焦点、accessibility label、长 URL/Unicode 和最小尺寸验证。
-
-退出条件：普通用户不编辑 config/数据库即可完整建立、修改和诊断 Profile 与应用设置。
-
-### 0.7-E：文本 Rule 编辑
-
-1. 当前 Profile 的 Rule draft 使用独立文本编辑界面，不允许粘贴任意全局数据库结构；
-2. 文本格式具有稳定 canonical schema，支持格式化、语法错误定位、descriptor 校验和 Rule 顺序；
-3. 编辑器只操作 draft；保存前统一执行 Protocol capability、Rule compile、route collision 和完整
-   RuntimeCompiler 校验；
-4. 敏感 request body、Authorization、日志内容和生产请求样例不进入编辑器历史；
-5. 文本模型成为 `0.8.0` 可视化 builder 的唯一 canonical draft，避免两套 Rule 表示互相转换丢失。
-
-退出条件：现有 `set_field`、`remove_field`、`remove_tool` 可通过文本界面完整增删改、排序、启停，
-CLI/GUI round-trip 不改变未知但合法的字段顺序语义。
-
-### 0.7-F：候选与发布
-
-1. 两平台 clean Release、warnings-as-errors、全部 CTest、shared/proxy/GUI integration；
-2. JSON 导入、SQLite transaction/lock/recovery、CLI/GUI stale 和 runtime rollback 矩阵；
-3. 128 Profile、256 Route、每 Profile 64 Rule 的加载、编译、列表和编辑性能；
-4. 五档短负载、Rule microbenchmark、并发大 body、reload churn、2 小时 mixed、8 小时 idle；
-5. 从同一最终 commit 构建 `<version>-Windows-x64` 与 `<version>-macOS-arm64`，完成固定白名单、
-   checksum、版本、签名策略与解包 smoke；
-6. 归档 commit、工具链、测试计数、SHA-256、未执行项和接受限制后创建签名 annotated tag。
+冻结边界：v3 应用设置继续位于 `config.json`，Profile/Rule 位于固定 `profiles.db`；迁移必须显式
+确认并可恢复；runtime 只消费 immutable 组合 snapshot；请求期禁止 SQL、文件 I/O 或 GUI 查询。
+`0.7-D` 开始可能写入 v3/SQLite 前，开发构建必须显示 `0.7.0-dev` 且正式 packaging 拒绝 dev
+suffix；最终发行源码提交去掉 suffix 并固定为 `0.7.0`。
 
 ## 0.8.0：可视化 Rule 与交互成熟
 

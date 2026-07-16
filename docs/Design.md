@@ -383,7 +383,8 @@ RuntimeCompiler，因此 route collision 不会落盘。
 默认 request/response body 上限分别是 100 MiB。单请求限制保证解析和缓冲有界，但启用 Rule 时
 同一请求可能短暂同时持有 raw body、JSON DOM 和 serialized body；多个大请求并行时，单请求限制
 不能替代全进程内存预算。`0.7-A` 在改变默认值前先增加 inflight-byte 记账、预算耗尽行为和并发
-大 body 测试。SSE response 始终按 chunk 转发和记录，不为日志或响应处理累计完整流 body。
+大 body 测试；计划中的资源合同见 [Planning-0.7.0.md](Planning-0.7.0.md)，未实现前不改变本节
+`0.6.0` 运行语义。SSE response 始终按 chunk 转发和记录，不为日志或响应处理累计完整流 body。
 
 metrics 只记录全局资源维度，避免 Profile 数量造成无界 cardinality。Profile/protocol/
 route 只进入每请求日志。并存 generation 的 logger 使用 active-writer 计数，旧 writer
