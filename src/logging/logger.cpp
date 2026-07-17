@@ -855,6 +855,7 @@ bool Logger::log(std::string level, std::string event, const std::vector<LogFiel
     if (inflight_budget_) {
         memory = inflight_budget_->try_acquire(reserved_line_size);
         if (!memory) {
+            report_record_rejection("log record rejected by the inflight memory budget");
             return false;
         }
     }
@@ -862,6 +863,7 @@ bool Logger::log(std::string level, std::string event, const std::vector<LogFiel
     try {
         line = render_line(level, event, fields);
     } catch (...) {
+        report_record_rejection("log record rendering failed");
         return false;
     }
     const auto line_size = line.size();
@@ -869,6 +871,7 @@ bool Logger::log(std::string level, std::string event, const std::vector<LogFiel
         memory->shrink(memory->bytes() - line_size);
     } else if (memory && line_size > memory->bytes()
         && !memory->try_grow(line_size - memory->bytes())) {
+        report_record_rejection("rendered log record exceeded its inflight memory lease");
         return false;
     }
 
@@ -903,6 +906,8 @@ bool Logger::log(std::string level, std::string event, const std::vector<LogFiel
             enqueued_at,
         });
     } catch (...) {
+        lock.unlock();
+        report_record_rejection("log queue allocation failed");
         return false;
     }
     ++next_sequence_;
@@ -1028,6 +1033,10 @@ void Logger::writer_loop() {
         const auto oldest_age = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - batch.front().enqueued_at);
 
+        const auto batch_size = batch.size();
+        const auto last_sequence = batch.back().sequence;
+        batch.clear();
+
         if (!failure.empty()) {
             report_writer_failure(std::move(failure));
             return;
@@ -1035,9 +1044,9 @@ void Logger::writer_loop() {
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            pending_records_ -= batch.size();
+            pending_records_ -= batch_size;
             pending_bytes_ -= batch_bytes;
-            flushed_sequence_ = batch.back().sequence;
+            flushed_sequence_ = last_sequence;
             if (!queue_.empty()) {
                 oldest_pending_at_ = queue_.front().enqueued_at;
             } else {
@@ -1051,7 +1060,7 @@ void Logger::writer_loop() {
                             oldest_pending_at_.time_since_epoch()).count());
                 }
                 metrics_->log_batch_written(
-                    batch.size(),
+                    batch_size,
                     batch_bytes,
                     static_cast<std::uint64_t>(batch_window_wait.count()),
                     static_cast<std::uint64_t>(write_elapsed.count()),
@@ -1080,6 +1089,19 @@ void Logger::writer_loop() {
     }
     flushed_cv_.notify_all();
     space_cv_.notify_all();
+}
+
+void Logger::report_record_rejection(std::string_view error) const noexcept {
+    try {
+        if (failure_handler_) {
+            failure_handler_(std::string(error));
+            return;
+        }
+    } catch (...) {
+    }
+    std::fputs("ccs-trans logger rejected a record: ", stderr);
+    std::fwrite(error.data(), 1, error.size(), stderr);
+    std::fputc('\n', stderr);
 }
 
 void Logger::report_writer_failure(std::string error) {

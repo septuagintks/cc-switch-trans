@@ -439,11 +439,14 @@ void test_logger_budget_and_borrowed_fields() {
     auto rejected_metrics = std::make_shared<ccs::RuntimeMetrics>();
     auto tiny_budget = std::make_shared<ccs::InflightMemoryBudget>(8, rejected_metrics);
     auto rejected_state = std::make_shared<ControlledSinkState>();
+    std::string rejected_error;
     ccs::Logger rejected(
         config,
         rejected_metrics,
         std::make_unique<ControlledLogSink>(rejected_state),
-        {},
+        [&](const std::string& callback_error) {
+            rejected_error = callback_error;
+        },
         tiny_budget);
     require(rejected.open(error), error);
     require(!rejected.log("info", "cannot-fit", {}),
@@ -452,6 +455,8 @@ void test_logger_budget_and_borrowed_fields() {
     require(rejected_snapshot.current_inflight_bytes == 0
             && rejected_snapshot.inflight_budget_rejections == 1,
         "logger budget rejection leaves accounting drained");
+    require(rejected_error.find("inflight memory budget") != std::string::npos,
+        "logger budget rejection reaches the bounded failure callback");
 }
 
 void test_runtime_metrics() {

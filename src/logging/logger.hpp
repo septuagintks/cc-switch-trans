@@ -107,6 +107,7 @@ private:
     };
 
     void writer_loop();
+    void report_record_rejection(std::string_view error) const noexcept;
     void report_writer_failure(std::string error);
 
     LoggerConfig config_;
