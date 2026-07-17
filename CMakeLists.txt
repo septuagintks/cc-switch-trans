@@ -171,6 +171,7 @@ add_library(ccs-trans-core STATIC
     src/rules/generic_json_rules.cpp
     src/rules/remove_tool_rule.cpp
     src/rules/rule.cpp
+    src/rules/rule_json.cpp
     src/rules/rule_registry.cpp
     src/server/server.cpp
     src/transport/header_filter.cpp

@@ -137,6 +137,18 @@ std::string trim(std::string value) {
     return value;
 }
 
+std::string_view trim_view(std::string_view value) {
+    while (!value.empty()
+        && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty()
+        && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
 std::string lower_copy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
@@ -178,77 +190,6 @@ std::string error_json(const std::string& message, const std::string& type) {
     }).dump();
 }
 
-std::string json_escape(const std::string& value) {
-    std::ostringstream out;
-    for (const unsigned char ch : value) {
-        switch (ch) {
-        case '\\':
-            out << "\\\\";
-            break;
-        case '"':
-            out << "\\\"";
-            break;
-        case '\b':
-            out << "\\b";
-            break;
-        case '\f':
-            out << "\\f";
-            break;
-        case '\n':
-            out << "\\n";
-            break;
-        case '\r':
-            out << "\\r";
-            break;
-        case '\t':
-            out << "\\t";
-            break;
-        default:
-            if (ch < 0x20) {
-                out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch);
-            } else {
-                out << static_cast<char>(ch);
-            }
-            break;
-        }
-    }
-    return out.str();
-}
-
-bool is_sensitive_header(const std::string& name) {
-    static const std::unordered_set<std::string> sensitive = {
-        "authorization",
-        "proxy-authorization",
-        "cookie",
-        "set-cookie",
-        "x-api-key",
-    };
-    return sensitive.count(lower_copy(name)) != 0;
-}
-
-std::string headers_to_json(const Headers& headers, bool redact_sensitive) {
-    std::ostringstream out;
-    out << "{";
-    bool first = true;
-    for (const auto& [name, value] : headers) {
-        if (!first) {
-            out << ",";
-        }
-        first = false;
-        out << "\"" << json_escape(name) << "\":";
-        out << "\"" << json_escape(redact_sensitive && is_sensitive_header(name) ? "***" : value) << "\"";
-    }
-    out << "}";
-    return out.str();
-}
-
-std::string limited_body(const std::string& body, std::size_t limit) {
-    if (body.size() <= limit) {
-        return body;
-    }
-    return body.substr(0, limit);
-}
-
 void append_body_fields(
     std::vector<LogField>& fields,
     const LoggingSettings& logging,
@@ -258,7 +199,9 @@ void append_body_fields(
         return;
     }
     const auto limit = static_cast<std::size_t>(logging.body_limit);
-    fields.push_back(field_string("body", limited_body(body, limit)));
+    fields.push_back(field_string_view(
+        "body",
+        std::string_view(body).substr(0, std::min(body.size(), limit))));
     fields.push_back(field_bool("body_truncated", body.size() > limit));
 }
 
@@ -343,45 +286,65 @@ void split_target(HttpRequest& request) {
     request.query = request.target.substr(pos + 1);
 }
 
-HttpRequest parse_request(const std::string& raw, const std::string& client_ip) {
+HttpRequest parse_request_head(
+    std::string_view raw_head,
+    const std::string& client_ip) {
     HttpRequest request;
     request.client_ip = client_ip;
 
-    const auto header_end = raw.find("\r\n\r\n");
-    if (header_end == std::string::npos) {
-        throw InvalidHttpRequest("request is missing the HTTP header terminator");
-    }
+    std::size_t cursor = 0;
+    const auto next_line = [&]() -> std::optional<std::string_view> {
+        if (cursor > raw_head.size()) {
+            return std::nullopt;
+        }
+        const auto end = raw_head.find("\r\n", cursor);
+        if (end == std::string_view::npos) {
+            const auto line = raw_head.substr(cursor);
+            cursor = raw_head.size() + 1;
+            return line;
+        }
+        const auto line = raw_head.substr(cursor, end - cursor);
+        cursor = end + 2;
+        return line;
+    };
 
-    std::istringstream stream(raw.substr(0, header_end));
-    std::string line;
-    if (!std::getline(stream, line)) {
+    const auto first_line = next_line();
+    if (!first_line) {
         throw InvalidHttpRequest("request is missing the HTTP request line");
     }
-    if (!line.empty() && line.back() == '\r') {
-        line.pop_back();
+    const auto first_space = first_line->find(' ');
+    const auto second_space = first_space == std::string_view::npos
+        ? std::string_view::npos
+        : first_line->find(' ', first_space + 1);
+    if (first_space == std::string_view::npos
+        || second_space == std::string_view::npos
+        || first_space == 0
+        || second_space == first_space + 1
+        || second_space + 1 >= first_line->size()
+        || first_line->find(' ', second_space + 1) != std::string_view::npos) {
+        throw InvalidHttpRequest(
+            "request line is malformed or uses an unsupported HTTP version");
+    }
+    request.method.assign(first_line->substr(0, first_space));
+    request.target.assign(first_line->substr(
+        first_space + 1, second_space - first_space - 1));
+    request.version.assign(first_line->substr(second_space + 1));
+    if (request.version != "HTTP/1.1" && request.version != "HTTP/1.0") {
+        throw InvalidHttpRequest(
+            "request line is malformed or uses an unsupported HTTP version");
     }
 
-    std::istringstream request_line(line);
-    request_line >> request.method >> request.target >> request.version;
-    std::string extra_request_line_token;
-    if (request.method.empty()
-        || request.target.empty()
-        || request.version.empty()
-        || (request_line >> extra_request_line_token)
-        || (request.version != "HTTP/1.1" && request.version != "HTTP/1.0")) {
-        throw InvalidHttpRequest("request line is malformed or uses an unsupported HTTP version");
-    }
-
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
+    while (cursor <= raw_head.size()) {
+        const auto line = next_line();
+        if (!line || line->empty()) {
+            break;
         }
-        const auto colon = line.find(':');
-        if (colon == std::string::npos || colon == 0) {
+        const auto colon = line->find(':');
+        if (colon == std::string_view::npos || colon == 0) {
             throw InvalidHttpRequest("request contains a malformed HTTP header");
         }
-        const auto name = line.substr(0, colon);
-        const auto value = trim(line.substr(colon + 1));
+        const auto name = line->substr(0, colon);
+        const auto value = trim_view(line->substr(colon + 1));
         if (!std::all_of(name.begin(), name.end(), [](unsigned char ch) {
                 return is_header_name_char(ch);
             })
@@ -390,39 +353,85 @@ HttpRequest parse_request(const std::string& raw, const std::string& client_ip) 
             })) {
             throw InvalidHttpRequest("request contains a malformed HTTP header");
         }
-        request.headers.emplace_back(name, value);
+        request.headers.emplace_back(std::string(name), std::string(value));
     }
 
     split_target(request);
-    request.body = raw.substr(header_end + 4);
     return request;
 }
 
-std::string build_response_head(HttpResponse response, bool include_content_length) {
-    if (response.reason.empty()) {
-        response.reason = reason_phrase(response.status_code);
-    }
+struct BuiltResponseHead {
+    std::optional<InflightMemoryBudget::Lease> memory;
+    std::string data;
+};
 
-    if (include_content_length) {
-        response.headers.emplace_back("Content-Length", std::to_string(response.body.size()));
+std::size_t decimal_size(std::size_t value) {
+    std::size_t digits = 1;
+    while (value >= 10) {
+        value /= 10;
+        ++digits;
     }
-    response.headers.emplace_back("Connection", "close");
+    return digits;
+}
 
-    std::ostringstream out;
-    out << "HTTP/1.1 " << response.status_code << " " << response.reason << "\r\n";
+BuiltResponseHead build_response_head(
+    const HttpResponse& response,
+    bool include_content_length,
+    const std::shared_ptr<InflightMemoryBudget>& budget = {}) {
+    std::string fallback_reason;
+    const std::string* reason = &response.reason;
+    if (reason->empty()) {
+        fallback_reason = reason_phrase(response.status_code);
+        reason = &fallback_reason;
+    }
+    std::size_t size = 9 + decimal_size(static_cast<std::size_t>(response.status_code))
+        + 1 + reason->size() + 2;
     for (const auto& [name, value] : response.headers) {
-        out << name << ": " << value << "\r\n";
+        size += name.size() + 2 + value.size() + 2;
     }
-    out << "\r\n";
-    return out.str();
+    if (include_content_length) {
+        size += 16 + decimal_size(response.body.size()) + 2;
+    }
+    size += 19 + 2;
+
+    BuiltResponseHead result;
+    if (budget) {
+        result.memory = budget->try_acquire(size);
+        if (!result.memory) {
+            throw InflightBudgetExceeded();
+        }
+    }
+    result.data.reserve(size);
+    result.data += "HTTP/1.1 ";
+    result.data += std::to_string(response.status_code);
+    result.data.push_back(' ');
+    result.data += *reason;
+    result.data += "\r\n";
+    for (const auto& [name, value] : response.headers) {
+        result.data += name;
+        result.data += ": ";
+        result.data += value;
+        result.data += "\r\n";
+    }
+    if (include_content_length) {
+        result.data += "Content-Length: ";
+        result.data += std::to_string(response.body.size());
+        result.data += "\r\n";
+    }
+    result.data += "Connection: close\r\n\r\n";
+    return result;
 }
 
-std::string build_response(HttpResponse response) {
-    return build_response_head(response, true) + response.body;
-}
-
-std::string build_stream_response_head(HttpResponse response) {
-    return build_response_head(std::move(response), false);
+template <typename Sender>
+bool send_response(
+    Sender&& sender,
+    const HttpResponse& response,
+    const std::shared_ptr<InflightMemoryBudget>& budget = {}) {
+    const auto head = build_response_head(response, true, budget);
+    if (!sender(head.data)) {
+        return false;
+    }
+    return response.body.empty() || sender(response.body);
 }
 
 struct ClientJob {
@@ -430,6 +439,20 @@ struct ClientJob {
     std::string client_ip;
     std::chrono::steady_clock::time_point accepted_at;
 };
+
+struct ReceivedRequest {
+    HttpRequest request;
+    InflightMemoryBudget::Lease memory;
+    std::size_t body_memory_bytes = 0;
+};
+
+void grow_request_memory(
+    InflightMemoryBudget::Lease& memory,
+    std::size_t bytes) {
+    if (bytes != 0 && !memory.try_grow(bytes)) {
+        throw InflightBudgetExceeded();
+    }
+}
 
 class ClientCancellationMonitor {
 public:
@@ -627,10 +650,16 @@ std::ptrdiff_t recv_with_stop(
     }
 }
 
-std::string recv_request(
+ReceivedRequest recv_request(
     server_platform::SocketHandle socket,
     std::size_t max_body_size,
+    std::string client_ip,
+    const InflightMemoryBudget& budget,
     const std::function<bool()>& stopping) {
+    auto memory = budget.try_acquire(0);
+    if (!memory) {
+        throw InflightBudgetExceeded();
+    }
     std::string buffer;
     char temp[8192];
     std::size_t header_end = std::string::npos;
@@ -643,10 +672,13 @@ std::string recv_request(
             }
             throw std::runtime_error("failed to read request");
         }
-        buffer.append(temp, static_cast<std::size_t>(received));
-        if (buffer.size() > kHeaderLimit + max_body_size) {
+        const auto received_size = static_cast<std::size_t>(received);
+        if (received_size > kHeaderLimit + max_body_size - std::min(
+                kHeaderLimit + max_body_size, buffer.size())) {
             throw std::runtime_error("request too large");
         }
+        grow_request_memory(*memory, received_size);
+        buffer.append(temp, received_size);
         header_end = buffer.find("\r\n\r\n");
         if ((header_end == std::string::npos && buffer.size() > kHeaderLimit)
             || (header_end != std::string::npos && header_end + 4 > kHeaderLimit)) {
@@ -654,11 +686,15 @@ std::string recv_request(
         }
     }
 
-    const HttpRequest partial = parse_request(buffer, "");
-    const std::size_t expected_body = content_length(partial.headers);
+    grow_request_memory(*memory, header_end);
+    auto request = parse_request_head(
+        std::string_view(buffer).substr(0, header_end), client_ip);
+    const std::size_t expected_body = content_length(request.headers);
     if (expected_body > max_body_size) {
         throw std::runtime_error("request body too large");
     }
+    grow_request_memory(*memory, expected_body);
+    request.body.reserve(expected_body);
 
     const std::size_t body_start = header_end + 4;
     while (buffer.size() < body_start + expected_body) {
@@ -666,20 +702,32 @@ std::string recv_request(
         if (received <= 0) {
             throw std::runtime_error("failed to read request body");
         }
-        buffer.append(temp, static_cast<std::size_t>(received));
+        const auto received_size = static_cast<std::size_t>(received);
+        if (received_size > body_start + expected_body + 4 - std::min(
+                body_start + expected_body + 4, buffer.size())) {
+            throw std::runtime_error("request too large");
+        }
+        grow_request_memory(*memory, received_size);
+        buffer.append(temp, received_size);
     }
 
     std::size_t actual_body_start = body_start;
     constexpr std::string_view extra_separator = "\r\n\r\n";
     if (expected_body > 0
-        && has_json_content_type(partial.headers)
+        && has_json_content_type(request.headers)
         && buffer.size() >= body_start + extra_separator.size()
         && buffer.compare(body_start, extra_separator.size(), extra_separator) == 0
         && buffer.size() >= body_start + extra_separator.size() + expected_body) {
         actual_body_start += extra_separator.size();
     }
 
-    return buffer.substr(0, body_start) + buffer.substr(actual_body_start, expected_body);
+    request.body.assign(buffer.data() + actual_body_start, expected_body);
+    memory->shrink(buffer.size());
+    return ReceivedRequest{
+        std::move(request),
+        std::move(*memory),
+        expected_body,
+    };
 }
 
 template <typename ProcessRequest, typename ReportError>
@@ -688,16 +736,17 @@ void handle_client(
     ClientCancellationMonitor& cancellation_monitor,
     std::size_t max_body_size,
     std::string client_ip,
+    const InflightMemoryBudget& budget,
     const std::function<bool()>& stopping,
     ProcessRequest&& process_request,
     ReportError&& report_error) {
     try {
-        const auto raw = recv_request(client, max_body_size, stopping);
+        auto received = recv_request(
+            client, max_body_size, std::move(client_ip), budget, stopping);
         CancellationSource cancellation_source;
         SocketWatch watch(cancellation_monitor, client, cancellation_source);
         process_request(
-            raw,
-            client_ip,
+            std::move(received),
             [&](const std::string& data) {
                 std::string send_error;
                 const bool sent = server_platform::send_all(client, data, send_error);
@@ -718,7 +767,26 @@ void handle_client(
         response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json(ex.what(), "invalid_request_error");
         std::string send_error;
-        server_platform::send_all(client, build_response(std::move(response)), send_error);
+        const auto head = build_response_head(response, true);
+        if (server_platform::send_all(client, head.data, send_error) && !response.body.empty()) {
+            server_platform::send_all(client, response.body, send_error);
+        }
+    } catch (const InflightBudgetExceeded&) {
+        report_error(
+            503,
+            "server_error",
+            "inflight memory budget exhausted");
+        HttpResponse response;
+        response.status_code = 503;
+        response.reason = reason_phrase(503);
+        response.headers.emplace_back("Content-Type", "application/json");
+        response.body = error_json(
+            "inflight memory budget exhausted", "server_error");
+        std::string send_error;
+        const auto head = build_response_head(response, true);
+        if (server_platform::send_all(client, head.data, send_error) && !response.body.empty()) {
+            server_platform::send_all(client, response.body, send_error);
+        }
     } catch (const std::exception& ex) {
         if (std::strcmp(ex.what(), "client disconnected before request") == 0) {
             return;
@@ -738,9 +806,11 @@ void handle_client(
         response.reason = reason_phrase(status);
         response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json(message, status == 413 ? "invalid_request_error" : "server_error");
-        const auto raw_response = build_response(response);
         std::string send_error;
-        server_platform::send_all(client, raw_response, send_error);
+        const auto head = build_response_head(response, true);
+        if (server_platform::send_all(client, head.data, send_error) && !response.body.empty()) {
+            server_platform::send_all(client, response.body, send_error);
+        }
     }
 }
 
@@ -755,7 +825,10 @@ void reject_overloaded_client(
         response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json("server is at connection capacity", "server_overloaded");
         std::string send_error;
-        server_platform::send_all(client, build_response(std::move(response)), send_error);
+        const auto head = build_response_head(response, true);
+        if (server_platform::send_all(client, head.data, send_error) && !response.body.empty()) {
+            server_platform::send_all(client, response.body, send_error);
+        }
     } catch (...) {
     }
     server_platform::shutdown_send_and_drain(client, 250);
@@ -769,6 +842,7 @@ public:
         std::uint64_t generation_id,
         RuntimeSnapshotPtr runtime_snapshot,
         const std::shared_ptr<RuntimeMetrics>& metrics,
+        const std::shared_ptr<InflightMemoryBudget>& inflight_budget,
         std::shared_ptr<Logger> shared_logger)
         : id(generation_id)
         , snapshot(std::move(runtime_snapshot))
@@ -777,7 +851,8 @@ public:
               runtime.application.timeouts,
               static_cast<std::size_t>(runtime.application.runtime.max_response_body_size),
               metrics,
-              static_cast<std::size_t>(runtime.application.runtime.worker_threads)))
+              static_cast<std::size_t>(runtime.application.runtime.worker_threads),
+              inflight_budget))
         , logger(std::move(shared_logger))
         , metrics_(metrics) {
         if (!logger) {
@@ -813,6 +888,31 @@ private:
     std::atomic_bool retired_{false};
 };
 
+ReceivedRequest parse_buffered_request(
+    const std::string& raw,
+    const std::string& client_ip,
+    const InflightMemoryBudget& budget) {
+    const auto header_end = raw.find("\r\n\r\n");
+    if (header_end == std::string::npos) {
+        throw InvalidHttpRequest("request is missing the HTTP header terminator");
+    }
+    auto memory = budget.try_acquire(header_end);
+    if (!memory) {
+        throw InflightBudgetExceeded();
+    }
+    auto request = parse_request_head(
+        std::string_view(raw).substr(0, header_end), client_ip);
+    const auto body_start = header_end + 4;
+    const auto body_size = raw.size() - body_start;
+    grow_request_memory(*memory, body_size);
+    request.body.assign(raw.data() + body_start, body_size);
+    return ReceivedRequest{
+        std::move(request),
+        std::move(*memory),
+        body_size,
+    };
+}
+
 Server::Server(
     RuntimeSnapshotPtr snapshot,
     LogSinkFactory log_sink_factory,
@@ -824,7 +924,11 @@ Server::Server(
     , handle_process_signals_(handle_process_signals) {
     const auto& runtime = require_runtime_snapshot(snapshot);
     generation_ = std::make_shared<RequestGeneration>(
-        next_generation_id(), std::move(snapshot), metrics_, make_logger(runtime));
+        next_generation_id(),
+        std::move(snapshot),
+        metrics_,
+        inflight_budget_,
+        make_logger(runtime));
 }
 
 Server::~Server() {
@@ -839,7 +943,8 @@ std::shared_ptr<Logger> Server::make_logger(const RuntimeSnapshot& snapshot) {
         make_logger_config(snapshot),
         metrics_,
         std::move(sink),
-        [this](const std::string& error) { handle_logger_failure(error); });
+        [this](const std::string& error) { handle_logger_failure(error); },
+        inflight_budget_);
 }
 
 void Server::handle_logger_failure(const std::string& error) noexcept {
@@ -949,7 +1054,11 @@ ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
 
     try {
         auto next = std::make_shared<RequestGeneration>(
-            next_generation_id(), std::move(snapshot), metrics_, std::move(logger));
+            next_generation_id(),
+            std::move(snapshot),
+            metrics_,
+            inflight_budget_,
+            std::move(logger));
         {
             std::unique_lock<std::shared_mutex> generation_lock(generation_mutex_);
             current->mark_retired();
@@ -996,6 +1105,48 @@ bool Server::process_with_generation(
     const std::string& client_ip,
     const std::function<bool(const std::string&)>& sender,
     const CancellationToken& cancellation) const {
+    try {
+        auto received = parse_buffered_request(
+            raw, client_ip, *inflight_budget_);
+        return process_parsed_with_generation(
+            generation,
+            std::move(received.request),
+            std::move(received.memory),
+            received.body_memory_bytes,
+            sender,
+            cancellation);
+    } catch (const InvalidHttpRequest& ex) {
+        log_request_error(
+            generation, 400, "invalid_request_error", ex.what());
+        HttpResponse response;
+        response.status_code = 400;
+        response.reason = reason_phrase(400);
+        response.headers.emplace_back("Content-Type", "application/json");
+        response.body = error_json(ex.what(), "invalid_request_error");
+        return send_response(sender, response);
+    } catch (const InflightBudgetExceeded&) {
+        log_request_error(
+            generation,
+            503,
+            "server_error",
+            "inflight memory budget exhausted");
+        HttpResponse response;
+        response.status_code = 503;
+        response.reason = reason_phrase(503);
+        response.headers.emplace_back("Content-Type", "application/json");
+        response.body = error_json(
+            "inflight memory budget exhausted", "server_error");
+        return send_response(sender, response);
+    }
+}
+
+bool Server::process_parsed_with_generation(
+    const std::shared_ptr<RequestGeneration>& generation,
+    HttpRequest request,
+    InflightMemoryBudget::Lease request_memory,
+    std::size_t request_body_memory,
+    const std::function<bool(const std::string&)>& sender,
+    const CancellationToken& cancellation) const {
     const auto& runtime = generation->runtime;
     const auto& logging = runtime.application.logging;
     const auto request_id = make_request_id();
@@ -1007,7 +1158,6 @@ bool Server::process_with_generation(
     std::shared_ptr<const ProtocolHandler> protocol_handler;
 
     try {
-        auto request = parse_request(raw, client_ip);
         request.request_id = request_id;
         const auto lookup = runtime.routes.lookup(request.method, request.path);
         if (lookup.status != RouteLookupStatus::Matched || lookup.entry == nullptr) {
@@ -1038,7 +1188,7 @@ bool Server::process_with_generation(
                 field_number("duration_ms", elapsed.count()),
                 field_bool("streaming", false),
             });
-            return sender(build_response(std::move(response)));
+            return send_response(sender, response, inflight_budget_);
         }
 
         const auto& route = *lookup.entry;
@@ -1063,23 +1213,25 @@ bool Server::process_with_generation(
                 field_number("status_code", response.status_code),
                 field_number("duration_ms", elapsed.count()),
             });
-            return sender(build_response(std::move(response)));
+            return send_response(sender, response, inflight_budget_);
         }
 
-        std::vector<LogField> request_fields = {
-            field_string("request_id", request.request_id),
-            field_number("generation_id", static_cast<long long>(generation->id)),
-            field_string("profile_id", profile_id),
-            field_string("protocol", protocol_id),
-            field_string("route_kind", route_kind),
-            field_string("method", request.method),
-            field_string("local_path", lookup.canonical_path),
-            field_string("query", request.query),
-            field_string("client_ip", request.client_ip),
-            field_raw("headers", headers_to_json(request.headers, logging.redact_sensitive)),
-        };
-        append_body_fields(request_fields, logging, request.body);
-        generation->logger->log("info", "request_received", request_fields);
+        if (generation->logger->enabled("info")) {
+            std::vector<LogField> request_fields = {
+                field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_string("method", request.method),
+                field_string("local_path", lookup.canonical_path),
+                field_string("query", request.query),
+                field_string("client_ip", request.client_ip),
+                field_headers("headers", request.headers, logging.redact_sensitive),
+            };
+            append_body_fields(request_fields, logging, request.body);
+            generation->logger->log("info", "request_received", request_fields);
+        }
 
         RulePipelineResult pipeline_result;
         if (!route.profile->request_pipeline) {
@@ -1093,7 +1245,8 @@ bool Server::process_with_generation(
                 "missing_compiled_pipeline",
             };
         } else {
-            pipeline_result = route.profile->request_pipeline->apply(request.body);
+            pipeline_result = route.profile->request_pipeline->apply(
+                request.body, inflight_budget_);
         }
         for (const auto& trace : pipeline_result.traces) {
             generation->logger->log("info", "request_rule", {
@@ -1155,10 +1308,16 @@ bool Server::process_with_generation(
             };
             append_body_fields(sent_fields, logging, response.body);
             generation->logger->log("info", "response_sent", sent_fields);
-            return sender(build_response(std::move(response)));
+            return pipeline_error.status_code == 503
+                ? send_response(sender, response)
+                : send_response(sender, response, inflight_budget_);
         }
         if (pipeline_result.rewritten_body) {
+            request_memory.shrink(std::min(
+                request_body_memory,
+                static_cast<std::size_t>(request_memory.bytes())));
             request.body = std::move(*pipeline_result.rewritten_body);
+            request.body_memory = pipeline_result.rewritten_body_memory;
         }
 
         HttpResponse response;
@@ -1166,27 +1325,29 @@ bool Server::process_with_generation(
         std::size_t streamed_body_size = 0;
         std::size_t stream_chunk_count = 0;
 
-        std::vector<LogField> upstream_request_fields = {
-            field_string("request_id", request.request_id),
-            field_number("generation_id", static_cast<long long>(generation->id)),
-            field_string("profile_id", profile_id),
-            field_string("protocol", protocol_id),
-            field_string("route_kind", route_kind),
-            field_string("method", request.method),
-            field_string("upstream_url", route.upstream.base_url),
-            field_string("upstream_path", route.upstream.path),
-            field_string("query", request.query),
-            field_string("upstream_proxy_mode", generation->transport->proxy_mode()),
-            field_bool("rewrite_modified", pipeline_result.modified),
-            field_number("rule_count", static_cast<long long>(pipeline_result.traces.size())),
-            field_number("json_parse_count", static_cast<long long>(pipeline_result.parse_count)),
-            field_number("json_serialize_count", static_cast<long long>(pipeline_result.serialize_count)),
-            field_number("original_body_size", static_cast<long long>(pipeline_result.original_body_size)),
-            field_number("rewritten_body_size", static_cast<long long>(pipeline_result.output_body_size)),
-            field_raw("headers", headers_to_json(request.headers, logging.redact_sensitive)),
-        };
-        append_body_fields(upstream_request_fields, logging, request.body);
-        generation->logger->log("info", "upstream_request", upstream_request_fields);
+        if (generation->logger->enabled("info")) {
+            std::vector<LogField> upstream_request_fields = {
+                field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_string("method", request.method),
+                field_string("upstream_url", route.upstream.base_url),
+                field_string("upstream_path", route.upstream.path),
+                field_string("query", request.query),
+                field_string("upstream_proxy_mode", generation->transport->proxy_mode()),
+                field_bool("rewrite_modified", pipeline_result.modified),
+                field_number("rule_count", static_cast<long long>(pipeline_result.traces.size())),
+                field_number("json_parse_count", static_cast<long long>(pipeline_result.parse_count)),
+                field_number("json_serialize_count", static_cast<long long>(pipeline_result.serialize_count)),
+                field_number("original_body_size", static_cast<long long>(pipeline_result.original_body_size)),
+                field_number("rewritten_body_size", static_cast<long long>(pipeline_result.output_body_size)),
+                field_headers("headers", request.headers, logging.redact_sensitive),
+            };
+            append_body_fields(upstream_request_fields, logging, request.body);
+            generation->logger->log("info", "upstream_request", upstream_request_fields);
+        }
 
         try {
             response = generation->transport->forward_streaming(
@@ -1195,32 +1356,38 @@ bool Server::process_with_generation(
                 [&](const HttpResponse& headers_response) {
                     streamed = true;
                     metrics_->stream_started();
-                    generation->logger->log("info", "upstream_response", {
-                        field_string("request_id", request.request_id),
-                        field_number("generation_id", static_cast<long long>(generation->id)),
-                        field_string("profile_id", profile_id),
-                        field_string("protocol", protocol_id),
-                        field_string("route_kind", route_kind),
-                        field_number("status_code", headers_response.status_code),
-                        field_bool("streaming", true),
-                        field_raw("headers", headers_to_json(
-                            headers_response.headers, logging.redact_sensitive)),
-                        field_number("body_size", 0),
-                    });
-                    return sender(build_stream_response_head(headers_response));
+                    if (generation->logger->enabled("info")) {
+                        generation->logger->log("info", "upstream_response", {
+                            field_string("request_id", request.request_id),
+                            field_number("generation_id", static_cast<long long>(generation->id)),
+                            field_string("profile_id", profile_id),
+                            field_string("protocol", protocol_id),
+                            field_string("route_kind", route_kind),
+                            field_number("status_code", headers_response.status_code),
+                            field_bool("streaming", true),
+                            field_headers(
+                                "headers", headers_response.headers, logging.redact_sensitive),
+                            field_number("body_size", 0),
+                        });
+                    }
+                    const auto head = build_response_head(
+                        headers_response, false, inflight_budget_);
+                    return sender(head.data);
                 },
                 [&](const std::string& chunk) {
-                    std::vector<LogField> chunk_fields = {
-                        field_string("request_id", request.request_id),
-                        field_number("generation_id", static_cast<long long>(generation->id)),
-                        field_string("profile_id", profile_id),
-                        field_string("protocol", protocol_id),
-                        field_string("route_kind", route_kind),
-                        field_number("chunk_sequence", static_cast<long long>(stream_chunk_count)),
-                        field_number("chunk_size", static_cast<long long>(chunk.size())),
-                    };
-                    append_body_fields(chunk_fields, logging, chunk);
-                    generation->logger->log("info", "stream_chunk", chunk_fields);
+                    if (generation->logger->enabled("info")) {
+                        std::vector<LogField> chunk_fields = {
+                            field_string("request_id", request.request_id),
+                            field_number("generation_id", static_cast<long long>(generation->id)),
+                            field_string("profile_id", profile_id),
+                            field_string("protocol", protocol_id),
+                            field_string("route_kind", route_kind),
+                            field_number("chunk_sequence", static_cast<long long>(stream_chunk_count)),
+                            field_number("chunk_size", static_cast<long long>(chunk.size())),
+                        };
+                        append_body_fields(chunk_fields, logging, chunk);
+                        generation->logger->log("info", "stream_chunk", chunk_fields);
+                    }
                     ++stream_chunk_count;
                     streamed_body_size += chunk.size();
                     const bool sent = sender(chunk);
@@ -1269,7 +1436,7 @@ bool Server::process_with_generation(
                 ex.status_code(), ex.type(), ex.what());
         }
 
-        if (!streamed) {
+        if (!streamed && generation->logger->enabled("info")) {
             if (response.reason.empty()) {
                 response.reason = reason_phrase(response.status_code);
             }
@@ -1281,8 +1448,7 @@ bool Server::process_with_generation(
                 field_string("route_kind", route_kind),
                 field_number("status_code", response.status_code),
                 field_bool("streaming", false),
-                field_raw("headers", headers_to_json(
-                    response.headers, logging.redact_sensitive)),
+                field_headers("headers", response.headers, logging.redact_sensitive),
             };
             append_body_fields(upstream_response_fields, logging, response.body);
             generation->logger->log("info", "upstream_response", upstream_response_fields);
@@ -1290,28 +1456,30 @@ bool Server::process_with_generation(
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started);
-        std::vector<LogField> sent_fields = {
-            field_string("request_id", request.request_id),
-            field_number("generation_id", static_cast<long long>(generation->id)),
-            field_string("profile_id", profile_id),
-            field_string("protocol", protocol_id),
-            field_string("route_kind", route_kind),
-            field_number("status_code", response.status_code),
-            field_number("duration_ms", elapsed.count()),
-            field_bool("streaming", streamed),
-            field_number("stream_chunk_count", static_cast<long long>(stream_chunk_count)),
-            field_number("streamed_body_size", static_cast<long long>(streamed_body_size)),
-            field_raw("headers", headers_to_json(response.headers, logging.redact_sensitive)),
-        };
-        if (!streamed) {
-            append_body_fields(sent_fields, logging, response.body);
+        if (generation->logger->enabled("info")) {
+            std::vector<LogField> sent_fields = {
+                field_string("request_id", request.request_id),
+                field_number("generation_id", static_cast<long long>(generation->id)),
+                field_string("profile_id", profile_id),
+                field_string("protocol", protocol_id),
+                field_string("route_kind", route_kind),
+                field_number("status_code", response.status_code),
+                field_number("duration_ms", elapsed.count()),
+                field_bool("streaming", streamed),
+                field_number("stream_chunk_count", static_cast<long long>(stream_chunk_count)),
+                field_number("streamed_body_size", static_cast<long long>(streamed_body_size)),
+                field_headers("headers", response.headers, logging.redact_sensitive),
+            };
+            if (!streamed) {
+                append_body_fields(sent_fields, logging, response.body);
+            }
+            generation->logger->log("info", "response_sent", sent_fields);
         }
-        generation->logger->log("info", "response_sent", sent_fields);
 
         if (streamed) {
             return true;
         }
-        return sender(build_response(std::move(response)));
+        return send_response(sender, response, inflight_budget_);
     } catch (const InvalidHttpRequest& ex) {
         generation->logger->log("error", "request_error", {
             field_string("request_id", request_id),
@@ -1328,7 +1496,7 @@ bool Server::process_with_generation(
         response.reason = reason_phrase(400);
         response.headers.emplace_back("Content-Type", "application/json");
         response.body = error_json(ex.what(), "invalid_request_error");
-        return sender(build_response(std::move(response)));
+        return send_response(sender, response);
     } catch (const ProxyError& ex) {
         if (ex.type() == "client_cancelled") {
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1344,6 +1512,29 @@ bool Server::process_with_generation(
             return false;
         }
         throw;
+    } catch (const InflightBudgetExceeded&) {
+        generation->logger->log("error", "request_error", {
+            field_string("request_id", request_id),
+            field_number("generation_id", static_cast<long long>(generation->id)),
+            field_string("profile_id", profile_id),
+            field_string("protocol", protocol_id),
+            field_string("route_kind", route_kind),
+            field_string("reason", "inflight_budget_exhausted"),
+            field_string("message", "inflight memory budget exhausted"),
+            field_string("type", "server_error"),
+            field_number("status_code", 503),
+        });
+        HttpResponse response = protocol_handler
+            ? protocol_handler->local_error(
+                  503, "server_error", "inflight memory budget exhausted")
+            : HttpResponse{
+                  503,
+                  reason_phrase(503),
+                  {{"Content-Type", "application/json"}},
+                  nullptr,
+                  error_json("inflight memory budget exhausted", "server_error"),
+              };
+        return send_response(sender, response);
     } catch (const std::exception& ex) {
         generation->logger->log("error", "request_error", {
             field_string("request_id", request_id),
@@ -1362,9 +1553,10 @@ bool Server::process_with_generation(
                   500,
                   reason_phrase(500),
                   {{"Content-Type", "application/json"}},
+                  nullptr,
                   error_json("internal server error", "server_error"),
               };
-        return sender(build_response(response));
+        return send_response(sender, response);
     }
 }
 
@@ -1382,6 +1574,10 @@ void Server::log_performance_snapshot(const std::string& reason) const {
         field_number("peak_generation_requests", static_cast<long long>(snapshot.peak_generation_requests)),
         field_number("current_retired_generations", static_cast<long long>(snapshot.current_retired_generations)),
         field_number("peak_retired_generations", static_cast<long long>(snapshot.peak_retired_generations)),
+        field_number("current_control_tasks", static_cast<long long>(snapshot.current_control_tasks)),
+        field_number("peak_control_tasks", static_cast<long long>(snapshot.peak_control_tasks)),
+        field_number("control_tasks_rejected", static_cast<long long>(snapshot.control_tasks_rejected)),
+        field_number("control_tasks_coalesced", static_cast<long long>(snapshot.control_tasks_coalesced)),
         field_number("connections_accepted", static_cast<long long>(snapshot.connections_accepted)),
         field_number("connections_rejected", static_cast<long long>(snapshot.connections_rejected)),
         field_number("connections_completed", static_cast<long long>(snapshot.connections_completed)),
@@ -1643,17 +1839,22 @@ int Server::run(const StartupCallback& startup_callback) {
                         static_cast<std::size_t>(request_generation
                                 ->runtime.application.runtime.max_request_body_size),
                         std::move(job.client_ip),
+                        *inflight_budget_,
                         [this]() {
                             return stop_requested_.load(std::memory_order_acquire)
                                 || server_platform::shutdown_signal_requested();
                         },
                         [this, request_generation](
-                            const std::string& raw,
-                            const std::string& client_ip,
+                            ReceivedRequest received,
                             const std::function<bool(const std::string&)>& sender,
                             const CancellationToken& cancellation) {
-                            return process_with_generation(
-                                request_generation, raw, client_ip, sender, cancellation);
+                            return process_parsed_with_generation(
+                                request_generation,
+                                std::move(received.request),
+                                std::move(received.memory),
+                                received.body_memory_bytes,
+                                sender,
+                                cancellation);
                         },
                         [this, request_generation](
                             int status_code,
@@ -1855,13 +2056,17 @@ int Server::run(const StartupCallback& startup_callback) {
             client_shutdown_ = {};
         }
         reporter.stop();
-        log_performance_snapshot("server_stop");
         const auto stopping_generation = current_generation();
+        std::string drain_error;
+        if (!stopping_generation->logger->drain(drain_error)) {
+            handle_logger_failure(drain_error);
+        }
+        log_performance_snapshot("server_stop");
         stopping_generation->logger->log("info", "server_stop", {
             field_number("generation_id", static_cast<long long>(stopping_generation->id)),
             field_number("listener_count", 1),
         });
-        std::string drain_error;
+        drain_error.clear();
         if (!stopping_generation->logger->drain(drain_error)) {
             handle_logger_failure(drain_error);
         }

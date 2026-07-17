@@ -55,7 +55,9 @@ CompiledPipeline::CompiledPipeline(
     std::vector<std::shared_ptr<const CompiledRule>> rules)
     : rules_(std::move(rules)) {}
 
-RulePipelineResult CompiledPipeline::apply(const std::string& body) const {
+RulePipelineResult CompiledPipeline::apply(
+    const std::string& body,
+    std::shared_ptr<InflightMemoryBudget> inflight_budget) const {
     RulePipelineResult result;
     result.original_body_size = body.size();
     result.output_body_size = body.size();
@@ -63,12 +65,26 @@ RulePipelineResult CompiledPipeline::apply(const std::string& body) const {
         return result;
     }
 
-    nlohmann::json candidate;
+    RuleJsonAllocationContext allocation_context(inflight_budget);
+    RuleJsonAllocationScope allocation_scope(&allocation_context);
+    RuleJson candidate;
     const auto parse_started = std::chrono::steady_clock::now();
     result.parse_count = 1;
     try {
-        candidate = nlohmann::json::parse(body);
-    } catch (const nlohmann::json::parse_error&) {
+        candidate = RuleJson::parse(body);
+    } catch (const InflightBudgetExceeded&) {
+        result.parse_duration_us = elapsed_us(parse_started);
+        result.ok = false;
+        result.error = RulePipelineError{
+            503,
+            "server_error",
+            "inflight memory budget exhausted",
+            {},
+            {},
+            "inflight_budget_exhausted",
+        };
+        return result;
+    } catch (const RuleJson::parse_error&) {
         result.parse_duration_us = elapsed_us(parse_started);
         result.ok = false;
         result.error = RulePipelineError{
@@ -80,7 +96,7 @@ RulePipelineResult CompiledPipeline::apply(const std::string& body) const {
             "invalid_json",
         };
         return result;
-    } catch (const nlohmann::json::exception&) {
+    } catch (const RuleJson::exception&) {
         result.parse_duration_us = elapsed_us(parse_started);
         result.ok = false;
         result.error = RulePipelineError{
@@ -130,6 +146,29 @@ RulePipelineResult CompiledPipeline::apply(const std::string& body) const {
             const auto duration_us = elapsed_us(started);
             candidate_modified = candidate_modified || rule_result.modified;
             result.traces.push_back(make_trace(*rule, rule_result, duration_us));
+        } catch (const InflightBudgetExceeded&) {
+            const auto duration_us = elapsed_us(started);
+            result.rules_duration_us = elapsed_us(rules_started);
+            result.ok = false;
+            result.modified = false;
+            result.error = RulePipelineError{
+                503,
+                "server_error",
+                "inflight memory budget exhausted",
+                rule->id(),
+                rule->type(),
+                "inflight_budget_exhausted",
+            };
+            result.traces.push_back(RuleTrace{
+                rule->id(),
+                rule->type(),
+                false,
+                false,
+                "inflight_budget_exhausted",
+                {},
+                duration_us,
+            });
+            return result;
         } catch (const RuleRuntimeError& ex) {
             const auto duration_us = elapsed_us(started);
             result.rules_duration_us = elapsed_us(rules_started);
@@ -186,16 +225,42 @@ RulePipelineResult CompiledPipeline::apply(const std::string& body) const {
     const auto serialize_started = std::chrono::steady_clock::now();
     result.serialize_count = 1;
     try {
-        result.rewritten_body = candidate.dump();
+        const auto serialized = candidate.dump();
+        if (inflight_budget) {
+            auto memory = inflight_budget->try_acquire(serialized.size());
+            if (!memory) {
+                throw InflightBudgetExceeded();
+            }
+            result.rewritten_body_memory =
+                std::make_shared<InflightMemoryBudget::Lease>(std::move(*memory));
+        }
+        result.rewritten_body.emplace(serialized.data(), serialized.size());
         result.serialize_duration_us = elapsed_us(serialize_started);
         result.modified = true;
         result.output_body_size = result.rewritten_body->size();
+        return result;
+    } catch (const InflightBudgetExceeded&) {
+        result.serialize_duration_us = elapsed_us(serialize_started);
+        result.ok = false;
+        result.modified = false;
+        result.rewritten_body.reset();
+        result.rewritten_body_memory.reset();
+        result.error = RulePipelineError{
+            503,
+            "server_error",
+            "inflight memory budget exhausted",
+            {},
+            {},
+            "inflight_budget_exhausted",
+        };
+        result.output_body_size = body.size();
         return result;
     } catch (...) {
         result.serialize_duration_us = elapsed_us(serialize_started);
         result.ok = false;
         result.modified = false;
         result.rewritten_body.reset();
+        result.rewritten_body_memory.reset();
         result.error = RulePipelineError{
             500,
             "server_error",

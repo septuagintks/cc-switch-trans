@@ -11,6 +11,7 @@
 #include <cctype>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -241,6 +242,8 @@ enum class AbortReason {
     ResponseBodyTimeout,
     TotalTimeout,
     ResponseTooLarge,
+    InflightBudgetExceeded,
+    AllocationFailed,
     CallbackStopped,
 };
 
@@ -250,6 +253,8 @@ struct RequestContext {
     std::size_t max_response_body_size = 0;
     std::size_t request_body_size = 0;
     std::shared_ptr<RuntimeMetrics> metrics;
+    std::shared_ptr<InflightMemoryBudget> inflight_budget;
+    std::shared_ptr<InflightMemoryBudget::Lease> response_body_memory;
     const CancellationToken* cancellation = nullptr;
     const UpstreamTransport::HeaderCallback* on_headers = nullptr;
     const UpstreamTransport::ChunkCallback* on_chunk = nullptr;
@@ -374,6 +379,7 @@ std::size_t response_header_callback(
 
     if (raw.starts_with("HTTP/")) {
         context.response = HttpResponse{};
+        context.response.body_memory = context.response_body_memory;
         context.response.reason.clear();
         context.response_headers.clear();
         context.headers_complete = false;
@@ -433,7 +439,22 @@ std::size_t response_body_callback(
         context.metrics->upstream_bytes_received(bytes);
     }
     if (context.streaming) {
-        if (!(*context.on_chunk)(std::string(data, bytes))) {
+        std::optional<InflightMemoryBudget::Lease> memory;
+        if (context.inflight_budget) {
+            memory = context.inflight_budget->try_acquire(bytes);
+            if (!memory) {
+                context.abort_reason = AbortReason::InflightBudgetExceeded;
+                return 0;
+            }
+        }
+        std::string chunk;
+        try {
+            chunk.assign(data, bytes);
+        } catch (...) {
+            context.abort_reason = AbortReason::AllocationFailed;
+            return 0;
+        }
+        if (!(*context.on_chunk)(chunk)) {
             context.abort_reason = AbortReason::CallbackStopped;
             return 0;
         }
@@ -445,7 +466,20 @@ std::size_t response_body_callback(
         context.abort_reason = AbortReason::ResponseTooLarge;
         return 0;
     }
-    context.response.body.append(data, bytes);
+    if (context.response_body_memory
+        && !context.response_body_memory->try_grow(bytes)) {
+        context.abort_reason = AbortReason::InflightBudgetExceeded;
+        return 0;
+    }
+    try {
+        context.response.body.append(data, bytes);
+    } catch (...) {
+        if (context.response_body_memory) {
+            context.response_body_memory->shrink(bytes);
+        }
+        context.abort_reason = AbortReason::AllocationFailed;
+        return 0;
+    }
     return bytes;
 }
 
@@ -517,6 +551,10 @@ ProxyError abort_error(AbortReason reason) {
         return ProxyError(504, "upstream_total_timeout", "upstream request total timeout exceeded");
     case AbortReason::ResponseTooLarge:
         return ProxyError(502, "upstream_response_too_large", "upstream response body too large");
+    case AbortReason::InflightBudgetExceeded:
+        return ProxyError(503, "server_error", "inflight memory budget exhausted");
+    case AbortReason::AllocationFailed:
+        return ProxyError(500, "server_error", "failed to allocate upstream response buffer");
     case AbortReason::None:
     case AbortReason::CallbackStopped:
         break;
@@ -543,6 +581,8 @@ UpstreamTimeoutPhase timeout_phase(AbortReason reason) {
     case AbortReason::None:
     case AbortReason::Cancelled:
     case AbortReason::ResponseTooLarge:
+    case AbortReason::InflightBudgetExceeded:
+    case AbortReason::AllocationFailed:
     case AbortReason::CallbackStopped:
         break;
     }
@@ -567,10 +607,12 @@ CurlTransport::CurlTransport(
     TimeoutConfig timeouts,
     std::size_t max_response_body_size,
     std::size_t handle_pool_size,
-    std::shared_ptr<RuntimeMetrics> metrics)
+    std::shared_ptr<RuntimeMetrics> metrics,
+    std::shared_ptr<InflightMemoryBudget> inflight_budget)
     : timeouts_(timeouts)
     , max_response_body_size_(max_response_body_size)
-    , metrics_(std::move(metrics)) {
+    , metrics_(std::move(metrics))
+    , inflight_budget_(std::move(inflight_budget)) {
     ensure_curl_global();
     impl_ = std::make_unique<Impl>(handle_pool_size, metrics_);
 }
@@ -621,6 +663,17 @@ HttpResponse CurlTransport::forward_streaming(
     context.max_response_body_size = max_response_body_size_;
     context.request_body_size = request.body.size();
     context.metrics = metrics_;
+    context.inflight_budget = inflight_budget_;
+    if (inflight_budget_) {
+        auto memory = inflight_budget_->try_acquire(0);
+        if (!memory) {
+            throw ProxyError(
+                503, "server_error", "inflight memory budget exhausted");
+        }
+        context.response_body_memory =
+            std::make_shared<InflightMemoryBudget::Lease>(std::move(*memory));
+        context.response.body_memory = context.response_body_memory;
+    }
     context.cancellation = &cancellation;
     context.on_headers = &on_headers;
     context.on_chunk = &on_chunk;
@@ -753,7 +806,7 @@ HttpResponse CurlTransport::forward_streaming(
         if (metrics_) {
             metrics_->upstream_request_completed();
         }
-        return context.response;
+        return std::move(context.response);
     }
     if (context.abort_reason == AbortReason::None && cancellation.is_cancelled()) {
         context.abort_reason = AbortReason::Cancelled;
@@ -802,7 +855,7 @@ HttpResponse CurlTransport::forward_streaming(
     if (metrics_) {
         metrics_->upstream_request_completed();
     }
-    return context.response;
+    return std::move(context.response);
 }
 
 } // namespace ccs

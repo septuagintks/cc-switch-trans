@@ -1,5 +1,6 @@
 #include "config/config_document.hpp"
 #include "config/runtime_compiler.hpp"
+#include "core/runtime_metrics.hpp"
 #include "protocols/protocol_handler.hpp"
 #include "protocols/protocol_registry.hpp"
 #include "rules/generic_json_rules.hpp"
@@ -93,7 +94,7 @@ public:
     ThrowingRule()
         : CompiledRule("throws", "test_rule") {}
 
-    ccs::RuleApplyResult apply(nlohmann::json&) const override {
+    ccs::RuleApplyResult apply(ccs::RuleJson&) const override {
         throw std::runtime_error("sensitive implementation detail");
     }
 };
@@ -103,7 +104,7 @@ public:
     explicit NoopRule(std::string id)
         : CompiledRule(std::move(id), "custom_rule") {}
 
-    ccs::RuleApplyResult apply(nlohmann::json&) const override {
+    ccs::RuleApplyResult apply(ccs::RuleJson&) const override {
         return {false, false, "noop", {"", 0}};
     }
 };
@@ -485,6 +486,43 @@ void test_pipeline_parse_order_and_rollback() {
         "unexpected rule errors are sanitized and classified as server errors");
 }
 
+void test_pipeline_inflight_budget() {
+    const auto pipeline = compile({
+        rule("set", "set_field", {{"path", "/model"}, {"value", "after"}}),
+    });
+    {
+        auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+        auto budget = std::make_shared<ccs::InflightMemoryBudget>(64, metrics);
+        const auto rejected = pipeline->apply(
+            R"({"model":"before","input":"budgeted"})", budget);
+        const auto snapshot = metrics->snapshot();
+        require(!rejected.ok
+                && rejected.error
+                && rejected.error->status_code == 503
+                && rejected.error->reason == "inflight_budget_exhausted"
+                && snapshot.current_inflight_bytes == 0
+                && snapshot.inflight_budget_rejections >= 1,
+            "Rule DOM budget rejection is classified and fully released");
+    }
+
+    auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    auto budget = std::make_shared<ccs::InflightMemoryBudget>(1024 * 1024, metrics);
+    {
+        const auto transformed = pipeline->apply(
+            R"({"model":"before","input":"budgeted"})", budget);
+        const auto active = metrics->snapshot();
+        require(transformed.ok
+                && transformed.modified
+                && transformed.rewritten_body
+                && transformed.rewritten_body_memory
+                && active.current_inflight_bytes == transformed.rewritten_body->size()
+                && active.peak_inflight_bytes > active.current_inflight_bytes,
+            "Rule DOM allocations drain while rewritten output retains its exact lease");
+    }
+    require(metrics->snapshot().current_inflight_bytes == 0,
+        "rewritten Rule output releases its lease with the pipeline result");
+}
+
 void test_json_pointer_semantics() {
     const auto escaped = compile({
         rule("escaped", "set_field", {{"path", "/a~1b/~0key"}, {"value", 2}}),
@@ -642,6 +680,7 @@ int main() {
         {"Rule descriptors", test_rule_descriptors},
         {"runtime compiler rule registry snapshot", test_runtime_compiler_rule_registry_snapshot},
         {"pipeline parse order and rollback", test_pipeline_parse_order_and_rollback},
+        {"pipeline inflight budget", test_pipeline_inflight_budget},
         {"JSON Pointer semantics", test_json_pointer_semantics},
         {"remove_tool protocol layouts", test_remove_tool_protocol_layouts},
         {"remove_tool fixture", test_remove_tool_fixture},

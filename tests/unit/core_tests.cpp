@@ -187,10 +187,15 @@ void test_logger_durability_and_generation_metrics() {
     ccs::LoggerConfig config;
     config.flush_interval_ms = 50;
     auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    auto budget = std::make_shared<ccs::InflightMemoryBudget>(1024 * 1024, metrics);
     auto first_state = std::make_shared<ControlledSinkState>();
     {
         ccs::Logger first(
-            config, metrics, std::make_unique<ControlledLogSink>(first_state));
+            config,
+            metrics,
+            std::make_unique<ControlledLogSink>(first_state),
+            {},
+            budget);
         std::string error;
         require(first.open(error), error);
         require(first.log("info", "batched", {}), "normal record is accepted");
@@ -213,7 +218,8 @@ void test_logger_durability_and_generation_metrics() {
                 std::make_unique<ControlledLogSink>(failed_state),
                 [&](const std::string& callback_error) {
                     reported_failure = callback_error;
-                });
+                },
+                budget);
             require(failed.open(error), error);
             require(metrics->snapshot().log_writers_active == 2,
                 "overlapping generations count both writers");
@@ -231,6 +237,10 @@ void test_logger_durability_and_generation_metrics() {
     const auto stopped = metrics->snapshot();
     require(stopped.log_writers_active == 0 && stopped.log_writer_healthy == 0,
         "retiring all generations clears writer health");
+    require(stopped.current_log_queue_records == 0
+            && stopped.current_log_queue_bytes == 0
+            && stopped.current_inflight_bytes == 0,
+        "failed and retired log writers clear queue metrics and memory leases");
 }
 
 void test_logger_backpressure() {
@@ -371,6 +381,77 @@ void test_logger_bounded_rotation_and_recovery() {
 
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
+}
+
+void test_logger_budget_and_borrowed_fields() {
+    ccs::LoggerConfig config;
+    config.flush_interval_ms = 1;
+    config.queue_capacity = 4096;
+    auto metrics = std::make_shared<ccs::RuntimeMetrics>();
+    auto budget = std::make_shared<ccs::InflightMemoryBudget>(4096, metrics);
+    auto state = std::make_shared<ControlledSinkState>();
+    state->block_first_flush = true;
+    ccs::Logger logger(
+        config,
+        metrics,
+        std::make_unique<ControlledLogSink>(state),
+        {},
+        budget);
+    std::string error;
+    require(logger.open(error), error);
+    require(logger.enabled("info") && !logger.enabled("debug"),
+        "logger exposes level filtering before field construction");
+
+    const std::string body = "borrowed-body";
+    const ccs::Headers headers = {
+        {"Authorization", "Bearer secret"},
+        {"X-Test", "visible"},
+    };
+    require(logger.log("info", "borrowed", {
+        ccs::field_string_view("body", body),
+        ccs::field_headers("headers", headers, true),
+    }), "budgeted logger accepts borrowed body/header fields");
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        require(state->cv.wait_for(lock, std::chrono::milliseconds(500), [&]() {
+            return state->first_flush_entered;
+        }), "budgeted logger entered controlled flush");
+    }
+    require(metrics->snapshot().current_inflight_bytes > 0,
+        "queued rendered log line retains an inflight lease");
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->release_first_flush = true;
+    }
+    state->cv.notify_all();
+    require(logger.drain(error), error);
+    require(metrics->snapshot().current_inflight_bytes == 0,
+        "written log line releases its inflight lease");
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        require(state->data.find("borrowed-body") != std::string::npos
+                && state->data.find("Bearer secret") == std::string::npos
+                && state->data.find("***") != std::string::npos
+                && state->data.find("visible") != std::string::npos,
+            "borrowed fields render synchronously with header redaction");
+    }
+
+    auto rejected_metrics = std::make_shared<ccs::RuntimeMetrics>();
+    auto tiny_budget = std::make_shared<ccs::InflightMemoryBudget>(8, rejected_metrics);
+    auto rejected_state = std::make_shared<ControlledSinkState>();
+    ccs::Logger rejected(
+        config,
+        rejected_metrics,
+        std::make_unique<ControlledLogSink>(rejected_state),
+        {},
+        tiny_budget);
+    require(rejected.open(error), error);
+    require(!rejected.log("info", "cannot-fit", {}),
+        "logger rejects a rendered line that cannot obtain budget");
+    const auto rejected_snapshot = rejected_metrics->snapshot();
+    require(rejected_snapshot.current_inflight_bytes == 0
+            && rejected_snapshot.inflight_budget_rejections == 1,
+        "logger budget rejection leaves accounting drained");
 }
 
 void test_runtime_metrics() {
@@ -634,6 +715,7 @@ int main() {
         {"hop-by-hop header filtering", test_hop_by_hop_header_filtering},
         {"logger durability and generation metrics", test_logger_durability_and_generation_metrics},
         {"logger backpressure", test_logger_backpressure},
+        {"logger budget and borrowed fields", test_logger_budget_and_borrowed_fields},
         {"logger bounded rotation and recovery", test_logger_bounded_rotation_and_recovery},
         {"runtime metrics", test_runtime_metrics},
         {"server stops on logger failure", test_server_stops_on_logger_failure},

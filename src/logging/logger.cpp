@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
+#include <cstdio>
+#include <ctime>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -18,7 +21,6 @@
 #include <windows.h>
 #else
 #include <cerrno>
-#include <cstdio>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -505,44 +507,52 @@ private:
 #endif
 };
 
-std::string json_escape(const std::string& value) {
-    std::ostringstream out;
+std::size_t escaped_size(std::string_view value) {
+    std::size_t size = 0;
     for (const unsigned char ch : value) {
         switch (ch) {
         case '\\':
-            out << "\\\\";
-            break;
         case '"':
-            out << "\\\"";
-            break;
         case '\b':
-            out << "\\b";
-            break;
         case '\f':
-            out << "\\f";
-            break;
         case '\n':
-            out << "\\n";
-            break;
         case '\r':
-            out << "\\r";
-            break;
         case '\t':
-            out << "\\t";
+            size += 2;
             break;
         default:
+            size += ch < 0x20 ? 6 : 1;
+            break;
+        }
+    }
+    return size;
+}
+
+void append_escaped(std::string& output, std::string_view value) {
+    constexpr char hex[] = "0123456789abcdef";
+    for (const unsigned char ch : value) {
+        switch (ch) {
+        case '\\': output += "\\\\"; break;
+        case '"': output += "\\\""; break;
+        case '\b': output += "\\b"; break;
+        case '\f': output += "\\f"; break;
+        case '\n': output += "\\n"; break;
+        case '\r': output += "\\r"; break;
+        case '\t': output += "\\t"; break;
+        default:
             if (ch < 0x20) {
-                out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch);
+                output += "\\u00";
+                output.push_back(hex[(ch >> 4) & 0x0f]);
+                output.push_back(hex[ch & 0x0f]);
             } else {
-                out << static_cast<char>(ch);
+                output.push_back(static_cast<char>(ch));
             }
             break;
         }
     }
-    return out.str();
 }
 
-std::string timestamp() {
+std::array<char, 24> timestamp() {
     const auto now = std::chrono::system_clock::now();
     const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
     const auto time = std::chrono::system_clock::to_time_t(now);
@@ -553,13 +563,21 @@ std::string timestamp() {
     localtime_r(&time, &local);
 #endif
 
-    std::ostringstream out;
-    out << std::put_time(&local, "%Y-%m-%dT%H:%M:%S")
-        << "." << std::setw(3) << std::setfill('0') << millis.count();
-    return out.str();
+    std::array<char, 24> output{};
+    if (std::strftime(output.data(), 20, "%Y-%m-%dT%H:%M:%S", &local) == 0) {
+        constexpr std::string_view fallback = "1970-01-01T00:00:00.000";
+        std::copy(fallback.begin(), fallback.end(), output.begin());
+        return output;
+    }
+    std::snprintf(
+        output.data() + 19,
+        output.size() - 19,
+        ".%03lld",
+        static_cast<long long>(millis.count()));
+    return output;
 }
 
-int level_value(const std::string& level) {
+int level_value(std::string_view level) {
     if (level == "trace") {
         return 0;
     }
@@ -578,21 +596,128 @@ int level_value(const std::string& level) {
     return 2;
 }
 
-std::string render_line(const std::string& level, const std::string& event, const std::vector<LogField>& fields) {
-    std::ostringstream out;
-    out << "{\"time\":\"" << json_escape(timestamp()) << "\""
-        << ",\"level\":\"" << json_escape(level) << "\""
-        << ",\"event\":\"" << json_escape(event) << "\"";
-    for (const auto& field : fields) {
-        out << ",\"" << json_escape(field.name) << "\":";
-        if (field.quoted) {
-            out << "\"" << json_escape(field.value) << "\"";
-        } else {
-            out << field.value;
+bool ascii_case_equal(std::string_view left, std::string_view right) {
+    return left.size() == right.size()
+        && std::equal(left.begin(), left.end(), right.begin(), [](char lhs, char rhs) {
+            return std::tolower(static_cast<unsigned char>(lhs))
+                == std::tolower(static_cast<unsigned char>(rhs));
+        });
+}
+
+bool is_sensitive_header(std::string_view name) {
+    static constexpr std::array<std::string_view, 6> sensitive = {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+    };
+    return std::any_of(sensitive.begin(), sensitive.end(), [&](std::string_view candidate) {
+        return ascii_case_equal(name, candidate);
+    });
+}
+
+std::string_view field_text(const LogField& field) {
+    if (const auto* owned = std::get_if<std::string>(&field.value)) {
+        return *owned;
+    }
+    if (const auto* borrowed = std::get_if<std::string_view>(&field.value)) {
+        return *borrowed;
+    }
+    return {};
+}
+
+std::size_t headers_size(const LogHeadersRef& reference) {
+    std::size_t size = 2;
+    bool first = true;
+    if (!reference.headers) {
+        return size;
+    }
+    for (const auto& [name, value] : *reference.headers) {
+        const std::string_view rendered = reference.redact_sensitive && is_sensitive_header(name)
+            ? std::string_view("***")
+            : std::string_view(value);
+        size += (first ? 0 : 1) + 5 + escaped_size(name) + escaped_size(rendered);
+        first = false;
+    }
+    return size;
+}
+
+void append_headers(std::string& output, const LogHeadersRef& reference) {
+    output.push_back('{');
+    bool first = true;
+    if (reference.headers) {
+        for (const auto& [name, value] : *reference.headers) {
+            if (!first) {
+                output.push_back(',');
+            }
+            first = false;
+            output.push_back('"');
+            append_escaped(output, name);
+            output += "\":\"";
+            append_escaped(
+                output,
+                reference.redact_sensitive && is_sensitive_header(name)
+                    ? std::string_view("***")
+                    : std::string_view(value));
+            output.push_back('"');
         }
     }
-    out << "}\n";
-    return out.str();
+    output.push_back('}');
+}
+
+std::size_t rendered_line_size(
+    std::string_view level,
+    std::string_view event,
+    const std::vector<LogField>& fields) {
+    constexpr std::size_t timestamp_size = 23;
+    std::size_t size = 32 + timestamp_size + escaped_size(level) + escaped_size(event);
+    for (const auto& field : fields) {
+        size += 4 + escaped_size(field.name);
+        if (const auto* headers = std::get_if<LogHeadersRef>(&field.value)) {
+            size += headers_size(*headers);
+        } else {
+            const auto value = field_text(field);
+            size += field.quoted ? escaped_size(value) + 2 : value.size();
+        }
+    }
+    return size + 2;
+}
+
+std::string render_line(
+    std::string_view level,
+    std::string_view event,
+    const std::vector<LogField>& fields) {
+    std::string output;
+    output.reserve(rendered_line_size(level, event, fields));
+    output += "{\"time\":\"";
+    const auto rendered_timestamp = timestamp();
+    append_escaped(output, std::string_view(rendered_timestamp.data(), 23));
+    output += "\",\"level\":\"";
+    append_escaped(output, level);
+    output += "\",\"event\":\"";
+    append_escaped(output, event);
+    output.push_back('"');
+    for (const auto& field : fields) {
+        output += ",\"";
+        append_escaped(output, field.name);
+        output += "\":";
+        if (const auto* headers = std::get_if<LogHeadersRef>(&field.value)) {
+            append_headers(output, *headers);
+            continue;
+        }
+        const auto value = field_text(field);
+        if (field.quoted) {
+            output.push_back('"');
+            append_escaped(output, value);
+            output.push_back('"');
+        } else {
+            output.append(value);
+        }
+    }
+    output += "}\n";
+    return output;
 }
 
 } // namespace
@@ -601,25 +726,42 @@ LogField field_string(std::string name, std::string value) {
     return LogField{std::move(name), std::move(value), true};
 }
 
+LogField field_string_view(std::string name, std::string_view value) {
+    return LogField{std::move(name), value, true};
+}
+
 LogField field_number(std::string name, long long value) {
     return LogField{std::move(name), std::to_string(value), false};
 }
 
 LogField field_bool(std::string name, bool value) {
-    return LogField{std::move(name), value ? "true" : "false", false};
+    return LogField{std::move(name), std::string(value ? "true" : "false"), false};
 }
 
 LogField field_raw(std::string name, std::string raw_json) {
     return LogField{std::move(name), std::move(raw_json), false};
 }
 
+LogField field_headers(
+    std::string name,
+    const Headers& headers,
+    bool redact_sensitive) {
+    return LogField{
+        std::move(name),
+        LogHeadersRef{&headers, redact_sensitive},
+        false,
+    };
+}
+
 Logger::Logger(
     LoggerConfig config,
     std::shared_ptr<RuntimeMetrics> metrics,
     std::unique_ptr<LogSink> sink,
-    FailureHandler failure_handler)
+    FailureHandler failure_handler,
+    std::shared_ptr<InflightMemoryBudget> inflight_budget)
     : config_(std::move(config))
     , metrics_(std::move(metrics))
+    , inflight_budget_(std::move(inflight_budget))
     , sink_(std::move(sink))
     , failure_handler_(std::move(failure_handler)) {
     if (!sink_) {
@@ -698,14 +840,37 @@ bool Logger::log(std::string level, std::string event, std::initializer_list<Log
     return log(std::move(level), std::move(event), std::vector<LogField>(fields));
 }
 
+bool Logger::enabled(std::string_view level) const noexcept {
+    return level_value(level) >= level_value(config_.level);
+}
+
 bool Logger::log(std::string level, std::string event, const std::vector<LogField>& fields) const {
-    if (level_value(level) < level_value(config_.level)) {
+    if (!enabled(level)) {
         return true;
     }
 
     const bool immediate_flush = level == "error";
-    auto line = render_line(level, event, fields);
+    const auto reserved_line_size = rendered_line_size(level, event, fields);
+    std::optional<InflightMemoryBudget::Lease> memory;
+    if (inflight_budget_) {
+        memory = inflight_budget_->try_acquire(reserved_line_size);
+        if (!memory) {
+            return false;
+        }
+    }
+    std::string line;
+    try {
+        line = render_line(level, event, fields);
+    } catch (...) {
+        return false;
+    }
     const auto line_size = line.size();
+    if (memory && line_size < memory->bytes()) {
+        memory->shrink(memory->bytes() - line_size);
+    } else if (memory && line_size > memory->bytes()
+        && !memory->try_grow(line_size - memory->bytes())) {
+        return false;
+    }
 
     std::unique_lock<std::mutex> lock(mutex_);
     if (state_ != LogWriterState::Running || stopping_) {
@@ -727,14 +892,25 @@ bool Logger::log(std::string level, std::string event, const std::vector<LogFiel
         return false;
     }
 
-    const auto sequence = next_sequence_++;
+    const auto sequence = next_sequence_;
     const auto enqueued_at = std::chrono::steady_clock::now();
+    try {
+        queue_.push_back(QueuedRecord{
+            sequence,
+            std::move(memory),
+            std::move(line),
+            immediate_flush,
+            enqueued_at,
+        });
+    } catch (...) {
+        return false;
+    }
+    ++next_sequence_;
     if (pending_records_ == 0) {
         oldest_pending_at_ = enqueued_at;
     }
     ++pending_records_;
     pending_bytes_ += line_size;
-    queue_.push_back(QueuedRecord{sequence, std::move(line), immediate_flush, enqueued_at});
     if (metrics_) {
         const auto oldest = oldest_pending_at_.time_since_epoch();
         metrics_->log_record_enqueued(
@@ -910,12 +1086,17 @@ void Logger::report_writer_failure(std::string error) {
     bool was_active = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        queue_.clear();
+        pending_records_ = 0;
+        pending_bytes_ = 0;
+        oldest_pending_at_ = {};
         state_ = LogWriterState::Failed;
         writer_error_ = error;
         was_active = metrics_writer_active_;
         metrics_writer_active_ = false;
     }
     if (metrics_) {
+        metrics_->log_queue_reset();
         metrics_->log_writer_failed(was_active);
     }
     try {

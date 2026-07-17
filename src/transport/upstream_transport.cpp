@@ -62,19 +62,28 @@ std::unique_ptr<UpstreamTransport> make_upstream_transport(
     TimeoutConfig timeouts,
     std::size_t max_response_body_size,
     std::shared_ptr<RuntimeMetrics> metrics,
-    std::size_t handle_pool_size) {
+    std::size_t handle_pool_size,
+    std::shared_ptr<InflightMemoryBudget> inflight_budget) {
 #ifdef _WIN32
     (void)handle_pool_size;
     return std::make_unique<WinHttpTransport>(
-        timeouts, max_response_body_size, std::move(metrics));
+        timeouts,
+        max_response_body_size,
+        std::move(metrics),
+        std::move(inflight_budget));
 #elif defined(__APPLE__)
     return std::make_unique<CurlTransport>(
-        timeouts, max_response_body_size, handle_pool_size, std::move(metrics));
+        timeouts,
+        max_response_body_size,
+        handle_pool_size,
+        std::move(metrics),
+        std::move(inflight_budget));
 #else
     (void)timeouts;
     (void)max_response_body_size;
     (void)metrics;
     (void)handle_pool_size;
+    (void)inflight_budget;
     return std::make_unique<UnsupportedTransport>();
 #endif
 }

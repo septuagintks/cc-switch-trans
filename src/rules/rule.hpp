@@ -1,6 +1,6 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include "rules/rule_json.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -53,6 +53,7 @@ struct RulePipelineResult {
     std::uint64_t serialize_duration_us = 0;
     std::size_t original_body_size = 0;
     std::size_t output_body_size = 0;
+    std::shared_ptr<InflightMemoryBudget::Lease> rewritten_body_memory;
     std::optional<std::string> rewritten_body;
     std::vector<RuleTrace> traces;
     std::optional<RulePipelineError> error;
@@ -75,7 +76,7 @@ public:
 
     const std::string& id() const;
     const std::string& type() const;
-    virtual RuleApplyResult apply(nlohmann::json& body) const = 0;
+    virtual RuleApplyResult apply(RuleJson& body) const = 0;
 
 private:
     std::string id_;
@@ -86,7 +87,9 @@ class CompiledPipeline {
 public:
     explicit CompiledPipeline(std::vector<std::shared_ptr<const CompiledRule>> rules = {});
 
-    RulePipelineResult apply(const std::string& body) const;
+    RulePipelineResult apply(
+        const std::string& body,
+        std::shared_ptr<InflightMemoryBudget> inflight_budget = {}) const;
     std::size_t size() const;
     bool empty() const;
 

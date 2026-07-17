@@ -11,6 +11,7 @@
 #include <functional>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <sstream>
 #include <thread>
@@ -329,16 +330,26 @@ int query_status_code(HINTERNET request) {
     return static_cast<int>(status);
 }
 
-std::string read_body(
+void read_body(
     const std::shared_ptr<CancelableWinHttpHandle>& request,
     std::size_t max_buffered_size,
     const std::function<bool(const std::string&)>& on_chunk,
+    HttpResponse& response,
+    const std::shared_ptr<InflightMemoryBudget>& inflight_budget,
     const std::shared_ptr<RuntimeMetrics>& metrics,
     const CancellationToken& cancellation,
     const std::string& timeout_type,
     const DeadlineTimer& total_deadline,
     int operation_timeout_ms) {
-    std::string body;
+    if (!on_chunk && inflight_budget) {
+        auto memory = inflight_budget->try_acquire(0);
+        if (!memory) {
+            throw ProxyError(
+                503, "server_error", "inflight memory budget exhausted");
+        }
+        response.body_memory = std::make_shared<InflightMemoryBudget::Lease>(
+            std::move(*memory));
+    }
     const auto timeout_phase = timeout_type == "upstream_stream_idle_timeout"
         ? UpstreamTimeoutPhase::StreamIdle
         : UpstreamTimeoutPhase::ResponseBody;
@@ -374,17 +385,53 @@ std::string read_body(
 
         if (!on_chunk) {
             const auto remaining = max_buffered_size
-                - std::min(max_buffered_size, body.size());
+                - std::min(max_buffered_size, response.body.size());
             if (static_cast<std::size_t>(available) > remaining) {
                 throw ProxyError(502, "upstream_response_too_large", "upstream response body too large");
             }
         }
         constexpr DWORD kReadChunkSize = 64 * 1024;
         const DWORD requested = std::min(available, kReadChunkSize);
-        std::string chunk(requested, '\0');
+        std::optional<InflightMemoryBudget::Lease> chunk_memory;
+        const auto previous_body_size = response.body.size();
+        if (on_chunk) {
+            if (inflight_budget) {
+                chunk_memory = inflight_budget->try_acquire(requested);
+                if (!chunk_memory) {
+                    throw ProxyError(
+                        503, "server_error", "inflight memory budget exhausted");
+                }
+            }
+        } else if (response.body_memory
+            && !response.body_memory->try_grow(requested)) {
+            throw ProxyError(
+                503, "server_error", "inflight memory budget exhausted");
+        }
+        std::string chunk;
+        try {
+            if (on_chunk) {
+                chunk.resize(requested);
+            } else {
+                response.body.resize(previous_body_size + requested);
+            }
+        } catch (...) {
+            if (!on_chunk && response.body_memory) {
+                response.body_memory->shrink(requested);
+            }
+            throw;
+        }
         DWORD read = 0;
         operation_deadline.arm(operation_timeout_ms);
-        if (!WinHttpReadData(request->get(), chunk.data(), requested, &read)) {
+        char* destination = on_chunk
+            ? chunk.data()
+            : response.body.data() + previous_body_size;
+        if (!WinHttpReadData(request->get(), destination, requested, &read)) {
+            if (!on_chunk) {
+                response.body.resize(previous_body_size);
+                if (response.body_memory) {
+                    response.body_memory->shrink(requested);
+                }
+            }
             if (total_deadline.timed_out()) {
                 throw ProxyError(504, "upstream_total_timeout", "upstream request total timeout exceeded");
             }
@@ -403,11 +450,27 @@ std::string read_body(
             throw ProxyError(502, "upstream_error", winhttp_error_message("failed to read upstream response data"));
         }
         if (read == 0) {
+            if (!on_chunk) {
+                response.body.resize(previous_body_size);
+                if (response.body_memory) {
+                    response.body_memory->shrink(requested);
+                }
+            }
             break;
         }
-        chunk.resize(read);
+        if (on_chunk) {
+            chunk.resize(read);
+            if (chunk_memory && read < chunk_memory->bytes()) {
+                chunk_memory->shrink(chunk_memory->bytes() - read);
+            }
+        } else {
+            response.body.resize(previous_body_size + read);
+            if (response.body_memory && read < requested) {
+                response.body_memory->shrink(requested - read);
+            }
+        }
         if (metrics) {
-            metrics->upstream_bytes_received(chunk.size());
+            metrics->upstream_bytes_received(read);
         }
         if (on_chunk) {
             if (!on_chunk(chunk)) {
@@ -418,9 +481,7 @@ std::string read_body(
             }
             continue;
         }
-        body += chunk;
     }
-    return body;
 }
 
 void CALLBACK winhttp_status_callback(
@@ -849,10 +910,12 @@ const char* WinHttpTransport::proxy_mode() const noexcept {
 WinHttpTransport::WinHttpTransport(
     TimeoutConfig timeouts,
     std::size_t max_response_body_size,
-    std::shared_ptr<RuntimeMetrics> metrics)
+    std::shared_ptr<RuntimeMetrics> metrics,
+    std::shared_ptr<InflightMemoryBudget> inflight_budget)
     : timeouts_(timeouts)
     , max_response_body_size_(max_response_body_size)
     , metrics_(std::move(metrics))
+    , inflight_budget_(std::move(inflight_budget))
     , impl_(std::make_unique<Impl>(timeouts_, metrics_)) {}
 
 WinHttpTransport::~WinHttpTransport() = default;
@@ -1077,10 +1140,12 @@ HttpResponse WinHttpTransport::forward_streaming(
         }
         return response;
     }
-    response.body = read_body(
+    read_body(
         upstream_request,
         max_response_body_size_,
         streaming ? on_chunk : ChunkCallback{},
+        response,
+        inflight_budget_,
         metrics_,
         cancellation,
         streaming ? "upstream_stream_idle_timeout" : "upstream_receive_timeout",

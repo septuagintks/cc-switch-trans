@@ -25,6 +25,10 @@ struct RuntimeMetricsSnapshot {
     std::uint64_t peak_generation_requests = 0;
     std::uint64_t current_retired_generations = 0;
     std::uint64_t peak_retired_generations = 0;
+    std::uint64_t current_control_tasks = 0;
+    std::uint64_t peak_control_tasks = 0;
+    std::uint64_t control_tasks_rejected = 0;
+    std::uint64_t control_tasks_coalesced = 0;
     std::uint64_t connections_accepted = 0;
     std::uint64_t connections_rejected = 0;
     std::uint64_t connections_completed = 0;
@@ -103,6 +107,10 @@ public:
     void generation_request_finished() noexcept;
     void generation_retired();
     void retired_generation_released() noexcept;
+    void control_task_queued(std::size_t current);
+    void control_task_finished(std::size_t current);
+    void control_task_rejected();
+    void control_task_coalesced();
 
     void connection_accepted(std::size_t current, std::size_t queued);
     void connection_rejected();
@@ -130,6 +138,7 @@ public:
     void winhttp_connection_closed();
 
     void log_record_enqueued(std::size_t records, std::size_t bytes, std::uint64_t oldest_pending_ns);
+    void log_queue_reset();
     void log_backpressure(std::uint64_t wait_us);
     void log_batch_written(
         std::size_t records,
@@ -162,6 +171,10 @@ private:
     std::atomic<std::uint64_t> peak_generation_requests_{0};
     std::atomic<std::uint64_t> current_retired_generations_{0};
     std::atomic<std::uint64_t> peak_retired_generations_{0};
+    std::atomic<std::uint64_t> current_control_tasks_{0};
+    std::atomic<std::uint64_t> peak_control_tasks_{0};
+    std::atomic<std::uint64_t> control_tasks_rejected_{0};
+    std::atomic<std::uint64_t> control_tasks_coalesced_{0};
 
     std::atomic<std::uint64_t> connections_accepted_{0};
     std::atomic<std::uint64_t> connections_rejected_{0};

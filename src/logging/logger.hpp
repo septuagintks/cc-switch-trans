@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/http_types.hpp"
+#include "core/inflight_memory_budget.hpp"
 #include "core/runtime_metrics.hpp"
 
 #include <chrono>
@@ -11,23 +13,35 @@
 #include <initializer_list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace ccs {
 
+struct LogHeadersRef {
+    const Headers* headers = nullptr;
+    bool redact_sensitive = true;
+};
+
 struct LogField {
     std::string name;
-    std::string value;
+    std::variant<std::string, std::string_view, LogHeadersRef> value;
     bool quoted = true;
 };
 
 LogField field_string(std::string name, std::string value);
+LogField field_string_view(std::string name, std::string_view value);
 LogField field_number(std::string name, long long value);
 LogField field_bool(std::string name, bool value);
 LogField field_raw(std::string name, std::string raw_json);
+LogField field_headers(
+    std::string name,
+    const Headers& headers,
+    bool redact_sensitive);
 
 class LogSink {
 public:
@@ -69,13 +83,15 @@ public:
         LoggerConfig config,
         std::shared_ptr<RuntimeMetrics> metrics = {},
         std::unique_ptr<LogSink> sink = {},
-        FailureHandler failure_handler = {});
+        FailureHandler failure_handler = {},
+        std::shared_ptr<InflightMemoryBudget> inflight_budget = {});
     ~Logger();
 
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
 
     bool open(std::string& error);
+    bool enabled(std::string_view level) const noexcept;
     bool log(std::string level, std::string event, std::initializer_list<LogField> fields) const;
     bool log(std::string level, std::string event, const std::vector<LogField>& fields) const;
     bool drain(std::string& error) const;
@@ -84,6 +100,7 @@ public:
 private:
     struct QueuedRecord {
         std::uint64_t sequence = 0;
+        std::optional<InflightMemoryBudget::Lease> memory;
         std::string line;
         bool immediate_flush = false;
         std::chrono::steady_clock::time_point enqueued_at;
@@ -94,6 +111,7 @@ private:
 
     LoggerConfig config_;
     std::shared_ptr<RuntimeMetrics> metrics_;
+    std::shared_ptr<InflightMemoryBudget> inflight_budget_;
     std::unique_ptr<LogSink> sink_;
     FailureHandler failure_handler_;
     mutable std::mutex mutex_;

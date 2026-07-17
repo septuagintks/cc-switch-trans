@@ -10,6 +10,7 @@
 #include "transport/upstream_transport.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -65,6 +66,13 @@ private:
         const std::shared_ptr<RequestGeneration>& generation,
         const std::string& raw,
         const std::string& client_ip,
+        const std::function<bool(const std::string&)>& sender,
+        const CancellationToken& cancellation) const;
+    bool process_parsed_with_generation(
+        const std::shared_ptr<RequestGeneration>& generation,
+        HttpRequest request,
+        InflightMemoryBudget::Lease request_memory,
+        std::size_t request_body_memory,
         const std::function<bool(const std::string&)>& sender,
         const CancellationToken& cancellation) const;
     HttpResponse handle_local_route_error(const RouteLookup& route) const;

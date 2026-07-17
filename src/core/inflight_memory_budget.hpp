@@ -1,10 +1,16 @@
 #pragma once
 
 #include <cstdint>
+#include <new>
 #include <memory>
 #include <optional>
 
 namespace ccs {
+
+class InflightBudgetExceeded final : public std::bad_alloc {
+public:
+    const char* what() const noexcept override;
+};
 
 class RuntimeMetrics;
 

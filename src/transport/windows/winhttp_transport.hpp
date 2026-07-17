@@ -11,7 +11,8 @@ public:
     WinHttpTransport(
         TimeoutConfig timeouts,
         std::size_t max_response_body_size,
-        std::shared_ptr<RuntimeMetrics> metrics = {});
+        std::shared_ptr<RuntimeMetrics> metrics = {},
+        std::shared_ptr<InflightMemoryBudget> inflight_budget = {});
     ~WinHttpTransport() override;
 
     WinHttpTransport(const WinHttpTransport&) = delete;
@@ -35,6 +36,7 @@ private:
     TimeoutConfig timeouts_;
     std::size_t max_response_body_size_;
     std::shared_ptr<RuntimeMetrics> metrics_;
+    std::shared_ptr<InflightMemoryBudget> inflight_budget_;
     std::unique_ptr<Impl> impl_;
 };
 

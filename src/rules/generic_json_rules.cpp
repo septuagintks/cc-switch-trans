@@ -146,9 +146,10 @@ std::size_t parse_array_index(const std::string& token, std::size_t size) {
     return value;
 }
 
-nlohmann::json& resolve_child(nlohmann::json& parent, const std::string& token) {
+RuleJson& resolve_child(RuleJson& parent, const std::string& token) {
     if (parent.is_object()) {
-        const auto child = parent.find(token);
+        const RuleString key(token.begin(), token.end());
+        const auto child = parent.find(key);
         if (child == parent.end()) {
             throw RuleRuntimeError(
                 "target_missing",
@@ -171,8 +172,8 @@ public:
         , pointer_(std::move(pointer))
         , value_(std::move(value)) {}
 
-    RuleApplyResult apply(nlohmann::json& body) const override {
-        nlohmann::json* target = &body;
+    RuleApplyResult apply(RuleJson& body) const override {
+        RuleJson* target = &body;
         for (const auto& token : pointer_.tokens) {
             target = &resolve_child(*target, token);
         }
@@ -194,14 +195,15 @@ public:
         : CompiledRule(std::move(id), "remove_field")
         , pointer_(std::move(pointer)) {}
 
-    RuleApplyResult apply(nlohmann::json& body) const override {
-        nlohmann::json* parent = &body;
+    RuleApplyResult apply(RuleJson& body) const override {
+        RuleJson* parent = &body;
         for (std::size_t index = 0; index + 1 < pointer_.tokens.size(); ++index) {
             parent = &resolve_child(*parent, pointer_.tokens[index]);
         }
         const auto& token = pointer_.tokens.back();
         if (parent->is_object()) {
-            const auto target = parent->find(token);
+            const RuleString key(token.begin(), token.end());
+            const auto target = parent->find(key);
             if (target == parent->end()) {
                 throw RuleRuntimeError(
                     "target_missing",

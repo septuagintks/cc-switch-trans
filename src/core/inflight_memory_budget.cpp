@@ -9,6 +9,10 @@
 
 namespace ccs {
 
+const char* InflightBudgetExceeded::what() const noexcept {
+    return "inflight memory budget exhausted";
+}
+
 InflightMemoryBudget::Lease::Lease(
     std::shared_ptr<RuntimeMetrics> metrics,
     std::uint64_t bytes)

@@ -99,6 +99,23 @@ void RuntimeMetrics::retired_generation_released() noexcept {
     decrement(current_retired_generations_);
 }
 
+void RuntimeMetrics::control_task_queued(std::size_t current) {
+    current_control_tasks_.store(current, std::memory_order_relaxed);
+    update_peak(peak_control_tasks_, current);
+}
+
+void RuntimeMetrics::control_task_finished(std::size_t current) {
+    current_control_tasks_.store(current, std::memory_order_relaxed);
+}
+
+void RuntimeMetrics::control_task_rejected() {
+    control_tasks_rejected_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RuntimeMetrics::control_task_coalesced() {
+    control_tasks_coalesced_.fetch_add(1, std::memory_order_relaxed);
+}
+
 void RuntimeMetrics::connection_accepted(std::size_t current, std::size_t queued) {
     connections_accepted_.fetch_add(1, std::memory_order_relaxed);
     current_connections_.store(current, std::memory_order_relaxed);
@@ -234,6 +251,12 @@ void RuntimeMetrics::log_record_enqueued(
     update_peak(peak_log_queue_bytes_, bytes);
 }
 
+void RuntimeMetrics::log_queue_reset() {
+    current_log_queue_records_.store(0, std::memory_order_relaxed);
+    current_log_queue_bytes_.store(0, std::memory_order_relaxed);
+    oldest_log_record_enqueued_ns_.store(0, std::memory_order_relaxed);
+}
+
 void RuntimeMetrics::log_backpressure(std::uint64_t wait_us) {
     log_backpressure_count_.fetch_add(1, std::memory_order_relaxed);
     log_backpressure_wait_us_.fetch_add(wait_us, std::memory_order_relaxed);
@@ -319,6 +342,10 @@ RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
     CCS_LOAD_METRIC(peak_generation_requests);
     CCS_LOAD_METRIC(current_retired_generations);
     CCS_LOAD_METRIC(peak_retired_generations);
+    CCS_LOAD_METRIC(current_control_tasks);
+    CCS_LOAD_METRIC(peak_control_tasks);
+    CCS_LOAD_METRIC(control_tasks_rejected);
+    CCS_LOAD_METRIC(control_tasks_coalesced);
     CCS_LOAD_METRIC(connections_accepted);
     CCS_LOAD_METRIC(connections_rejected);
     CCS_LOAD_METRIC(connections_completed);

@@ -49,6 +49,7 @@ std::unique_ptr<UpstreamTransport> make_upstream_transport(
     TimeoutConfig timeouts,
     std::size_t max_response_body_size,
     std::shared_ptr<RuntimeMetrics> metrics = {},
-    std::size_t handle_pool_size = 32);
+    std::size_t handle_pool_size = 32,
+    std::shared_ptr<InflightMemoryBudget> inflight_budget = {});
 
 } // namespace ccs

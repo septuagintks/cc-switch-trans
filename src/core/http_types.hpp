@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/inflight_memory_budget.hpp"
+
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,6 +19,7 @@ struct HttpRequest {
     std::string query;
     std::string version;
     Headers headers;
+    std::shared_ptr<InflightMemoryBudget::Lease> body_memory;
     std::string body;
     std::string client_ip;
 };
@@ -24,6 +28,7 @@ struct HttpResponse {
     int status_code = 200;
     std::string reason = "OK";
     Headers headers;
+    std::shared_ptr<InflightMemoryBudget::Lease> body_memory;
     std::string body;
 };
 

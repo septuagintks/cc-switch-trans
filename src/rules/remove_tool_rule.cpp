@@ -25,18 +25,19 @@ bool contains_control(const std::string& value) {
 }
 
 bool string_field_equals(
-    const nlohmann::json& value,
+    const RuleJson& value,
     const char* name,
     const std::string& expected) {
     const auto field = value.find(name);
     if (field == value.end() || !field->is_string()) {
         return false;
     }
-    return field->get_ref<const std::string&>() == expected;
+    const auto& actual = field->get_ref<const RuleString&>();
+    return std::string_view(actual.data(), actual.size()) == expected;
 }
 
 bool matches_tool(
-    const nlohmann::json& candidate,
+    const RuleJson& candidate,
     ToolLayout layout,
     const std::string& tool_name) {
     if (!candidate.is_object()) {
@@ -65,7 +66,7 @@ public:
         , layout_(layout)
         , tool_name_(std::move(tool_name)) {}
 
-    RuleApplyResult apply(nlohmann::json& body) const override {
+    RuleApplyResult apply(RuleJson& body) const override {
         if (!body.is_object()) {
             throw RuleRuntimeError(
                 "invalid_root_type",
@@ -79,12 +80,12 @@ public:
             return {false, false, "tools_not_array", {"/tools", 0}};
         }
 
-        auto& tool_array = tools->get_ref<nlohmann::json::array_t&>();
+        auto& tool_array = tools->get_ref<RuleJson::array_t&>();
         std::size_t removed = 0;
         const auto retained_end = std::remove_if(
             tool_array.begin(),
             tool_array.end(),
-            [&](const nlohmann::json& tool) {
+            [&](const RuleJson& tool) {
                 if (!matches_tool(tool, layout_, tool_name_)) {
                     return false;
                 }
