@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config/config_document.hpp"
+#include "config/configuration_snapshot.hpp"
 #include "protocols/protocol_registry.hpp"
 #include "rules/rule_registry.hpp"
 #include "runtime/runtime_snapshot.hpp"
@@ -24,6 +25,11 @@ public:
 
     bool compile(
         const ConfigDocument& document,
+        const RuntimeCompileOptions& options,
+        RuntimeSnapshotPtr& snapshot,
+        std::string& error) const;
+    bool compile(
+        const ConfigurationSnapshot& configuration,
         const RuntimeCompileOptions& options,
         RuntimeSnapshotPtr& snapshot,
         std::string& error) const;

@@ -1,5 +1,7 @@
 #include "config/runtime_compiler.hpp"
 
+#include "config/configuration_conversion.hpp"
+
 #include <memory>
 #include <utility>
 #include <vector>
@@ -133,6 +135,18 @@ bool RuntimeCompiler::compile(
 
     snapshot = std::make_shared<const RuntimeSnapshot>(std::move(candidate));
     return true;
+}
+
+bool RuntimeCompiler::compile(
+    const ConfigurationSnapshot& configuration,
+    const RuntimeCompileOptions& options,
+    RuntimeSnapshotPtr& snapshot,
+    std::string& error) const {
+    ConfigDocument document;
+    if (!configuration_snapshot_to_config_document(configuration, document, error)) {
+        return false;
+    }
+    return compile(document, options, snapshot, error);
 }
 
 } // namespace ccs

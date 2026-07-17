@@ -269,6 +269,11 @@ def main():
 
         blocked_port = free_port()
         write_config(atomic_home, blocked_port, upstream_ports, "atomic.log")
+        subprocess.check_call(
+            [str(exe), "storage", "migrate"],
+            cwd=ROOT,
+            env=process_environment(atomic_home),
+        )
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
                 blocker.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -284,6 +289,11 @@ def main():
             assert_true(failed.wait(timeout=5) != 0, "occupied single listener stops startup")
 
         log_path = write_config(home, proxy_port, upstream_ports)
+        subprocess.check_call(
+            [str(exe), "storage", "migrate"],
+            cwd=ROOT,
+            env=process_environment(home),
+        )
         listed_profiles = json.loads(
             subprocess.check_output(
                 [str(exe), "profile", "list"],
@@ -295,7 +305,7 @@ def main():
         assert_true(
             {entry["id"] for entry in listed_profiles}
             == {"responses", "chat", "messages", "messages-dead", "findcg"},
-            "production host uses the v2 profile CLI",
+            "production host uses the migrated profile store",
         )
         proxy_process = subprocess.Popen(
             [str(exe), "run"],

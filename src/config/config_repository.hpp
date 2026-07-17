@@ -13,6 +13,11 @@ enum class ConfigRepositoryFailure {
     Busy,
     Stale,
     InvalidDocument,
+    MigrationRequired,
+    RecoveryRequired,
+    Constraint,
+    Corrupt,
+    UnsupportedSchema,
     Io,
 };
 

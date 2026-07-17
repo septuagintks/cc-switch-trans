@@ -12,7 +12,34 @@ if(CMAKE_HOST_APPLE)
     endif()
 endif()
 
-project(ccs_trans VERSION 0.6.0 LANGUAGES C CXX)
+project(ccs_trans VERSION 0.7.0 LANGUAGES C CXX)
+
+set(CCS_TRANS_VERSION_SUFFIX "-dev")
+set(CCS_TRANS_VERSION "${PROJECT_VERSION}${CCS_TRANS_VERSION_SUFFIX}")
+execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RESULT_VARIABLE CCS_TRANS_GIT_RESULT
+    OUTPUT_VARIABLE CCS_TRANS_SOURCE_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT CCS_TRANS_GIT_RESULT EQUAL 0)
+    set(CCS_TRANS_SOURCE_COMMIT "unknown")
+endif()
+execute_process(
+    COMMAND git status --porcelain
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RESULT_VARIABLE CCS_TRANS_GIT_STATUS_RESULT
+    OUTPUT_VARIABLE CCS_TRANS_GIT_STATUS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(CCS_TRANS_GIT_STATUS_RESULT EQUAL 0 AND CCS_TRANS_GIT_STATUS STREQUAL "")
+    set(CCS_TRANS_SOURCE_DIRTY false)
+else()
+    set(CCS_TRANS_SOURCE_DIRTY true)
+endif()
 
 if(APPLE)
     enable_language(OBJCXX)
@@ -168,15 +195,22 @@ add_library(ccs-trans-core STATIC
     src/app/app_service.cpp
     src/app/control_executor.cpp
     src/config/app_paths.cpp
+    src/config/application_config.cpp
     src/config/config_cli.cpp
+    src/config/composite_config_repository.cpp
+    src/config/configuration_editor.cpp
+    src/config/configuration_snapshot.cpp
     src/config/config_document.cpp
     src/config/config_editing_service.cpp
     src/config/config_store.cpp
+    src/config/field_descriptor.cpp
+    src/config/rules_text.cpp
     src/config/runtime_compiler.cpp
     src/core/cancellation.cpp
     src/core/inflight_memory_budget.cpp
     src/core/request_id.cpp
     src/core/runtime_metrics.cpp
+    src/core/sha256.cpp
     src/core/url.cpp
     src/hosts/host_platform.cpp
     src/logging/logger.cpp
@@ -344,6 +378,39 @@ if(BUILD_TESTING)
     )
     add_test(NAME ccs-trans-config-document-tests COMMAND ccs-trans-config-document-tests)
 
+    add_executable(ccs-trans-application-config-tests
+        tests/unit/application_config_tests.cpp
+    )
+    target_link_libraries(ccs-trans-application-config-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-application-config-tests COMMAND ccs-trans-application-config-tests)
+
+    add_executable(ccs-trans-configuration-snapshot-tests
+        tests/unit/configuration_snapshot_tests.cpp
+    )
+
+    add_executable(ccs-trans-composite-config-repository-tests
+        tests/unit/composite_config_repository_tests.cpp
+    )
+    target_link_libraries(ccs-trans-composite-config-repository-tests PRIVATE
+        ccs-trans-core
+        ccs-trans-sqlite3
+    )
+    add_test(
+        NAME ccs-trans-composite-config-repository-tests
+        COMMAND ccs-trans-composite-config-repository-tests
+    )
+    target_link_libraries(ccs-trans-configuration-snapshot-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-configuration-snapshot-tests
+        COMMAND ccs-trans-configuration-snapshot-tests
+    )
+
+    add_executable(ccs-trans-sha256-tests
+        tests/unit/sha256_tests.cpp
+    )
+    target_link_libraries(ccs-trans-sha256-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-sha256-tests COMMAND ccs-trans-sha256-tests)
+
     add_executable(ccs-trans-config-cli-tests
         tests/unit/config_cli_tests.cpp
     )
@@ -358,6 +425,21 @@ if(BUILD_TESTING)
         NAME ccs-trans-config-editing-service-tests
         COMMAND ccs-trans-config-editing-service-tests
     )
+
+    add_executable(ccs-trans-configuration-editor-tests
+        tests/unit/configuration_editor_tests.cpp
+    )
+    target_link_libraries(ccs-trans-configuration-editor-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-configuration-editor-tests
+        COMMAND ccs-trans-configuration-editor-tests
+    )
+
+    add_executable(ccs-trans-rules-text-tests
+        tests/unit/rules_text_tests.cpp
+    )
+    target_link_libraries(ccs-trans-rules-text-tests PRIVATE ccs-trans-core)
+    add_test(NAME ccs-trans-rules-text-tests COMMAND ccs-trans-rules-text-tests)
 
     add_executable(ccs-trans-presentation-contract-tests
         tests/unit/presentation_contract_tests.cpp

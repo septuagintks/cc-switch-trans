@@ -2,8 +2,8 @@
 
 ## 文档状态
 
-本文是 `0.7.0` 的开工合同，不描述已经发布的功能。当前实现与用户文档仍以 `0.6.0`、
-`ccs-trans.config/v2` 和 [Design.md](Design.md) 为准。
+本文同时记录 `0.7.0` 的实施合同与当前进度。已发布版本仍是 `0.6.0`；当前开发源码已进入
+`0.7.0-dev`、`ccs-trans.config/v3` 与 SQLite schema v1，生产入口不再使用 v2 作为主存储。
 
 | 项目 | 当前值 |
 | --- | --- |
@@ -13,16 +13,20 @@
 | 目标发行包 | `ccs-trans-0.7.0-Windows-x64`、`ccs-trans-0.7.0-macOS-arm64` |
 | 开发期版本号 | `0.7-D` 开始写入 v3/SQLite 前显示 `0.7.0-dev`；最终发行提交去掉 suffix |
 
-当前实施进度：`0.7-A1/A2`、`0.7-B` 与 `0.7-C` Windows 实现已完成。进程级 512 MiB budget、
+当前实施进度：`0.7-A1/A2`、`0.7-B/C/D/E` Windows 实现已完成。进程级 512 MiB budget、
 move-only RAII lease、inflight/generation/control metrics、retired generation 生命周期，以及
 request/Rule/response/logger staging 记账均已接入；
 request header 单次解析、response 分段发送、budget-aware Rule allocator、logger lazy rendering 和有界
-ControlExecutor 也已完成。Windows 当前 Release/warnings 均完成 `19/19` CTest；A2 的五档组合基准
-满足默认配置门槛，当前 shared/tray integration passed。`0.7-A3` 的 macOS platform-local cURL 硬化、
-Release 构建、integration、短负载和 profiler 已在 `b8fc353` 完成；正式退出仍被并行 Windows SQLite
-提交的 AppleClang dead-constant warning 与默认 macOS `TMPDIR` symlink 测试夹具阻塞，不能声明完整
-A3 passed。SQLite 3.53.3 官方 amalgamation 已按固定 hash vendoring 为独立静态 C 目标；macOS 同
-source/options 的 Release build/probe passed，严格 warnings 与默认环境 CTest 仍待 Windows 修复后复验。
+ControlExecutor 也已完成。D/E 完成后 Windows fresh Release/warnings 全构建通过，warnings CTest
+为 `25/25`，shared integration 与 tray/main-window integration passed；组合恢复矩阵、SQLite busy
+rollback、显式 v2 migration、typed CLI、stable Profile/Rule key 与 Rule 文本诊断均有自动测试。
+
+`0.7-A3` 的 macOS platform-local cURL 硬化、Release 构建、integration、短负载和 profiler 已在
+`b8fc353` 完成，结果由 `dcbc6cc` 回传。macOS 同 SQLite source/options 的 Release build/probe
+passed；正式退出原被 AppleClang dead-constant warning 与默认 `TMPDIR` symlink 测试夹具阻塞。当前
+Windows D/E 检查点已删除死常量，并让 SQLite/Composite 测试 canonicalize macOS 临时目录；严格
+warnings 与默认环境 CTest 仍须 macOS 基于合并后提交正式复验，不能提前声明完整 A3 passed。下一主
+工作包为 `0.7-F`。
 
 ## 目标与不进入范围
 
@@ -626,6 +630,22 @@ ccs-trans storage verify
 任何现有数据。重复执行同一来源返回 `AlreadyMigrated`；不同来源要求用户先处理冲突。成功迁移保留
 原 v2 备份，不自动删除或上传。
 
+### `0.7-D` Windows 实现结果
+
+- 开发版本已切为 `0.7.0-dev`，Windows/macOS 正式 packaging 均拒绝带 dev suffix 的构建；
+- `config.json` 使用严格 `ccs-trans.config/v3`，只保存 application settings；Profile/Rule 固定保存到
+  `~/.ccs-trans/profiles.db`，运行时通过 `ConfigurationSnapshot` 编译；
+- `CompositeConfigRepository` 使用精确 application source token、SQLite revision、跨进程 lock 与
+  durable journal，覆盖初始化、config-only、DB-only、combined commit 和四种恢复状态；
+- combined commit 在 SQLite write lock/busy 失败时恢复旧 config 的精确字节并清理 journal；不匹配
+  old/target 的状态保留 journal 并返回 `RecoveryRequired`；
+- `storage status/migrate/verify` 是唯一迁移命令族；普通 run/CLI/GUI 对 v2 返回
+  `MigrationRequired`，全新目录才自动初始化；
+- v2 原始字节与 manifest 作为只读备份保留，SHA-256 和 SQLite migration provenance 可审计；迁移前
+  执行 truncate checkpoint，目标 DB 已存在时拒绝覆盖；
+- portable SHA-256 通过标准 known-answer vectors，SQLite corruption/unsupported schema/busy/stale
+  均映射为稳定 repository failure。
+
 ## 0.7-E 共享编辑与 CLI
 
 新增平台无关 field descriptor：stable key、scope、input kind、required/optional、范围、枚举、显示名 key
@@ -665,6 +685,23 @@ draft，不自动保存，不读取生产日志或请求 body。
 文本 schema 不暴露 `rule_key`。同一 `rule_id` 的 option、enabled、type 或 position 修改保留 internal key；
 删除 id 并增加新 id 视为删除/新增，分配新的 key。不得用位置或内容相似度猜测“重命名”，避免错误
 关联 `0.8.0` 的 selection/undo 状态。
+
+### `0.7-E` Windows 实现结果
+
+- Profile/Rule model 已移出 SQLite header；presentation/shared editor 不依赖 SQLite C API 或 nlohmann
+  mutable runtime 类型；
+- application/Profile descriptor 统一提供 stable key、scope、input kind、required、numeric range、
+  enum、display-name key 与 runtime apply impact，覆盖本节全部字段；
+- `ConfigurationEditor` 接收 typed field command，以 `profile_key` 完成重命名、排序和字段更新，并提供
+  Profile/Rule CRUD、stale commit、Apply/Discard 所需的共享 draft 合同；
+- CLI 的生产后端已切到 Composite repository，新增 `profile rename`、`profile move` 和
+  `runtime.max-inflight-bytes`；输出不暴露 internal key、SQL 或敏感值；
+- Rule 文本固定为 UTF-8/LF/2-space 的 `ccs-trans.rules/v1`，限制 4 MiB，提供 canonical formatter、
+  syntax line/column 与 rule/type/option 诊断；同 id 保留 `rule_key`，新 id 使用新 key；
+- disabled 未知 Rule 可 round-trip；enabled 未知 Rule 可保留为 draft，但在 commit 的 RuntimeCompiler
+  验证阶段被拒绝；已知 Rule 的 option 类型与 required descriptor 在文本入口校验；
+- inflight budget descriptor 标记为 restart impact，Server reload 同步返回 `RestartRequired`，避免新值
+  被持久化后仍静默复用旧进程级 budget。
 
 ## 0.7-F Windows GUI
 
@@ -752,9 +789,9 @@ JSON 并以中位数作为本机对照；发布归档中的历史数字只用于
 共享合同的 commit 先在 Windows 完成并推送，再通过 `.codex/HandOff.md` 指派窄 macOS 工作包。macOS
 回传后由 Windows 继续主开发，最终发行过程沿用 `0.6.0` 的双平台同提交与公开资产下载复验流程。
 
-## 开工检查表
+## 实施检查表
 
-开始 `0.7-A1` 前：
+当前阶段状态：
 
 - [x] `0.6.0` 双平台发行、公开资产与签名 tag 已验证；
 - [x] 主项目和 `.codex` worktree clean，Windows 持有主开发权；
@@ -767,7 +804,14 @@ JSON 并以中位数作为本机对照；发布归档中的历史数字只用于
 - [x] 实现共享 RAII budget，不改变 v2 on-disk schema；
 - [x] 跑 `0.7-A1` Release/warnings CTest 与 shared/tray integration；
 - [x] 完成 `0.7-A2` Windows 实现、fresh 双构建、integration、Rule matrix 与组合基准对照；
-- [x] 通过交接仓库指派 `0.7-A3` macOS 窄验证；平台结果与共享 blocker 已回传。
+- [x] 指派并接收 `0.7-A3` macOS platform-local 实现、证据与共享 blocker；
+- [x] 合并 `b8fc353/dcbc6cc`，删除 AppleClang dead constant 并修正 macOS temp symlink 测试夹具；
+- [ ] macOS 在合并后提交上复验正式 warnings 与默认环境 CTest，关闭 `0.7-A3`；
+- [x] 完成 `0.7-B/C` SQLite dependency、schema、CRUD、revision 与故障测试；
+- [x] 完成 `0.7-D` v3/Composite repository/journal/显式 migration；
+- [x] 完成 `0.7-E` descriptor/typed editor/Composite CLI/canonical Rule text；
+- [x] Windows Release/warnings 全构建、warnings CTest `25/25`、shared/tray integration passed；
+- [ ] 开始 `0.7-F` Windows 三视图和轻量圆角主题。
 
 没有需要用户在开工前额外选择的阻塞项。SQLite 精确版本与 512 MiB 默认值的唯一允许调整窗口分别
 是 `0.7-B` 官方依赖取证和 `0.7-A` 候选基准；调整必须带证据并同步本文。

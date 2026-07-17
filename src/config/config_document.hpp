@@ -1,6 +1,7 @@
 #pragma once
 
-#include "core/timeouts.hpp"
+#include "config/application_settings.hpp"
+#include "config/profile_model.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -19,7 +20,6 @@ inline constexpr std::size_t kMaxConfigDocumentBytes = 4 * 1024 * 1024;
 inline constexpr std::size_t kMaxConfigProfiles = 128;
 inline constexpr std::size_t kMaxConfigRoutes = 256;
 inline constexpr std::size_t kMaxRulesPerProfile = 64;
-inline constexpr std::uint64_t kDefaultLogMaxTotalSize = 2ULL * 1024 * 1024 * 1024;
 
 struct ProtocolId {
     std::string value;
@@ -27,37 +27,6 @@ struct ProtocolId {
 
 struct RuleId {
     std::string value;
-};
-
-struct ListenerSettings {
-    std::string host = "127.0.0.1";
-    std::uint16_t port = 15723;
-};
-
-struct RuntimeSettings {
-    std::uint32_t worker_threads = 32;
-    std::uint32_t max_connections = 64;
-    std::uint64_t max_request_body_size = 100ULL * 1024 * 1024;
-    std::uint64_t max_response_body_size = 100ULL * 1024 * 1024;
-    std::uint32_t metrics_interval_ms = 0;
-};
-
-struct LoggingSettings {
-    std::string path = "logs/ccs-trans.log";
-    std::string level = "info";
-    bool body = true;
-    bool redact_sensitive = false;
-    std::uint64_t body_limit = 1024ULL * 1024;
-    std::uint64_t queue_capacity = 16ULL * 1024 * 1024;
-    std::uint64_t max_total_size = kDefaultLogMaxTotalSize;
-    std::uint32_t flush_interval_ms = 100;
-};
-
-struct ApplicationSettings {
-    ListenerSettings listener;
-    RuntimeSettings runtime;
-    TimeoutConfig timeouts;
-    LoggingSettings logging;
 };
 
 struct LocalRoutes {
@@ -76,6 +45,7 @@ struct RuleDefinition {
     bool enabled = false;
     std::string type;
     std::map<std::string, nlohmann::json> options;
+    RuleKey storage_key = 0;
 };
 
 struct ProfileDefinition {
@@ -84,6 +54,8 @@ struct ProfileDefinition {
     LocalRoutes local;
     UpstreamDefinition upstream;
     std::vector<RuleDefinition> rules;
+    ProfileKey storage_key = 0;
+    std::optional<std::size_t> storage_position;
 };
 
 struct ConfigDocument {
@@ -103,6 +75,9 @@ bool serialize_config_document(
     std::string& error);
 
 bool validate_config_document(const ConfigDocument& document, std::string& error);
+bool validate_application_settings(
+    const ApplicationSettings& application,
+    std::string& error);
 bool validate_profile_definition(
     const std::string& profile_id,
     const ProfileDefinition& profile,
@@ -119,5 +94,6 @@ bool resolve_application_log_path(
     const std::filesystem::path& application_root,
     std::filesystem::path& log_path,
     std::string& error);
+
 
 } // namespace ccs

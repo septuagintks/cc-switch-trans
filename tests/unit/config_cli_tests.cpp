@@ -1,6 +1,8 @@
 #include "config/app_paths.hpp"
 #include "config/config_cli.hpp"
+#include "config/composite_config_repository.hpp"
 #include "config/config_store.hpp"
+#include "../support/canonical_temp.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -49,7 +51,7 @@ std::string read_file(const std::filesystem::path& path) {
 
 std::filesystem::path unique_test_root() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path()
+    return ccs::test::canonical_temp_directory()
         / ("ccs-trans-config-cli-" + std::to_string(nonce));
 }
 
@@ -77,6 +79,19 @@ bool execute_fails(
     return !ccs::execute_config_cli(parsed.command, store, output, error);
 }
 
+std::string execute_composite(
+    ccs::CompositeConfigRepository& repository,
+    const std::vector<std::string>& arguments) {
+    const auto parsed = parse(arguments);
+    require(parsed.ok, parsed.error);
+    std::string output;
+    std::string error;
+    require(
+        ccs::execute_config_cli(parsed.command, repository, output, error),
+        error);
+    return output;
+}
+
 void set_complete_profile(
     ccs::ConfigStore& store,
     const std::string& id,
@@ -102,6 +117,8 @@ void test_parser_contract() {
         {{"profile", "disable", "findcg"}, ccs::ConfigCliCommandKind::ProfileDisable},
         {{"profile", "set", "findcg", "protocol", "responses"}, ccs::ConfigCliCommandKind::ProfileSet},
         {{"profile", "unset", "findcg", "protocol"}, ccs::ConfigCliCommandKind::ProfileUnset},
+        {{"profile", "rename", "findcg", "primary"}, ccs::ConfigCliCommandKind::ProfileRename},
+        {{"profile", "move", "findcg", "1"}, ccs::ConfigCliCommandKind::ProfileMove},
         {{"rule", "list", "findcg"}, ccs::ConfigCliCommandKind::RuleList},
         {{"rule", "show", "findcg", "remove-image"}, ccs::ConfigCliCommandKind::RuleShow},
         {{"rule", "add", "findcg", "remove-image", "remove_tool"}, ccs::ConfigCliCommandKind::RuleAdd},
@@ -111,6 +128,9 @@ void test_parser_contract() {
         {{"rule", "set", "findcg", "remove-image", "tool", "image_gen"}, ccs::ConfigCliCommandKind::RuleSet},
         {{"rule", "unset", "findcg", "remove-image", "tool"}, ccs::ConfigCliCommandKind::RuleUnset},
         {{"rule", "move", "findcg", "remove-image", "1"}, ccs::ConfigCliCommandKind::RuleMove},
+        {{"storage", "status"}, ccs::ConfigCliCommandKind::StorageStatus},
+        {{"storage", "migrate"}, ccs::ConfigCliCommandKind::StorageMigrate},
+        {{"storage", "verify"}, ccs::ConfigCliCommandKind::StorageVerify},
         {{"run", "--profile", "findcg", "--log-level", "debug", "--log-path", "logs/debug.log"}, ccs::ConfigCliCommandKind::Run},
     };
     for (const auto& [arguments, kind] : valid) {
@@ -133,6 +153,9 @@ void test_parser_contract() {
         {"rule", "add", "findcg", "rule", "Bad-Type"},
         {"rule", "set", "findcg", "rule", "enabled", "true"},
         {"rule", "move", "findcg", "rule", "0"},
+        {"storage"},
+        {"storage", "repair"},
+        {"storage", "status", "extra"},
         {"run", "--unknown", "value"},
         {"run", "--profile", "a", "--profile", "b"},
         {"run", "--log-level", "verbose"},
@@ -145,6 +168,7 @@ void test_parser_contract() {
     require(ccs::is_config_cli_management_command("config"), "config command classified");
     require(ccs::is_config_cli_management_command("profile"), "profile command classified");
     require(ccs::is_config_cli_management_command("rule"), "rule command classified");
+    require(ccs::is_config_cli_management_command("storage"), "storage command classified");
     require(!ccs::is_config_cli_management_command("run"), "run remains a host command");
 }
 
@@ -156,10 +180,14 @@ void test_help_contract() {
     require(text.find("ccs-trans profile enable <profile>") != std::string::npos, "profile help");
     require(text.find("ccs-trans rule move <profile> <rule> <1-based-position>") != std::string::npos,
         "rule move help");
+    require(text.find("ccs-trans storage migrate") != std::string::npos,
+        "storage migration help");
     require(text.find(", -h") == std::string::npos, "short help alias omitted");
     require(text.find("listener.port") != std::string::npos, "application key documented");
     require(text.find("logging.max-total-size") != std::string::npos,
         "log retention key documented");
+    require(text.find("runtime.max-inflight-bytes") != std::string::npos,
+        "inflight budget key documented");
     require(text.find("local.request-path") != std::string::npos, "profile key documented");
 }
 
@@ -306,6 +334,74 @@ void test_management_workflow() {
     std::filesystem::remove_all(root, ec);
 }
 
+void test_composite_management_workflow() {
+    const auto root = unique_test_root() / "composite";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto paths = ccs::make_app_paths(root);
+    ccs::CompositeConfigRepository repository(paths);
+    std::string error;
+    require(repository.load(error), error);
+
+    auto output = execute_composite(repository, {"config", "show"});
+    auto shown = nlohmann::json::parse(output);
+    require(shown["runtime"]["max_inflight_bytes"] == 536870912ULL,
+        "composite config show includes inflight budget");
+    output = execute_composite(
+        repository,
+        {"config", "set", "runtime.max-inflight-bytes", "805306368"});
+    require(nlohmann::json::parse(output)["runtime"]["max_inflight_bytes"]
+            == 805306368ULL,
+        "typed inflight budget persists through v3 config");
+
+    execute_composite(repository, {"profile", "create", "findcg"});
+    const auto original_key = repository.snapshot().profiles.front().key;
+    require(original_key > 0, "composite CLI profile receives stable key");
+    execute_composite(repository, {"profile", "set", "findcg", "protocol", "responses"});
+    execute_composite(repository,
+        {"profile", "set", "findcg", "local.request-path", "/findcg/v1/responses"});
+    execute_composite(repository,
+        {"profile", "set", "findcg", "local.usage-path", "/findcg/v1/usage"});
+    execute_composite(repository,
+        {"profile", "set", "findcg", "upstream.base-url", "https://example.test/v1"});
+    execute_composite(repository,
+        {"profile", "set", "findcg", "upstream.request-path", "/responses"});
+    execute_composite(repository,
+        {"profile", "set", "findcg", "upstream.usage-path", "/usage"});
+    execute_composite(repository, {"profile", "rename", "findcg", "primary"});
+    require(repository.snapshot().profiles.front().profile_id == "primary",
+        "composite CLI renames profile");
+    require(repository.snapshot().profiles.front().key == original_key,
+        "profile rename preserves stable key");
+
+    execute_composite(repository,
+        {"rule", "add", "primary", "remove-image", "remove_tool"});
+    const auto rule_key = repository.snapshot().profiles.front().rules.front().key;
+    execute_composite(repository,
+        {"rule", "set", "primary", "remove-image", "tool", "image_gen"});
+    execute_composite(repository, {"rule", "enable", "primary", "remove-image"});
+    require(repository.snapshot().profiles.front().rules.front().key == rule_key,
+        "composite CLI rule edits preserve stable key");
+
+    execute_composite(repository, {"profile", "create", "secondary"});
+    output = execute_composite(repository, {"profile", "move", "secondary", "1"});
+    shown = nlohmann::json::parse(output);
+    require(shown[0]["id"] == "secondary" && shown[1]["id"] == "primary",
+        "composite CLI preserves explicit profile order");
+
+    ccs::CompositeConfigRepository reloaded(paths);
+    require(reloaded.load(error), error);
+    require(reloaded.snapshot().application.runtime.max_inflight_bytes == 805306368ULL,
+        "composite CLI application field round-trips");
+    require(reloaded.snapshot().profiles[1].key == original_key,
+        "composite CLI stable profile key round-trips");
+    require(reloaded.snapshot().profiles[1].rules.front().key == rule_key,
+        "composite CLI stable rule key round-trips");
+    require(reloaded.verify_storage(error), error);
+
+    std::filesystem::remove_all(root, ec);
+}
+
 } // namespace
 
 int main() {
@@ -313,6 +409,7 @@ int main() {
         {"parser contract", test_parser_contract},
         {"help contract", test_help_contract},
         {"management workflow", test_management_workflow},
+        {"composite management workflow", test_composite_management_workflow},
     };
     try {
         for (const auto& [name, test] : tests) {

@@ -412,6 +412,13 @@ def main():
         write_runtime_config(runtime_home, responses_port, target_prefix, log_path)
         environment = os.environ.copy()
         environment["USERPROFILE"] = str(runtime_home)
+        subprocess.run(
+            [str(exe), "storage", "migrate"],
+            cwd=ROOT,
+            env=environment,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
         output = process_output_path.open("wb")
         process = subprocess.Popen(
             [str(exe), "run"],

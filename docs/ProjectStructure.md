@@ -35,17 +35,28 @@ cc-switch-trans/
       control_executor.hpp/.cpp
     config/
       app_paths.hpp/.cpp
+      application_config.hpp/.cpp
+      application_settings.hpp
+      composite_config_repository.hpp/.cpp
       config_cli.hpp/.cpp
       config_document.hpp/.cpp
       config_editing_service.hpp/.cpp
       config_repository.hpp
       config_store.hpp/.cpp
+      configuration_conversion.hpp
+      configuration_editor.hpp/.cpp
+      configuration_snapshot.hpp/.cpp
+      field_descriptor.hpp/.cpp
+      profile_model.hpp
+      rules_text.hpp/.cpp
       runtime_compiler.hpp/.cpp
     core/
       cancellation.hpp/.cpp
       http_types.hpp
+      inflight_memory_budget.hpp/.cpp
       request_id.hpp/.cpp
       runtime_metrics.hpp/.cpp
+      sha256.hpp/.cpp
       timeouts.hpp
       url.hpp/.cpp
     hosts/
@@ -108,6 +119,8 @@ cc-switch-trans/
         winhttp_transport.hpp/.cpp
 
   tests/
+    support/
+      canonical_temp.hpp
     fixtures/
       stage11/
         config-v2-roundtrip.json
@@ -115,8 +128,12 @@ cc-switch-trans/
         transparent-request-body.json
     unit/
       config_cli_tests.cpp
+      composite_config_repository_tests.cpp
+      configuration_editor_tests.cpp
+      configuration_snapshot_tests.cpp
       config_document_tests.cpp
       config_editing_service_tests.cpp
+      application_config_tests.cpp
       presentation_contract_tests.cpp
       ui_preferences_store_tests.cpp
       main_window_view_model_tests.cpp
@@ -131,12 +148,14 @@ cc-switch-trans/
       rule_pipeline_tests.cpp
       sqlite_dependency_tests.cpp
       sqlite_profile_store_tests.cpp
+      rules_text_tests.cpp
     integration/
       mock_upstream.py
       reload_integration.cpp
       run_integration.py
       run_macos_menu_integration.py
       run_macos_proxy_integration.py
+      run_macos_transport_resource_integration.py
       run_tray_integration.py
       run_windows_system_proxy_integration.py
     benchmark/
@@ -180,7 +199,7 @@ cc-switch-trans/
 | 目录 | 职责 |
 | --- | --- |
 | `src/app` | 进程无关的服务启动、停止、reload、rollback、窄控制接口与共享 control executor |
-| `src/config` | v2 文档、共享 draft/commit 服务、repository、CLI、原子持久化、用户路径和 runtime 编译 |
+| `src/config` | v3 application codec、Composite repository/migration、typed draft/descriptor、Rule 文本、CLI、v2 import codec 与 runtime 编译 |
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
 | `src/hosts` | CLI、Windows tray、macOS menu bar 与平台窗口/系统操作 |
 | `src/logging` | JSON Lines、有界队列、批写、2 GiB 日志族轮转/保留、error flush、drain 与 writer health |
@@ -200,9 +219,9 @@ cc-switch-trans/
 
 ```text
 hosts -> presentation + app controller + platform host adapter
-presentation -> app control/status + config editing/repository + control executor
+presentation -> app control/status + config model/editing/repository + control executor
 app -> runtime snapshot + server lifecycle
-config -> routing definitions + protocols + rules + JSON
+config -> profile model + storage repository + routing definitions + protocols + rules + JSON
 runtime compiler -> RouteTable + ProtocolRegistry + RuleRegistry
 server -> runtime + logging + UpstreamTransport
 platform transport -> transport interface + platform API
@@ -218,7 +237,7 @@ core -> C++ standard library
 - `server` 不按 protocol/rule 字符串写业务分支；
 - `hosts` 不复制 compiler、RouteTable、logger 或 transport 初始化；
 - `logging` 不决定请求是否改写；
-- `ConfigStore` 不原地修改已发布 RuntimeSnapshot。
+- Composite repository、ConfigurationEditor 与 legacy ConfigStore 都不得原地修改已发布 RuntimeSnapshot。
 
 ## CMake 目标
 
@@ -230,11 +249,19 @@ ccs-trans
 ccs-trans-tray
 ccs-trans-menu
 ccs-trans-core-tests
+ccs-trans-sqlite-dependency-tests
+ccs-trans-sqlite-profile-store-tests
 ccs-trans-control-executor-tests
 ccs-trans-local-socket-tests
 ccs-trans-config-document-tests
+ccs-trans-application-config-tests
+ccs-trans-composite-config-repository-tests
+ccs-trans-configuration-snapshot-tests
+ccs-trans-sha256-tests
 ccs-trans-config-cli-tests
 ccs-trans-config-editing-service-tests
+ccs-trans-configuration-editor-tests
+ccs-trans-rules-text-tests
 ccs-trans-presentation-contract-tests
 ccs-trans-ui-preferences-store-tests
 ccs-trans-main-window-view-model-tests

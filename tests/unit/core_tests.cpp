@@ -558,6 +558,12 @@ void test_server_reload_classification() {
             == ccs::ReloadResult::RestartRequired,
         "worker topology requires restart");
 
+    auto inflight_restart = hot;
+    inflight_restart.application.runtime.max_inflight_bytes += 1024 * 1024;
+    require(server.reload(compile_runtime(inflight_restart), error)
+            == ccs::ReloadResult::RestartRequired,
+        "process inflight budget requires restart");
+
     auto writer_restart = hot;
     ++writer_restart.application.logging.flush_interval_ms;
     require(server.reload(compile_runtime(writer_restart), error)

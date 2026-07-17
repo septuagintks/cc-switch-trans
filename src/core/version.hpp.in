@@ -2,6 +2,8 @@
 
 namespace ccs {
 
-inline constexpr char kVersion[] = "@PROJECT_VERSION@";
+inline constexpr char kVersion[] = "@CCS_TRANS_VERSION@";
+inline constexpr char kSourceCommit[] = "@CCS_TRANS_SOURCE_COMMIT@";
+inline constexpr bool kSourceDirty = @CCS_TRANS_SOURCE_DIRTY@;
 
 } // namespace ccs

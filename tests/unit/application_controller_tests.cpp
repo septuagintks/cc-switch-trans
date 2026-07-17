@@ -1,7 +1,7 @@
 #include "app/application_controller.hpp"
-#include "config/config_document.hpp"
-#include "config/config_store.hpp"
+#include "config/composite_config_repository.hpp"
 #include "server/platform/local_socket.hpp"
+#include "../support/canonical_temp.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -36,34 +36,30 @@ void write_file(const std::filesystem::path& path, const std::string& content) {
     require(static_cast<bool>(output), "failed to write test config");
 }
 
-std::string serialize(const ccs::ConfigDocument& document) {
-    std::string content;
-    std::string error;
-    const bool serialized = ccs::serialize_config_document(document, content, error);
-    require(serialized, error);
-    return content;
-}
-
 void test_application_controller_lifecycle() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    const auto root = std::filesystem::temp_directory_path()
+    const auto root = ccs::test::canonical_temp_directory()
         / ("ccs-trans-application-controller-" + std::to_string(nonce));
     const auto paths = ccs::make_app_paths(root);
     std::string error;
     const bool directories_ready = ccs::ensure_app_directories(paths, error);
     require(directories_ready, error);
 
-    auto document = ccs::make_default_config_document();
-    document.application.listener.port = reserve_free_port();
-    ccs::ProfileDefinition profile;
+    ccs::CompositeConfigRepository repository(paths);
+    require(repository.load(error), error);
+    auto desired = repository.snapshot();
+    desired.application.listener.port = reserve_free_port();
+    ccs::StoredProfile profile;
+    profile.profile_id = "test";
     profile.enabled = true;
-    profile.protocol = ccs::ProtocolId{"responses"};
-    profile.local.request_path = "/v1/responses";
-    profile.upstream.base_url = "http://127.0.0.1:1";
-    profile.upstream.request_path = "/v1/responses";
-    document.profiles.emplace("test", std::move(profile));
-    const auto valid_config = serialize(document);
-    write_file(paths.config_file, valid_config);
+    profile.protocol = "responses";
+    profile.local_request_path = "/v1/responses";
+    profile.upstream_base_url = "http://127.0.0.1:1";
+    profile.upstream_request_path = "/v1/responses";
+    desired.profiles.push_back(std::move(profile));
+    ccs::ConfigurationSnapshot committed;
+    require(repository.save_snapshot(desired, committed, error), error);
+    const auto valid_config = committed.revision.application_source.bytes;
 
     ccs::ApplicationController controller(paths);
     auto status = controller.status();
@@ -72,7 +68,7 @@ void test_application_controller_lifecycle() {
     require(started, "controller start failed: " + error);
     status = controller.status();
     require(status.state == ccs::ApplicationState::Running, "controller reports running");
-    require(status.listener_port == document.application.listener.port,
+    require(status.listener_port == committed.application.listener.port,
         "controller reports the active listener");
 
     error.clear();

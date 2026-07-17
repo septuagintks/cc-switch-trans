@@ -8,6 +8,8 @@
 
 namespace ccs {
 
+class CompositeConfigRepository;
+
 enum class ConfigCliCommandKind {
     Run,
     ConfigShow,
@@ -21,6 +23,8 @@ enum class ConfigCliCommandKind {
     ProfileDisable,
     ProfileSet,
     ProfileUnset,
+    ProfileRename,
+    ProfileMove,
     RuleList,
     RuleShow,
     RuleAdd,
@@ -30,6 +34,9 @@ enum class ConfigCliCommandKind {
     RuleSet,
     RuleUnset,
     RuleMove,
+    StorageStatus,
+    StorageMigrate,
+    StorageVerify,
     Help,
     Version,
 };
@@ -58,6 +65,11 @@ bool is_config_cli_management_command(const std::string& command);
 bool execute_config_cli(
     const ConfigCliCommand& command,
     ConfigRepository& repository,
+    std::string& output,
+    std::string& error);
+bool execute_config_cli(
+    const ConfigCliCommand& command,
+    CompositeConfigRepository& repository,
     std::string& output,
     std::string& error);
 void print_config_cli_help(std::ostream& output);

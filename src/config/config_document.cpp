@@ -27,6 +27,8 @@ constexpr const char* kSchemaVersion = "ccs-trans.config/v2";
 constexpr std::uint32_t kMaxWorkerThreads = 1024;
 constexpr std::uint32_t kMaxConnections = 65535;
 constexpr std::uint64_t kMaxBufferedBodySize = 1024ULL * 1024 * 1024;
+constexpr std::uint64_t kMinInflightMemoryBudget = 1024ULL * 1024;
+constexpr std::uint64_t kMaxInflightMemoryBudget = 64ULL * 1024 * 1024 * 1024;
 constexpr std::uint64_t kMaxLogBufferSize = 1024ULL * 1024 * 1024;
 constexpr std::uint64_t kMaxLogTotalSize = 1024ULL * 1024 * 1024 * 1024;
 constexpr std::uint64_t kLogRecordHeadroom = 1024ULL * 1024;
@@ -588,7 +590,9 @@ bool validate_base_url(const std::string& value, const std::string& label, std::
     return true;
 }
 
-bool validate_application(const ApplicationSettings& application, std::string& error) {
+bool validate_application_settings_impl(
+    const ApplicationSettings& application,
+    std::string& error) {
     if (application.listener.host.empty()
         || application.listener.host.size() > 255
         || contains_control(application.listener.host)
@@ -674,6 +678,11 @@ bool validate_application(const ApplicationSettings& application, std::string& e
         || application.logging.flush_interval_ms == 0
         || application.logging.flush_interval_ms > kMaxFlushIntervalMs) {
         error = "logging size fields must be 1 byte to 1 GiB and flush_interval_ms must be 1 to 60000";
+        return false;
+    }
+    if (application.runtime.max_inflight_bytes < kMinInflightMemoryBudget
+        || application.runtime.max_inflight_bytes > kMaxInflightMemoryBudget) {
+        error = "runtime.max_inflight_bytes must be between 1 MiB and 64 GiB";
         return false;
     }
     if (application.logging.max_total_size == 0
@@ -770,6 +779,13 @@ Json document_to_json(const ConfigDocument& document) {
 }
 
 } // namespace
+
+bool validate_application_settings(
+    const ApplicationSettings& application,
+    std::string& error) {
+    error.clear();
+    return validate_application_settings_impl(application, error);
+}
 
 ConfigDocument make_default_config_document() {
     return {};
@@ -916,7 +932,7 @@ bool validate_profile_definition(
 
 bool validate_config_document(const ConfigDocument& document, std::string& error) {
     error.clear();
-    if (!validate_application(document.application, error)) {
+    if (!validate_application_settings(document.application, error)) {
         return false;
     }
     if (document.profiles.size() > kMaxConfigProfiles) {

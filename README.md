@@ -5,6 +5,13 @@ is the current Windows 11 x64 and macOS 26 arm64 baseline. The Windows
 distribution is `0.6.0-Windows-x64`; the ad-hoc signed macOS distribution is
 `0.6.0-macOS-arm64`.
 
+The checked-out development source is `0.7.0-dev`. Its Windows implementation
+currently includes the 512 MiB process inflight budget, SQLite Profile/Rule
+storage, `ccs-trans.config/v3`, explicit v2 migration, typed field commands,
+and canonical Rule text. It is not a release build: both packaging scripts
+reject the `-dev` suffix. macOS validation for this development state remains
+a separate platform acceptance item.
+
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
 select their own upstream targets, and optionally run an ordered request Rule
@@ -53,8 +60,9 @@ same shared ViewModel. Reload Draft is distinct from service Reload; a dirty
 draft requires explicit discard confirmation before disk state can replace it.
 Each Profile shows enabled and total Rule counts. Lightweight mode destroys a
 closed main window while leaving the desktop host and listener running; normal
-mode hides and reuses it. Profile storage remains `ccs-trans.config/v2` in this
-version; SQLite and complete field editing begin in `0.7.0`.
+mode hides and reuses it. The published `0.6.0` package retains
+`ccs-trans.config/v2`; the current `0.7.0-dev` source uses v3 application
+settings plus SQLite Profile/Rule storage.
 
 Create the fixed-whitelist Windows package from a Release build:
 
@@ -145,25 +153,46 @@ Windows: %USERPROFILE%/.ccs-trans/
 macOS:   ~/.ccs-trans/
 
 config.json
+profiles.db
 logs/ccs-trans.log
 logs/ccs-trans-host.log   (tray/menu host only)
-state/
+state/repository.lock
+state/repository-transaction/   (only while commit/recovery is pending)
+state/migrations/               (retained v2 backup and manifest)
+state/ui.json
 ```
 
 Windows resolves the root from `USERPROFILE`. macOS uses an absolute `HOME`
 when present and otherwise falls back to the current account database. Relative
 log paths stay under the application root; an absolute path can place the log
-elsewhere. The configuration schema is `ccs-trans.config/v2`. Old schemas and
-unknown fields are rejected rather than migrated or silently ignored.
+elsewhere. In `0.7.0-dev`, `config.json` uses the strict
+`ccs-trans.config/v3` schema and contains application settings only. Profiles
+and ordered Rules use the fixed `profiles.db`; neither path is configurable.
+Unknown fields, duplicate JSON keys, bad types, unsupported schemas, and
+ambiguous recovery state are rejected.
+
+Existing `ccs-trans.config/v2` data is never migrated by `run`, the tray/menu
+host, or a Profile command. Inspect and explicitly migrate it with:
+
+```text
+ccs-trans storage status
+ccs-trans storage migrate
+ccs-trans storage verify
+```
+
+Migration retains the exact v2 source and a SHA-256 manifest under
+`state/migrations/`, imports Profiles/Rules transactionally, and refuses to
+replace an existing `profiles.db`. A fresh empty root may initialize v3 and
+schema v1 automatically.
 
 `logging.max_total_size` bounds one runtime log family, including the active
 file and all ccs-trans-managed rotation segments. It defaults to
-`2147483648` bytes (2 GiB). Existing v2 files without this field load with the
-default; once saved by the current build, the new field is written explicitly.
-Set it with the single canonical command:
+`2147483648` bytes (2 GiB). The process-wide inflight memory budget defaults to
+`536870912` bytes (512 MiB). Set either through its single canonical command:
 
 ```text
 ccs-trans config set logging.max-total-size 2147483648
+ccs-trans config set runtime.max-inflight-bytes 536870912
 ```
 
 Profiles never persist API keys, Authorization headers, cookies, or proxy
@@ -188,6 +217,14 @@ ccs-trans rule set findcg remove-image-gen tool image_gen
 ccs-trans rule enable findcg remove-image-gen
 ccs-trans profile enable findcg
 ccs-trans run
+```
+
+Profile identity is an internal stable key and is never printed. Rename or
+reorder a Profile without changing that identity with:
+
+```text
+ccs-trans profile rename findcg primary
+ccs-trans profile move primary 1
 ```
 
 When using this Profile with CC Switch, set the Provider base URL to:
@@ -301,6 +338,28 @@ An empty pipeline does not parse JSON. A non-empty pipeline parses once, shares
 one DOM across ordered rules, and serializes at most once only when modified.
 Unmodified requests retain their exact original bytes.
 
+The shared Rule text draft format is canonical UTF-8 JSON with LF endings,
+two-space indentation, a 4 MiB per-Profile limit, and this envelope:
+
+```json
+{
+  "schema_version": "ccs-trans.rules/v1",
+  "rules": [
+    {
+      "id": "remove-image-gen",
+      "enabled": true,
+      "type": "remove_tool",
+      "options": {"tool": "image_gen"}
+    }
+  ]
+}
+```
+
+Rule order is significant. Internal Rule keys are not exposed; editing the
+same `id` preserves its key, while a new `id` receives a new one. Disabled
+unknown Rule types can round-trip for forward-compatible drafts, but an enabled
+unknown type cannot be committed to a runtime snapshot.
+
 ## Runtime Behavior
 
 - The local listener accepts HTTP/1.0 or HTTP/1.1 requests with strict
@@ -328,8 +387,8 @@ upstreams, ordered Rules, request limits, timeouts, body-logging policy, and a
 new log path can change for new requests without altering in-flight requests.
 Listener, worker, metrics-reporter, and same-path log-writer topology changes
 use a graceful restart with rollback to the previous snapshot if startup fails.
-Changing `logging.max_total_size` on the same path is a log-writer topology
-change.
+Changing the process inflight budget or `logging.max_total_size` on the same
+path is also a restart-level topology change.
 
 Aggregate 8-16 SSE connections are the normal desktop load. Fifty connections
 are a bounded stress profile, not the normal operating target.
@@ -443,7 +502,7 @@ under ignored `benchmark-results/`.
 assets/icons/          Canonical cross-platform icon source
 docs/                  Design and development documentation
 src/app/               Shared service lifecycle and reload rollback
-src/config/            v2 CLI, document store, validation, runtime compiler
+src/config/            v3/composite repository, migration, typed editing, runtime compiler
 src/core/              HTTP data, cancellation, URL, timeout, and global metrics
 src/hosts/             CLI, tray/menu hosts, and native platform windows
 src/logging/           Structured asynchronous logging
@@ -452,6 +511,7 @@ src/protocols/         Responses, Chat, and Messages handlers/registry
 src/routing/           Immutable Profiles and exact RouteTable
 src/rules/             Rule factories, registry, and compiled pipelines
 src/server/            Single listener, worker queue, request orchestration
+src/storage/           SQLite schema, Profile/Rule transactions, verification
 src/transport/         Cross-platform interface, Windows WinHTTP, macOS libcurl
 tests/                  Unit, integration, proxy-policy, and load tests
 ```

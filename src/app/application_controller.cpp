@@ -1,7 +1,7 @@
 #include "app/application_controller.hpp"
 
 #include "app/app_service.hpp"
-#include "config/config_store.hpp"
+#include "config/composite_config_repository.hpp"
 #include "config/runtime_compiler.hpp"
 
 #include <utility>
@@ -18,16 +18,16 @@ bool load_runtime_snapshot(
         return false;
     }
 
-    ConfigStore store(paths);
-    if (!store.load(error)) {
+    CompositeConfigRepository repository(paths);
+    if (!repository.load(error)) {
         return false;
     }
-    auto document = store.document();
+    auto configuration = repository.snapshot();
     if (!options.log_level.empty()) {
-        document.application.logging.level = options.log_level;
+        configuration.application.logging.level = options.log_level;
     }
     if (!options.log_path.empty()) {
-        document.application.logging.path = options.log_path;
+        configuration.application.logging.path = options.log_path;
     }
 
     RuntimeCompileOptions compile_options;
@@ -35,7 +35,7 @@ bool load_runtime_snapshot(
         compile_options.selected_profile = options.selected_profile;
     }
     RuntimeCompiler compiler(paths.root);
-    return compiler.compile(document, compile_options, snapshot, error);
+    return compiler.compile(configuration, compile_options, snapshot, error);
 }
 
 const char* application_state_name(ApplicationState state) {

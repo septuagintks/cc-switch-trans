@@ -22,6 +22,8 @@
     <string>@PROJECT_VERSION@</string>
     <key>CFBundleVersion</key>
     <string>@PROJECT_VERSION@</string>
+    <key>CCSTransVersion</key>
+    <string>@CCS_TRANS_VERSION@</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
     <key>LSUIElement</key>

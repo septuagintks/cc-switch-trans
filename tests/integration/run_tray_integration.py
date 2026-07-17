@@ -67,7 +67,7 @@ def free_port() -> int:
         return int(probe.getsockname()[1])
 
 
-def run_cli(executable: Path, env: dict[str, str], *arguments: str) -> None:
+def run_cli(executable: Path, env: dict[str, str], *arguments: str) -> str:
     result = subprocess.run(
         [str(executable), *arguments],
         env=env,
@@ -80,6 +80,7 @@ def run_cli(executable: Path, env: dict[str, str], *arguments: str) -> None:
         result.returncode == 0,
         f"CLI command failed ({' '.join(arguments)}): {result.stderr or result.stdout}",
     )
+    return result.stdout
 
 
 def wait_for_http(port: int, timeout: float = 10.0) -> None:
@@ -488,8 +489,12 @@ def wait_for_view_command(
     raise RuntimeError(f"main window command did not complete: {command}")
 
 
-def read_config(home: Path) -> dict:
-    return json.loads((home / ".ccs-trans" / "config.json").read_text(encoding="utf-8"))
+def read_profiles(executable: Path, env: dict[str, str]) -> dict[str, dict]:
+    listed = json.loads(run_cli(executable, env, "profile", "list"))
+    return {
+        item["id"]: json.loads(run_cli(executable, env, "profile", "show", item["id"]))
+        for item in listed
+    }
 
 
 def read_startup_value() -> tuple[str, int] | None:
@@ -703,7 +708,7 @@ def main() -> int:
             click_control(reused, MAIN_APPLY)
             result = wait_for_view_command(host_log, "apply_draft", before)
             require(result.get("outcome") == "succeeded", "GUI Apply failed")
-            require("gui-renamed" in read_config(home)["profiles"], "GUI Profile was not persisted")
+            require("gui-renamed" in read_profiles(cli, env), "GUI Profile was not persisted")
 
             profile_list = get_control(reused, MAIN_PROFILE_LIST)
             before = view_command_count(host_log, "select_profile")
@@ -723,7 +728,7 @@ def main() -> int:
             click_control(reused, MAIN_APPLY)
             result = wait_for_view_command(host_log, "apply_draft", before)
             require(result.get("outcome") == "succeeded", "GUI checkbox Apply failed")
-            require(read_config(home)["profiles"]["tray-test"]["enabled"] is True, "enabled state changed")
+            require(read_profiles(cli, env)["tray-test"]["enabled"] is True, "enabled state changed")
 
             before = view_command_count(host_log, "select_profile")
             select_list_item(profile_list, 0)
@@ -737,7 +742,7 @@ def main() -> int:
             click_control(reused, MAIN_APPLY)
             result = wait_for_view_command(host_log, "apply_draft", before)
             require(result.get("outcome") == "succeeded", "GUI removal Apply failed")
-            require("gui-renamed" not in read_config(home)["profiles"], "removed GUI Profile persisted")
+            require("gui-renamed" not in read_profiles(cli, env), "removed GUI Profile persisted")
 
             # A CLI write after the GUI loaded its repository must make Apply stale.
             # Reload Draft requires an explicit discard and then exposes the CLI state.
@@ -755,7 +760,7 @@ def main() -> int:
                 and result.get("error") == "repository_stale",
                 f"GUI Apply did not reject an external CLI write: {result}",
             )
-            current_config = read_config(home)["profiles"]
+            current_config = read_profiles(cli, env)
             require(
                 "cli-external" in current_config and "z-gui-stale" not in current_config,
                 "stale GUI Apply overwrote or lost the CLI state",
@@ -792,7 +797,7 @@ def main() -> int:
             result = wait_for_view_command(host_log, "discard_draft", before)
             require(result.get("outcome") == "succeeded", "dirty close Discard failed")
             wait_for_window(main_window_class, tray_window_title, False)
-            require("discard-me" not in read_config(home)["profiles"], "discarded Profile reached disk")
+            require("discard-me" not in read_profiles(cli, env), "discarded Profile reached disk")
             wait_for_http(port)
             verify_desktop_16_during_window_cycles(
                 port, upstream_port, window, main_window_class, tray_window_title
@@ -851,7 +856,7 @@ def main() -> int:
             require(process.wait(timeout=12) == 0, "tray process did not shut down cleanly")
             require(time.monotonic() - shutdown_started < 5.0, "tray shutdown exceeded 5 seconds")
             wait_for_port_closed(port)
-            require("exit-race" not in read_config(home)["profiles"], "exit-race draft reached disk")
+            require("exit-race" not in read_profiles(cli, env), "exit-race draft reached disk")
         except Exception:
             logs = home / ".ccs-trans" / "logs"
             for diagnostic_log in ("ccs-trans-host.log", "ccs-trans.log"):

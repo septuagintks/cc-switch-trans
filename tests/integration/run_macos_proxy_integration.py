@@ -114,6 +114,14 @@ def run_case(
     environment["HOME"] = str(home)
     environment.update(proxy_environment)
 
+    subprocess.run(
+        [str(executable), "storage", "migrate"],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
     process = subprocess.Popen(
         [str(executable), "run"],
         cwd=ROOT,

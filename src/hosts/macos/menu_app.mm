@@ -2,8 +2,8 @@
 
 #include "app/application_controller.hpp"
 #include "app/control_executor.hpp"
+#include "config/composite_config_repository.hpp"
 #include "config/config_editing_service.hpp"
-#include "config/config_store.hpp"
 #include "hosts/macos/instance_coordinator.hpp"
 #include "hosts/macos/main_window.hpp"
 #include "hosts/macos/macos_host_platform.hpp"
@@ -100,7 +100,7 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
     ccs::ApplicationController* _controller;
     ccs::MacHostPlatform* _platform;
     ccs::ControlExecutor* _executor;
-    ccs::ConfigStore* _configRepository;
+    ccs::CompositeConfigRepository* _configRepository;
     ccs::ConfigEditingService* _configEditing;
     ccs::UiPreferencesStore* _uiPreferences;
     ccs::MainWindowViewModel* _viewModel;
@@ -158,7 +158,7 @@ NSString* status_text(const ccs::ApplicationStatus& status) {
         _controller = new ccs::ApplicationController(*_paths);
         _platform = new ccs::MacHostPlatform();
         _executor = new ccs::ControlExecutor();
-        _configRepository = new ccs::ConfigStore(*_paths);
+        _configRepository = new ccs::CompositeConfigRepository(*_paths);
         _configEditing = new ccs::ConfigEditingService(*_configRepository);
         _uiPreferences = new ccs::UiPreferencesStore(*_paths);
         _viewModel = new ccs::MainWindowViewModel(

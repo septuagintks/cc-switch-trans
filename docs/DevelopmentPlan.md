@@ -2,22 +2,24 @@
 
 ## 当前基线
 
-`0.6.0` 是当前双平台基线，发行标识统一为：
+`0.6.0` 是当前已发布的双平台基线，发行标识统一为：
 
 ```text
 0.6.0-Windows-x64
 0.6.0-macOS-arm64
 ```
 
-当前实现使用 ISO C++20、`ccs-trans.config/v2`、应用级单 listener、多 Profile、精确
-RouteTable、有界 FIFO worker、immutable request generation、异步有界日志、Windows WinHTTP
-system proxy 和 macOS SDK system libcurl process proxy。Windows tray 与 macOS menu 均提供原生
-主窗口、普通/轻量窗口生命周期、服务控制和基础 Profile 管理；CLI 与 GUI 通过同一
-ConfigRepository/ConfigEditingService 合同提交配置。
+当前开发源码为 `0.7.0-dev`。Windows 侧已完成 `0.7-A1/A2`、`0.7-B/C/D/E`：全进程 inflight
+budget、SQLite 3.53.3、schema v1、`ccs-trans.config/v3`、固定 `profiles.db`、组合 revision/恢复
+journal、显式 v2 migration、共享 field descriptor/typed command、Composite CLI 和 canonical
+Rule 文本模型均已进入生产路径。请求热路径仍只读取 immutable generation，不访问 JSON、SQLite、
+GUI 或 descriptor。`0.7-A3` 的 platform-local 实现与证据已回传；Windows 已修复回传指出的
+AppleClang dead constant 和 macOS temp symlink 测试夹具，仍需 macOS 在合并后提交上复验正式
+warnings/default CTest，因此不能把 Windows 结果外推为完整 macOS passed。
 
 `0.6.0` 的实现、测试、资源结果、发行物溯源和接受限制统一归档在
 [Release-0.6.0.md](Archived/Release-0.6.0.md)。历史 `0.5.0` 文档保持只读，不再作为当前状态来源。
-`0.7.0` 已完成开工合同，具体实现以 [Planning-0.7.0.md](Planning-0.7.0.md) 为唯一专项计划。
+`0.7.0` 的实施状态与剩余验收以 [Planning-0.7.0.md](Planning-0.7.0.md) 为唯一专项计划。
 
 ## 版本顺序
 
@@ -49,6 +51,9 @@ SQL、GUI 查询或 Rule descriptor 枚举。
 6. `0.7-F`：完成 Win32 Profiles/Rules/Settings 三视图；
 7. `0.7-G`：交接并完成 AppKit 对等实现；
 8. `0.7-H`：完成数据/故障矩阵、负载与常驻测试、双平台同提交打包和签名发布。
+
+当前顺序：macOS 复验并关闭 `0.7-A3` 的两个共享 blocker，同时 Windows 进入 `0.7-F` 三视图与轻量
+圆角主题；`0.7-F` 冻结共享 GUI 合同后交接 `0.7-G`。`0.7-D/E` 不再保留“实现中”的旧分支方案。
 
 冻结边界：v3 应用设置继续位于 `config.json`，Profile/Rule 位于固定 `profiles.db`；迁移必须显式
 确认并可恢复；runtime 只消费 immutable 组合 snapshot；请求期禁止 SQL、文件 I/O 或 GUI 查询。

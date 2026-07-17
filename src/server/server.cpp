@@ -919,7 +919,8 @@ Server::Server(
     bool handle_process_signals)
     : metrics_(std::make_shared<RuntimeMetrics>())
     , inflight_budget_(std::make_shared<InflightMemoryBudget>(
-          kDefaultInflightMemoryBudget, metrics_))
+          require_runtime_snapshot(snapshot).application.runtime.max_inflight_bytes,
+          metrics_))
     , log_sink_factory_(std::move(log_sink_factory))
     , handle_process_signals_(handle_process_signals) {
     const auto& runtime = require_runtime_snapshot(snapshot);
@@ -1015,7 +1016,9 @@ ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
         || old_application.listener.port != new_application.listener.port;
     const bool execution_changed =
         old_application.runtime.worker_threads != new_application.runtime.worker_threads
-        || old_application.runtime.metrics_interval_ms != new_application.runtime.metrics_interval_ms;
+        || old_application.runtime.metrics_interval_ms != new_application.runtime.metrics_interval_ms
+        || old_application.runtime.max_inflight_bytes
+            != new_application.runtime.max_inflight_bytes;
     const bool same_log_path = old_runtime.log_path == snapshot->log_path;
     const bool same_log_writer_settings =
         old_application.logging.level == new_application.logging.level

@@ -92,6 +92,9 @@ AppPaths make_app_paths(const std::filesystem::path& root) {
         root / "logs" / "ccs-trans-host.log",
         root / "state",
         root / "state" / "ui.json",
+        root / "state" / "repository.lock",
+        root / "state" / "repository-transaction",
+        root / "state" / "migrations",
     };
 }
 

@@ -24,7 +24,6 @@ constexpr int kSqlTextLimit = 1024 * 1024;
 constexpr int kSqlColumnLimit = 64;
 constexpr int kSqlVariableLimit = 64;
 constexpr int kSqlCompoundSelectLimit = 16;
-constexpr int kTemporaryPositionOffset = 1'000'000;
 constexpr int kDatabasePageSize = 4096;
 constexpr int kDatabaseMaxPageCount = 65'536;
 constexpr int kWalAutoCheckpointPages = 256;
@@ -1026,6 +1025,136 @@ bool SqliteProfileStore::save(
     } catch (const std::exception& exception) {
         last_failure_ = ProfileStoreFailure::Io;
         error = std::string("failed to save profile database: ") + exception.what();
+    }
+    return false;
+}
+
+bool SqliteProfileStore::mark_migrated(
+    std::string source_schema,
+    std::string source_sha256,
+    ProfileStoreSnapshot& committed,
+    std::string& error) {
+    error.clear();
+    last_failure_ = ProfileStoreFailure::None;
+    if (source_schema != "ccs-trans.config/v2" || !valid_sha256(source_sha256)) {
+        last_failure_ = ProfileStoreFailure::InvalidData;
+        error = "migration provenance requires v2 schema and lowercase SHA-256";
+        return false;
+    }
+    try {
+        if (!existing_regular_file(database_path_, error)) {
+            fail(ProfileStoreFailure::NotFound, "profile database does not exist");
+        }
+        Connection connection(database_path_, false, options_);
+        configure_connection(connection, false);
+        if (options_.integrity_check_on_load) {
+            verify_integrity(connection.get());
+        }
+        Transaction transaction(connection.get());
+        const auto current = read_snapshot(connection.get());
+        if (current.migrated_from_sha256) {
+            if (*current.migrated_from_sha256 == source_sha256) {
+                transaction.commit();
+                committed = current;
+                return true;
+            }
+            fail(ProfileStoreFailure::Constraint, "profile database has different migration provenance");
+        }
+
+        Statement metadata(
+            connection.get(),
+            "UPDATE repository_meta SET migrated_from_sha256=?1 "
+            "WHERE singleton=1 AND migrated_from_sha256 IS NULL");
+        metadata.bind_text(1, source_sha256);
+        if (metadata.step() != SQLITE_DONE) {
+            fail(ProfileStoreFailure::Io, "migration metadata update returned rows");
+        }
+        require_changed_one(connection.get(), "set migration provenance");
+
+        Statement history(
+            connection.get(),
+            "INSERT INTO migration_history(source_schema, source_sha256, completed_at) "
+            "VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))");
+        history.bind_text(1, source_schema);
+        history.bind_text(2, source_sha256);
+        if (history.step() != SQLITE_DONE) {
+            fail(ProfileStoreFailure::Io, "migration history insert returned rows");
+        }
+
+        const auto verified = read_snapshot(connection.get());
+        if (verified.revision != current.revision
+            || verified.migrated_from_sha256 != source_sha256
+            || verified.profiles != current.profiles) {
+            fail(ProfileStoreFailure::Corrupt, "migration provenance round-trip failed");
+        }
+        transaction.commit();
+        passive_checkpoint(connection.get());
+        committed = verified;
+        return true;
+    } catch (const StoreError& exception) {
+        last_failure_ = exception.failure();
+        error = exception.what();
+    } catch (const std::exception& exception) {
+        last_failure_ = ProfileStoreFailure::Io;
+        error = std::string("failed to mark profile migration: ") + exception.what();
+    }
+    return false;
+}
+
+bool SqliteProfileStore::checkpoint_for_move(std::string& error) {
+    error.clear();
+    last_failure_ = ProfileStoreFailure::None;
+    try {
+        if (!existing_regular_file(database_path_, error)) {
+            fail(ProfileStoreFailure::NotFound, "profile database does not exist");
+        }
+        {
+            Connection connection(database_path_, false, options_);
+            configure_connection(connection, false);
+            verify_integrity(connection.get());
+            (void)read_snapshot(connection.get());
+            int log_frames = 0;
+            int checkpointed_frames = 0;
+            const int result = sqlite3_wal_checkpoint_v2(
+                connection.get(),
+                nullptr,
+                SQLITE_CHECKPOINT_TRUNCATE,
+                &log_frames,
+                &checkpointed_frames);
+            if (result != SQLITE_OK) {
+                fail(
+                    sqlite_failure(result),
+                    sqlite_error(connection.get(), "truncate profile WAL", result));
+            }
+            if (log_frames != 0 || checkpointed_frames != 0) {
+                fail(ProfileStoreFailure::Busy, "profile WAL did not truncate completely");
+            }
+        }
+
+        for (const auto& suffix : {"-wal", "-shm"}) {
+            auto sidecar = database_path_;
+            sidecar += suffix;
+            std::error_code ec;
+            if (!std::filesystem::exists(sidecar, ec)) {
+                if (ec) {
+                    fail(ProfileStoreFailure::Io, "failed to inspect SQLite sidecar: " + ec.message());
+                }
+                continue;
+            }
+            const auto size = std::filesystem::file_size(sidecar, ec);
+            if (ec || size != 0) {
+                fail(
+                    ProfileStoreFailure::Busy,
+                    "SQLite sidecar remains after truncate checkpoint: " + sidecar.string());
+            }
+        }
+        return true;
+    } catch (const StoreError& exception) {
+        last_failure_ = exception.failure();
+        error = exception.what();
+    } catch (const std::exception& exception) {
+        last_failure_ = ProfileStoreFailure::Io;
+        error = std::string("failed to checkpoint profile database: ") + exception.what();
     }
     return false;
 }

@@ -1,5 +1,9 @@
 #include "config/config_cli.hpp"
 
+#include "config/application_config.hpp"
+#include "config/composite_config_repository.hpp"
+#include "config/configuration_editor.hpp"
+#include "config/field_descriptor.hpp"
 #include "core/version.hpp"
 
 #include "config/config_editing_service.hpp"
@@ -21,41 +25,26 @@ namespace {
 using Json = nlohmann::json;
 
 const std::set<std::string>& application_keys() {
-    static const std::set<std::string> keys = {
-        "listener.host",
-        "listener.port",
-        "runtime.worker-threads",
-        "runtime.max-connections",
-        "runtime.max-request-body-size",
-        "runtime.max-response-body-size",
-        "runtime.metrics-interval-ms",
-        "timeouts.resolve-ms",
-        "timeouts.connect-ms",
-        "timeouts.send-ms",
-        "timeouts.response-header-ms",
-        "timeouts.stream-idle-ms",
-        "timeouts.total-ms",
-        "logging.path",
-        "logging.level",
-        "logging.body",
-        "logging.redact-sensitive",
-        "logging.body-limit",
-        "logging.queue-capacity",
-        "logging.max-total-size",
-        "logging.flush-interval-ms",
-    };
+    static const std::set<std::string> keys = [] {
+        std::set<std::string> result;
+        for (const auto& descriptor : application_field_descriptors()) {
+            result.emplace(descriptor.key);
+        }
+        return result;
+    }();
     return keys;
 }
 
 const std::set<std::string>& profile_keys() {
-    static const std::set<std::string> keys = {
-        "protocol",
-        "local.request-path",
-        "local.usage-path",
-        "upstream.base-url",
-        "upstream.request-path",
-        "upstream.usage-path",
-    };
+    static const std::set<std::string> keys = [] {
+        std::set<std::string> result;
+        for (const auto& descriptor : profile_field_descriptors()) {
+            if (descriptor.key != "id" && descriptor.key != "enabled") {
+                result.emplace(descriptor.key);
+            }
+        }
+        return result;
+    }();
     return keys;
 }
 
@@ -188,6 +177,19 @@ bool parse_profile_command(int argc, char** argv, ConfigCliParseResult& result) 
             result.error = "unknown profile key: " + result.command.key;
             return false;
         }
+    } else if (subcommand == "rename" && argc == 5) {
+        result.command.kind = ConfigCliCommandKind::ProfileRename;
+        if (!is_valid_profile_id(argv[4])) {
+            result.error = "new profile id must be 1-64 characters using letters, digits, ., _, or -";
+            return false;
+        }
+        result.command.value = argv[4];
+    } else if (subcommand == "move" && argc == 5) {
+        result.command.kind = ConfigCliCommandKind::ProfileMove;
+        if (!parse_position(argv[4], result.command.position)) {
+            result.error = "profile position must be a positive 1-based integer";
+            return false;
+        }
     } else {
         result.error = "invalid profile command or argument count";
         return false;
@@ -309,6 +311,25 @@ bool parse_run_command(int argc, char** argv, ConfigCliParseResult& result) {
     return true;
 }
 
+bool parse_storage_command(int argc, char** argv, ConfigCliParseResult& result) {
+    if (argc != 3) {
+        result.error = "storage requires exactly one subcommand";
+        return false;
+    }
+    const std::string subcommand = argv[2];
+    if (subcommand == "status") {
+        result.command.kind = ConfigCliCommandKind::StorageStatus;
+    } else if (subcommand == "migrate") {
+        result.command.kind = ConfigCliCommandKind::StorageMigrate;
+    } else if (subcommand == "verify") {
+        result.command.kind = ConfigCliCommandKind::StorageVerify;
+    } else {
+        result.error = "unknown storage subcommand: " + subcommand;
+        return false;
+    }
+    return true;
+}
+
 bool set_application_value(
     ApplicationSettings& application,
     const std::string& key,
@@ -367,6 +388,8 @@ bool set_application_value(
         application.runtime.max_request_body_size = value;
     } else if (key == "runtime.max-response-body-size") {
         application.runtime.max_response_body_size = value;
+    } else if (key == "runtime.max-inflight-bytes") {
+        application.runtime.max_inflight_bytes = value;
     } else if (key == "runtime.metrics-interval-ms") {
         if (value > std::numeric_limits<std::uint32_t>::max()) {
             error = key + " exceeds the supported integer range";
@@ -424,6 +447,8 @@ void reset_application_value(ApplicationSettings& target, const std::string& key
         target.runtime.max_request_body_size = defaults.runtime.max_request_body_size;
     } else if (key == "runtime.max-response-body-size") {
         target.runtime.max_response_body_size = defaults.runtime.max_response_body_size;
+    } else if (key == "runtime.max-inflight-bytes") {
+        target.runtime.max_inflight_bytes = defaults.runtime.max_inflight_bytes;
     } else if (key == "runtime.metrics-interval-ms") {
         target.runtime.metrics_interval_ms = defaults.runtime.metrics_interval_ms;
     } else if (key == "timeouts.resolve-ms") {
@@ -619,6 +644,188 @@ bool save_candidate(
     return true;
 }
 
+const StoredProfile* find_stored_profile(
+    const ConfigurationSnapshot& snapshot,
+    std::string_view profile_id) {
+    const auto found = std::find_if(
+        snapshot.profiles.begin(), snapshot.profiles.end(), [profile_id](const auto& profile) {
+            return profile.profile_id == profile_id;
+        });
+    return found == snapshot.profiles.end() ? nullptr : &*found;
+}
+
+const StoredRule* find_stored_rule(
+    const StoredProfile& profile,
+    std::string_view rule_id) {
+    const auto found = std::find_if(
+        profile.rules.begin(), profile.rules.end(), [rule_id](const auto& rule) {
+            return rule.rule_id == rule_id;
+        });
+    return found == profile.rules.end() ? nullptr : &*found;
+}
+
+bool stored_rule_json(const StoredRule& rule, Json& rendered, std::string& error) {
+    try {
+        const auto options = Json::parse(rule.options_json);
+        if (!options.is_object()) {
+            error = "stored rule options are not a JSON object: " + rule.rule_id;
+            return false;
+        }
+        rendered = {
+            {"id", rule.rule_id},
+            {"enabled", rule.enabled},
+            {"type", rule.type},
+        };
+        for (auto item = options.begin(); item != options.end(); ++item) {
+            rendered[item.key()] = item.value();
+        }
+        return true;
+    } catch (const Json::exception& exception) {
+        error = "failed to render stored rule " + rule.rule_id + ": " + exception.what();
+        return false;
+    }
+}
+
+bool stored_profile_json(
+    const StoredProfile& profile,
+    Json& rendered,
+    std::string& error) {
+    rendered = {
+        {"id", profile.profile_id},
+        {"enabled", profile.enabled},
+    };
+    if (profile.protocol) {
+        rendered["protocol"] = *profile.protocol;
+    }
+    rendered["local"] = Json::object();
+    if (profile.local_request_path) {
+        rendered["local"]["request_path"] = *profile.local_request_path;
+    }
+    if (profile.local_usage_path) {
+        rendered["local"]["usage_path"] = *profile.local_usage_path;
+    }
+    rendered["upstream"] = Json::object();
+    if (profile.upstream_base_url) {
+        rendered["upstream"]["base_url"] = *profile.upstream_base_url;
+    }
+    if (profile.upstream_request_path) {
+        rendered["upstream"]["request_path"] = *profile.upstream_request_path;
+    }
+    if (profile.upstream_usage_path) {
+        rendered["upstream"]["usage_path"] = *profile.upstream_usage_path;
+    }
+    rendered["rules"] = Json::array();
+    for (const auto& rule : profile.rules) {
+        Json item;
+        if (!stored_rule_json(rule, item, error)) {
+            return false;
+        }
+        rendered["rules"].push_back(std::move(item));
+    }
+    return true;
+}
+
+bool render_snapshot_application(
+    const ConfigurationSnapshot& snapshot,
+    std::string& output,
+    std::string& error) {
+    std::string serialized;
+    if (!serialize_application_config_document({snapshot.application}, serialized, error)) {
+        return false;
+    }
+    try {
+        auto rendered = Json::parse(serialized);
+        rendered.erase("schema_version");
+        output = rendered.dump(2) + "\n";
+        return true;
+    } catch (const Json::exception& exception) {
+        error = "failed to render application settings: " + std::string(exception.what());
+        return false;
+    }
+}
+
+bool render_snapshot_profile_list(
+    const ConfigurationSnapshot& snapshot,
+    std::string& output) {
+    Json rendered = Json::array();
+    for (const auto& profile : snapshot.profiles) {
+        Json item = {
+            {"id", profile.profile_id},
+            {"enabled", profile.enabled},
+        };
+        if (profile.protocol) {
+            item["protocol"] = *profile.protocol;
+        }
+        rendered.push_back(std::move(item));
+    }
+    output = rendered.dump(2) + "\n";
+    return true;
+}
+
+bool render_snapshot_profile(
+    const ConfigurationSnapshot& snapshot,
+    std::string_view profile_id,
+    std::string& output,
+    std::string& error) {
+    const auto* profile = find_stored_profile(snapshot, profile_id);
+    if (profile == nullptr) {
+        error = "profile does not exist: " + std::string(profile_id);
+        return false;
+    }
+    Json rendered;
+    if (!stored_profile_json(*profile, rendered, error)) {
+        return false;
+    }
+    output = rendered.dump(2) + "\n";
+    return true;
+}
+
+bool render_snapshot_rules(
+    const ConfigurationSnapshot& snapshot,
+    std::string_view profile_id,
+    std::string& output,
+    std::string& error) {
+    const auto* profile = find_stored_profile(snapshot, profile_id);
+    if (profile == nullptr) {
+        error = "profile does not exist: " + std::string(profile_id);
+        return false;
+    }
+    Json rendered = Json::array();
+    for (const auto& rule : profile->rules) {
+        Json item;
+        if (!stored_rule_json(rule, item, error)) {
+            return false;
+        }
+        rendered.push_back(std::move(item));
+    }
+    output = rendered.dump(2) + "\n";
+    return true;
+}
+
+bool render_snapshot_rule(
+    const ConfigurationSnapshot& snapshot,
+    std::string_view profile_id,
+    std::string_view rule_id,
+    std::string& output,
+    std::string& error) {
+    const auto* profile = find_stored_profile(snapshot, profile_id);
+    if (profile == nullptr) {
+        error = "profile does not exist: " + std::string(profile_id);
+        return false;
+    }
+    const auto* rule = find_stored_rule(*profile, rule_id);
+    if (rule == nullptr) {
+        error = "rule does not exist: " + std::string(rule_id);
+        return false;
+    }
+    Json rendered;
+    if (!stored_rule_json(*rule, rendered, error)) {
+        return false;
+    }
+    output = rendered.dump(2) + "\n";
+    return true;
+}
+
 } // namespace
 
 ConfigCliParseResult parse_config_cli(int argc, char** argv) {
@@ -644,6 +851,10 @@ ConfigCliParseResult parse_config_cli(int argc, char** argv) {
         if (!parse_rule_command(argc, argv, result)) {
             return result;
         }
+    } else if (command == "storage") {
+        if (!parse_storage_command(argc, argv, result)) {
+            return result;
+        }
     } else if (command == "run") {
         if (!parse_run_command(argc, argv, result)) {
             return result;
@@ -657,7 +868,8 @@ ConfigCliParseResult parse_config_cli(int argc, char** argv) {
 }
 
 bool is_config_cli_management_command(const std::string& command) {
-    return command == "config" || command == "profile" || command == "rule";
+    return command == "config" || command == "profile" || command == "rule"
+        || command == "storage";
 }
 
 bool execute_config_cli(
@@ -843,6 +1055,180 @@ bool execute_config_cli(
     return save_candidate(editing, std::move(rendered), output, error);
 }
 
+bool execute_config_cli(
+    const ConfigCliCommand& command,
+    CompositeConfigRepository& repository,
+    std::string& output,
+    std::string& error) {
+    output.clear();
+    error.clear();
+    ConfigurationEditor editor(repository);
+    if (!editor.begin(error)) {
+        return false;
+    }
+
+    if (command.kind == ConfigCliCommandKind::ConfigShow) {
+        return render_snapshot_application(editor.draft(), output, error);
+    }
+    if (command.kind == ConfigCliCommandKind::ProfileList) {
+        return render_snapshot_profile_list(editor.draft(), output);
+    }
+
+    if (command.kind == ConfigCliCommandKind::ConfigSet
+        || command.kind == ConfigCliCommandKind::ConfigUnset) {
+        const auto* descriptor = find_configuration_field_descriptor(
+            ConfigurationFieldScope::Application, command.key);
+        if (descriptor == nullptr) {
+            error = "unknown application config key: " + command.key;
+            return false;
+        }
+        if (command.kind == ConfigCliCommandKind::ConfigSet) {
+            ConfigurationFieldValue value;
+            if (!parse_configuration_field_value(*descriptor, command.value, value, error)
+                || !editor.apply({std::nullopt, command.key, std::move(value)}, error)) {
+                return false;
+            }
+        } else if (!editor.apply(
+                ResetConfigurationFieldCommand{std::nullopt, command.key}, error)) {
+            return false;
+        }
+        ConfigurationSnapshot committed;
+        return editor.commit(committed, error)
+            && render_snapshot_application(committed, output, error);
+    }
+
+    const auto* selected = editor.find_profile_by_id(command.profile_id);
+    if (command.kind == ConfigCliCommandKind::ProfileCreate) {
+        if (!editor.create_profile(command.profile_id, error)) {
+            return false;
+        }
+        ConfigurationSnapshot committed;
+        return editor.commit(committed, error)
+            && render_snapshot_profile(committed, command.profile_id, output, error);
+    }
+    if (selected == nullptr) {
+        error = "profile does not exist: " + command.profile_id;
+        return false;
+    }
+    const auto profile_key = selected->key;
+    if (command.kind == ConfigCliCommandKind::ProfileShow) {
+        return render_snapshot_profile(editor.draft(), command.profile_id, output, error);
+    }
+    if (command.kind == ConfigCliCommandKind::ProfileRemove) {
+        if (!editor.remove_profile(profile_key, error)) {
+            return false;
+        }
+        ConfigurationSnapshot committed;
+        return editor.commit(committed, error)
+            && render_snapshot_profile_list(committed, output);
+    }
+    if (command.kind == ConfigCliCommandKind::ProfileRename) {
+        if (!editor.apply(
+                {profile_key, "id", ConfigurationFieldValue(command.value)}, error)) {
+            return false;
+        }
+        ConfigurationSnapshot committed;
+        return editor.commit(committed, error)
+            && render_snapshot_profile(committed, command.value, output, error);
+    }
+    if (command.kind == ConfigCliCommandKind::ProfileMove) {
+        if (!editor.move_profile(profile_key, command.position, error)) {
+            return false;
+        }
+        ConfigurationSnapshot committed;
+        return editor.commit(committed, error)
+            && render_snapshot_profile_list(committed, output);
+    }
+    if (command.kind == ConfigCliCommandKind::ProfileEnable
+        || command.kind == ConfigCliCommandKind::ProfileDisable
+        || command.kind == ConfigCliCommandKind::ProfileSet
+        || command.kind == ConfigCliCommandKind::ProfileUnset) {
+        if (command.kind == ConfigCliCommandKind::ProfileEnable
+            || command.kind == ConfigCliCommandKind::ProfileDisable) {
+            const bool enabled = command.kind == ConfigCliCommandKind::ProfileEnable;
+            if (!editor.apply(
+                    {profile_key, "enabled", ConfigurationFieldValue(enabled)}, error)) {
+                return false;
+            }
+        } else {
+            const auto* descriptor = find_configuration_field_descriptor(
+                ConfigurationFieldScope::Profile, command.key);
+            if (descriptor == nullptr || descriptor->key == "id"
+                || descriptor->key == "enabled") {
+                error = "unknown profile key: " + command.key;
+                return false;
+            }
+            if (command.kind == ConfigCliCommandKind::ProfileSet) {
+                ConfigurationFieldValue value;
+                if (!parse_configuration_field_value(
+                        *descriptor, command.value, value, error)
+                    || !editor.apply(
+                        {profile_key, command.key, std::move(value)}, error)) {
+                    return false;
+                }
+            } else if (!editor.apply(
+                    ResetConfigurationFieldCommand{profile_key, command.key}, error)) {
+                return false;
+            }
+        }
+        ConfigurationSnapshot committed;
+        return editor.commit(committed, error)
+            && render_snapshot_profile(committed, command.profile_id, output, error);
+    }
+
+    if (command.kind == ConfigCliCommandKind::RuleList) {
+        return render_snapshot_rules(editor.draft(), command.profile_id, output, error);
+    }
+    if (command.kind == ConfigCliCommandKind::RuleShow) {
+        return render_snapshot_rule(
+            editor.draft(), command.profile_id, command.rule_id, output, error);
+    }
+
+    bool mutated = false;
+    if (command.kind == ConfigCliCommandKind::RuleAdd) {
+        mutated = editor.add_rule(
+            profile_key, command.rule_id, command.rule_type, error);
+    } else if (command.kind == ConfigCliCommandKind::RuleRemove) {
+        mutated = editor.remove_rule(profile_key, command.rule_id, error);
+    } else if (command.kind == ConfigCliCommandKind::RuleEnable
+        || command.kind == ConfigCliCommandKind::RuleDisable) {
+        mutated = editor.set_rule_enabled(
+            profile_key,
+            command.rule_id,
+            command.kind == ConfigCliCommandKind::RuleEnable,
+            error);
+    } else if (command.kind == ConfigCliCommandKind::RuleSet) {
+        auto value = Json::parse(command.value, nullptr, false);
+        if (value.is_discarded()) {
+            value = command.value;
+        }
+        mutated = editor.set_rule_option(
+            profile_key, command.rule_id, command.key, value.dump(), error);
+    } else if (command.kind == ConfigCliCommandKind::RuleUnset) {
+        mutated = editor.unset_rule_option(
+            profile_key, command.rule_id, command.key, error);
+    } else if (command.kind == ConfigCliCommandKind::RuleMove) {
+        mutated = editor.move_rule(
+            profile_key, command.rule_id, command.position, error);
+    } else {
+        error = "command is not a configuration management action";
+        return false;
+    }
+    if (!mutated) {
+        return false;
+    }
+    ConfigurationSnapshot committed;
+    if (!editor.commit(committed, error)) {
+        return false;
+    }
+    if (command.kind == ConfigCliCommandKind::RuleRemove
+        || command.kind == ConfigCliCommandKind::RuleMove) {
+        return render_snapshot_rules(committed, command.profile_id, output, error);
+    }
+    return render_snapshot_rule(
+        committed, command.profile_id, command.rule_id, output, error);
+}
+
 void print_config_cli_help(std::ostream& output) {
     output
         << "ccs-trans " << kVersion << "\n\n"
@@ -858,6 +1244,8 @@ void print_config_cli_help(std::ostream& output) {
         << "  ccs-trans profile disable <profile>\n"
         << "  ccs-trans profile set <profile> <key> <value>\n"
         << "  ccs-trans profile unset <profile> <key>\n"
+        << "  ccs-trans profile rename <profile> <new-profile>\n"
+        << "  ccs-trans profile move <profile> <1-based-position>\n"
         << "  ccs-trans rule list <profile>\n"
         << "  ccs-trans rule show <profile> <rule>\n"
         << "  ccs-trans rule add <profile> <rule> <type>\n"
@@ -867,6 +1255,9 @@ void print_config_cli_help(std::ostream& output) {
         << "  ccs-trans rule set <profile> <rule> <key> <json-or-string>\n"
         << "  ccs-trans rule unset <profile> <rule> <key>\n"
         << "  ccs-trans rule move <profile> <rule> <1-based-position>\n"
+        << "  ccs-trans storage status\n"
+        << "  ccs-trans storage migrate\n"
+        << "  ccs-trans storage verify\n"
         << "  ccs-trans run [--profile <profile>] [--log-level <level>] [--log-path <path>]\n"
         << "  ccs-trans --help\n"
         << "  ccs-trans --version\n\n"
@@ -874,7 +1265,7 @@ void print_config_cli_help(std::ostream& output) {
         << "  listener.host, listener.port\n"
         << "  runtime.worker-threads, runtime.max-connections\n"
         << "  runtime.max-request-body-size, runtime.max-response-body-size\n"
-        << "  runtime.metrics-interval-ms\n"
+        << "  runtime.max-inflight-bytes, runtime.metrics-interval-ms\n"
         << "  timeouts.resolve-ms, timeouts.connect-ms, timeouts.send-ms\n"
         << "  timeouts.response-header-ms, timeouts.stream-idle-ms, timeouts.total-ms\n"
         << "  logging.path, logging.level, logging.body, logging.redact-sensitive\n"

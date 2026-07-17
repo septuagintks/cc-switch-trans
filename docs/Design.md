@@ -4,7 +4,7 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | `0.6.0` 双平台发行基线 |
+| 实现基线 | 当前源码 `0.7.0-dev`；已发布基线 `0.6.0` |
 | 当前发行版 | `0.6.0-Windows-x64`；`0.6.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -13,7 +13,7 @@
 | 业务模型 | 多 Profile、ProtocolRegistry、RuleRegistry、精确 RouteTable |
 | 上游网络 | Windows WinHTTP/system proxy；macOS SDK system libcurl/process environment |
 
-本文描述当前生产路径。历史重构目标与扩展约束见
+本文描述当前开发源码的生产路径；`0.6.0` 发行状态由归档文档单独冻结。历史重构目标与扩展约束见
 [Reconstruction.md](Archived/Reconstruction.md)，
 后续顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
 [ProjectStructure.md](ProjectStructure.md)，当前双平台发布结论见
@@ -206,58 +206,74 @@ labels。
 ```text
 %USERPROFILE%/.ccs-trans/ or ~/.ccs-trans/
   config.json
+  profiles.db
   logs/
     ccs-trans.log
     ccs-trans.log.ccs-archive-<sequence>
     ccs-trans.log.ccs-lock
     ccs-trans-host.log (tray/menu host only)
   state/
-    config.lock
+    repository.lock
+    repository-transaction/ (only while recovery is pending)
+    migrations/<source-sha256>/
     ui.lock
     ui.json
 ```
 
-Windows 从 `USERPROFILE` 读取用户目录，macOS 使用账户 home。配置 schema 固定为
-`ccs-trans.config/v2`；非 v2 schema、未知字段、重复 JSON key、错误类型和越界值会被
-拒绝，不做 fallback。
+Windows 从 `USERPROFILE` 读取用户目录，macOS 使用账户 home。`config.json` schema 固定为
+`ccs-trans.config/v3`，只保存 application settings；Profile 与有序 Rule 固定保存于 SQLite
+schema v1 `profiles.db`。非 v3 schema、未知字段、重复 JSON key、错误类型和越界值会被拒绝，
+不做 fallback。v2 只作为显式 migration 的只读输入。
 
 ```text
-ConfigDocument
+ConfigurationSnapshot
   ApplicationSettings
     listener
     runtime
     timeouts
     logging
-  profiles
-    <stable id>
+  RepositoryRevision
+    exact application source token
+    SQLite profile revision
+  ordered profiles
+    profile_key (internal stable identity)
+    profile_id (unique, renameable)
       enabled
       protocol
       local request/Usage path
       upstream base/request/Usage path
-      ordered rules
+      ordered rules with internal stable rule_key
 ```
 
 disabled Profile 和 Rule 可作为草稿保存。运行时只编译 enabled Profile 和 enabled
 Rule；`run --profile <id>` 可一次性编译一个完整的 disabled Profile，不改写持久状态。
 
-ConfigStore 保存时持有跨进程 lock，比较加载时源字节，写同目录临时文件，回读并做
-canonical round-trip，再原子替换目标。失败不会覆盖原配置。
+CompositeConfigRepository 持有跨进程 `repository.lock`，以“配置文件是否存在 + 完整 source
+bytes”和 SQLite revision 组成 stale token。config-only 使用 verified temporary + atomic replace，
+DB-only 使用单 SQLite transaction；combined commit 使用 durable journal 记录 old/new config 与
+old/target DB state。恢复只接受 old/old、new/old、old/target、new/target 四种状态；任何外部不匹配
+返回 `RecoveryRequired` 且不覆盖数据。
 
-ConfigStore 实现 ConfigRepository。ConfigEditingService 从 repository 复制独立 draft，
-执行 ConfigDocument、Protocol/Rule 与 RuntimeCompiler 完整校验，成功后才调用 repository
-commit。失败 draft 不修改 repository 或已发布 generation；CLI 已复用该服务，后续 GUI
-不得直接操作 JSON。这个接口允许后续用 SQLite 组合实现替换 Profile/Rule 持久化，而不改变
-GUI 命令和请求热路径。
+`storage status/migrate/verify` 是唯一迁移命令族。普通 run、GUI 或 Profile/Rule 命令遇到 v2 返回
+`MigrationRequired`。migration 保留原始 v2 bytes、SHA-256 与 manifest，在独立 migrating DB 内
+事务导入并完成 WAL truncate checkpoint 后才切换；现有目标 DB 永不覆盖。
+
+`ConfigurationEditor` 从 Composite repository 复制独立 `ConfigurationSnapshot` draft，使用 field
+descriptor 与 typed command 修改 application/Profile 字段，以 `profile_key` 保持重命名和排序身份，
+并通过 RuntimeCompiler 完整校验后提交。失败 draft 不修改 repository 或已发布 generation。旧
+ConfigDocument/ConfigStore 只保留 migration codec 与隔离回归，不再是生产入口。
 
 CLI 一条命令只修改一个字段或执行一个动作。应用字段、Profile 字段和 Rule option
-分别由 `config set`、`profile set`、`rule set` 修改。没有短参数或同义别名。
+分别由 `config set`、`profile set`、`rule set` 修改；`profile rename/move` 保持 internal key，
+`runtime.max-inflight-bytes` 与其他字段共用 descriptor 范围和类型校验。没有短参数或同义别名，
+输出不暴露 internal key、SQL 或敏感值。
 
 ## Runtime 编译
 
 `RuntimeCompiler` 的顺序固定为：
 
 ```text
-validated ConfigDocument
+validated ConfigurationSnapshot
   -> select enabled/diagnostic Profile
   -> resolve ProtocolHandler
   -> validate protocol capabilities
@@ -313,12 +329,18 @@ remove_field(path)
 remove_tool(tool)
 ```
 
-`0.6-F` 为上述三个既有 Rule 冻结平台无关 descriptor，不增加推测性的 Rule 类型。
+上述三个既有 Rule 使用平台无关 descriptor，不增加推测性的 Rule 类型。
 `RuleDescriptor` 提供稳定 type、显示名 key、是否依赖 Protocol 专用布局和按顺序排列的 option；
 `RuleOptionDescriptor` 提供 option 名、显示名 key、`string`/`json_value`/`json_pointer` 值类型、
 required 与 order。registry 在 factory 注册时拒绝类型错配、非法 key、重复 option、非连续顺序
 和未知值类型，并提供稳定排序枚举及按 type 查询。descriptor 只服务配置编译与编辑界面，不进入
-每请求 Rule 执行热路径，也不改变 `ccs-trans.config/v2`。
+每请求 Rule 执行热路径。
+
+共享文本 draft schema 为 `ccs-trans.rules/v1`：UTF-8、LF、2-space、单 Profile 4 MiB 上限，root
+只含 `schema_version` 与有序 `rules`，每条 Rule 固定包含 `id/enabled/type/options`。parser 返回
+line/column 与 rule/type/option 上下文；formatter 固定字段顺序。相同 `rule_id` 的内容或位置修改
+保留 `rule_key`，新 id 分配新 key。disabled 未知类型可 round-trip，enabled 未知类型在 runtime
+validation 被拒绝。
 
 Generic Rule 使用 RFC 6901 JSON Pointer。目标必须已经存在，不创建中间对象；array
 index 严格拒绝 `-`、前导零、非数字和越界。`set_field` 允许空 pointer 替换 root，
@@ -360,7 +382,8 @@ RequestGeneration 持有 RuntimeSnapshot、UpstreamTransport 和 Logger。请求
 generation；reload 后的新请求读取新 generation，in-flight 请求继续使用旧 Profile、
 pipeline、upstream 和限制。旧 generation 在最后一个对应请求结束后自动释放；同时保留的旧
 generation 数受 `max_connections` 间接限制，但长 SSE 配合连续 reload 仍可能保留多份 snapshot、
-transport 和 logger，因此后续版本需要显式 current/peak retired-generation 指标和 churn 测试。
+transport 和 logger。当前实现记录 current/peak retired generation、generation drain 与 churn，
+用于证明最后一个请求结束后资源归零。
 
 listener 的 request header 上限固定为 64 KiB，只接受 HTTP/1.0/1.1 与单一有效
 `Content-Length` framing；重复/非法 Content-Length、request `Transfer-Encoding` 和畸形
@@ -372,8 +395,8 @@ AppService 提供 `start`、`reload`、`stop`、`wait` 和状态查询。listene
 topology 变化要求 graceful restart；失败时重新启动旧 snapshot。Profile、route、rule、
 upstream、timeout、body/request limit 和 body logging policy 可通过 generation swap 对
 新请求生效。日志路径变化创建新 writer，旧请求完成后旧 writer 才 drain/退出；同路径
-writer 参数变化要求 restart。CLI 在保存任何包含 enabled Profile 的候选文档前运行完整
-RuntimeCompiler，因此 route collision 不会落盘。
+writer 参数或进程级 inflight budget 变化要求 restart。CLI 在保存任何包含 enabled Profile 的
+候选 snapshot 前运行完整 RuntimeCompiler，因此 route collision 不会落盘。
 
 ## 并发与容量
 
@@ -382,9 +405,9 @@ RuntimeCompiler，因此 route collision 不会落盘。
 
 默认 request/response body 上限分别是 100 MiB。单请求限制保证解析和缓冲有界，但启用 Rule 时
 同一请求可能短暂同时持有 raw body、JSON DOM 和 serialized body；多个大请求并行时，单请求限制
-不能替代全进程内存预算。`0.7-A` 在改变默认值前先增加 inflight-byte 记账、预算耗尽行为和并发
-大 body 测试；计划中的资源合同见 [Planning-0.7.0.md](Planning-0.7.0.md)，未实现前不改变本节
-`0.6.0` 运行语义。SSE response 始终按 chunk 转发和记录，不为日志或响应处理累计完整流 body。
+不能替代全进程内存预算。当前进程级 inflight budget 默认 512 MiB，覆盖 request/response、SSE
+chunk、Rule DOM/output、logger queue 和主要 staging buffer；耗尽时有界拒绝或关闭，不无界等待。
+SSE response 始终按 chunk 转发和记录，不为日志或响应处理累计完整流 body。
 
 metrics 只记录全局资源维度，避免 Profile 数量造成无界 cardinality。Profile/protocol/
 route 只进入每请求日志。并存 generation 的 logger 使用 active-writer 计数，旧 writer

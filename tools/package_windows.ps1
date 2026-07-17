@@ -17,6 +17,9 @@ foreach ($name in $executables) {
 }
 
 $cmake = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot "CMakeLists.txt")
+if ($cmake -match 'set\(CCS_TRANS_VERSION_SUFFIX "([^"]*)"\)' -and $Matches[1]) {
+    throw "Formal packaging is disabled for development version suffix $($Matches[1])"
+}
 if ($cmake -notmatch 'project\(ccs_trans VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
     throw "Unable to read the project version from CMakeLists.txt"
 }

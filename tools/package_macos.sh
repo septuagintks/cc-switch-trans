@@ -34,7 +34,12 @@ build_directory=$(CDPATH= cd "$build_directory" && pwd)
 mkdir -p "$output_directory"
 output_directory=$(CDPATH= cd "$output_directory" && pwd)
 
-version=0.6.0
+version=0.7.0
+version_suffix=-dev
+[ -z "$version_suffix" ] || {
+    printf 'formal packaging is disabled for development version suffix %s\n' "$version_suffix" >&2
+    exit 1
+}
 distribution=ccs-trans-$version-macOS-arm64
 application_source="$build_directory/ccs-trans.app"
 cli_source="$build_directory/ccs-trans"

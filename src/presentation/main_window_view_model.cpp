@@ -865,6 +865,11 @@ MainWindowError MainWindowViewModel::classify_repository_error(
         return MainWindowError::RepositoryStale;
     case ConfigRepositoryFailure::InvalidDocument:
         return MainWindowError::ValidationFailed;
+    case ConfigRepositoryFailure::MigrationRequired:
+    case ConfigRepositoryFailure::RecoveryRequired:
+    case ConfigRepositoryFailure::Constraint:
+    case ConfigRepositoryFailure::Corrupt:
+    case ConfigRepositoryFailure::UnsupportedSchema:
     case ConfigRepositoryFailure::None:
     case ConfigRepositoryFailure::NotLoaded:
     case ConfigRepositoryFailure::Io:

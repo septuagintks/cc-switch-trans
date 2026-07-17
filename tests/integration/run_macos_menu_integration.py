@@ -145,6 +145,7 @@ def run_cli(executable, environment, *arguments):
         result.returncode == 0,
         f"CLI command failed ({' '.join(arguments)}): {result.stderr or result.stdout}",
     )
+    return result.stdout
 
 
 def cycle_windows(executable, environment, host_log, count):
@@ -231,6 +232,16 @@ def write_menu_config(home, listener_port, upstream_port):
 
 def read_config(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_profiles(executable, environment):
+    listed = json.loads(run_cli(executable, environment, "profile", "list"))
+    return {
+        item["id"]: json.loads(
+            run_cli(executable, environment, "profile", "show", item["id"])
+        )
+        for item in listed
+    }
 
 
 def resident_bytes(pid):
@@ -364,6 +375,7 @@ def main():
     environment["CCS_TRANS_MENU_TEST_AUTOMATION"] = "1"
     environment["CCS_TRANS_MENU_TEST_NO_POPUP"] = "1"
     environment.pop("CCS_TRANS_MENU_TEST_COMMAND", None)
+    run_cli(cli, environment, "storage", "migrate")
 
     process = None
     upstream = None
@@ -444,7 +456,7 @@ def main():
             executable, environment, host_log, "apply", "apply_draft"
         )
         require(result.get("outcome") == "succeeded", f"Profile Apply failed: {result}")
-        require("gui-renamed" in read_config(config_path)["profiles"], "Profile was not saved")
+        require("gui-renamed" in read_profiles(cli, environment), "Profile was not saved")
 
         send_view_command(
             executable,
@@ -457,12 +469,12 @@ def main():
             executable, environment, host_log, "discard", "discard_draft"
         )
         require(result.get("outcome") == "succeeded", f"Profile Discard failed: {result}")
-        require("gui-renamed" in read_config(config_path)["profiles"], "Discard changed disk state")
+        require("gui-renamed" in read_profiles(cli, environment), "Discard changed disk state")
         send_view_command(
             executable, environment, host_log, "remove:gui-renamed", "remove_profile"
         )
         send_view_command(executable, environment, host_log, "apply", "apply_draft")
-        require("gui-renamed" not in read_config(config_path)["profiles"], "Remove was not saved")
+        require("gui-renamed" not in read_profiles(cli, environment), "Remove was not saved")
 
         # Exercise a real CLI/GUI concurrent edit against ConfigStore. The stale
         # GUI Apply must not overwrite disk; explicit Reload/Discard adopts it.
@@ -479,8 +491,8 @@ def main():
             f"GUI Apply did not reject an external CLI write: {stale}",
         )
         require(
-            "cli-external" in read_config(config_path)["profiles"]
-            and "z-gui-stale" not in read_config(config_path)["profiles"],
+            "cli-external" in read_profiles(cli, environment)
+            and "z-gui-stale" not in read_profiles(cli, environment),
             "stale GUI Apply overwrote or lost the CLI state",
         )
         undecided = send_view_command(
@@ -514,7 +526,7 @@ def main():
             executable, environment, host_log, "close:discard", "discard_draft"
         )
         require(discarded.get("outcome") == "succeeded", "dirty-close Discard failed")
-        require("close-cancel" not in read_config(config_path)["profiles"], "discarded draft was saved")
+        require("close-cancel" not in read_profiles(cli, environment), "discarded draft was saved")
 
         send_control(executable, environment, host_log, "show")
         send_view_command(
@@ -524,7 +536,7 @@ def main():
             executable, environment, host_log, "close:apply", "apply_draft"
         )
         require(applied.get("outcome") == "succeeded", "dirty-close Apply failed")
-        require("close-apply" in read_config(config_path)["profiles"], "close Apply did not save")
+        require("close-apply" in read_profiles(cli, environment), "close Apply did not save")
         send_control(executable, environment, host_log, "show")
         send_view_command(
             executable, environment, host_log, "remove:close-apply", "remove_profile"
@@ -629,7 +641,7 @@ def main():
         exit_code = wait_for_exit(process, 15)
         require(exit_code == 0, "menu host did not drain and exit cleanly")
         wait_for_listener_close(listener_port)
-        require("exit-race" not in read_config(config_path)["profiles"], "pending draft reached disk")
+        require("exit-race" not in read_profiles(cli, environment), "pending draft reached disk")
 
         host_events = read_events(host_log)
         runtime_events = read_events(runtime_log)

@@ -2,6 +2,7 @@
 #include "storage/sqlite_profile_store.hpp"
 
 #include "sqlite3.h"
+#include "../support/canonical_temp.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -31,7 +32,7 @@ class Fixture final {
 public:
     explicit Fixture(std::string_view label) {
         const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-        root = std::filesystem::temp_directory_path()
+        root = ccs::test::canonical_temp_directory()
             / ("ccs-trans-sqlite-store-" + std::string(label) + "-" + std::to_string(nonce));
         std::error_code ec;
         std::filesystem::create_directories(root, ec);
@@ -451,6 +452,49 @@ void test_corruption_and_unsupported_schema() {
             "persisted semantic violation is classified as corruption");
 }
 
+void test_migration_provenance_and_checkpoint() {
+    Fixture fixture("migration");
+    const auto database_path = fixture.root / "profiles.db";
+    auto draft = create_empty_store(database_path);
+    draft.profiles.push_back(complete_profile("findcg", "findcg"));
+    ccs::SqliteProfileStore store(database_path);
+    ccs::ProfileStoreSnapshot saved;
+    std::string error;
+    require(store.save(draft, saved, error), error);
+    const auto revision = saved.revision;
+
+    const std::string source_hash(64, 'a');
+    ccs::ProfileStoreSnapshot migrated;
+    require(
+        store.mark_migrated("ccs-trans.config/v2", source_hash, migrated, error),
+        error);
+    require(migrated.revision == revision,
+            "migration provenance does not change profile revision");
+    require(migrated.migrated_from_sha256 == source_hash,
+            "migration provenance round-trips");
+    {
+        RawDatabase raw(database_path);
+        require(
+            scalar_integer(raw.get(), "SELECT count(*) FROM migration_history") == 1,
+            "migration history records one source");
+    }
+
+    ccs::ProfileStoreSnapshot repeated;
+    require(
+        store.mark_migrated("ccs-trans.config/v2", source_hash, repeated, error),
+        error);
+    require(repeated == migrated, "same migration provenance is idempotent");
+    require(
+        !store.mark_migrated(
+            "ccs-trans.config/v2", std::string(64, 'b'), repeated, error),
+        "different migration provenance is rejected");
+    require(store.last_failure() == ccs::ProfileStoreFailure::Constraint,
+            "different migration provenance has stable failure type");
+
+    require(store.checkpoint_for_move(error), error);
+    require(store.verify(error), error);
+}
+
 } // namespace
 
 int main() {
@@ -458,6 +502,7 @@ int main() {
     test_crud_revision_and_stable_keys();
     test_constraints_busy_and_invalid_data();
     test_corruption_and_unsupported_schema();
+    test_migration_provenance_and_checkpoint();
     std::cout << "SQLite profile store tests passed\n";
     return 0;
 }

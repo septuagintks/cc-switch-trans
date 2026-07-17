@@ -1,6 +1,6 @@
-#include "config/config_document.hpp"
-#include "config/config_store.hpp"
+#include "config/composite_config_repository.hpp"
 #include "hosts/host_platform.hpp"
+#include "../support/canonical_temp.hpp"
 #ifdef _WIN32
 #include "hosts/windows/startup_registration.hpp"
 #endif
@@ -42,7 +42,7 @@ public:
 
 void test_config_file_preparation() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    const auto root = std::filesystem::temp_directory_path()
+    const auto root = ccs::test::canonical_temp_directory()
         / ("ccs-trans-host-platform-" + std::to_string(nonce));
     const auto paths = ccs::make_app_paths(root);
     std::string error;
@@ -53,10 +53,10 @@ void test_config_file_preparation() {
     require(prepared, error);
     require(std::filesystem::is_regular_file(paths.config_file),
         "config preparation creates a regular config file");
-    ccs::ConfigStore store(paths);
+    ccs::CompositeConfigRepository store(paths);
     const bool loaded = store.load(error);
     require(loaded, "prepared config does not load: " + error);
-    require(store.document().profiles.empty(), "prepared config uses default profiles");
+    require(store.snapshot().profiles.empty(), "prepared config uses default profiles");
     const bool prepared_again = ccs::ensure_config_file(paths, error);
     require(prepared_again, "config preparation is not idempotent: " + error);
 #ifndef _WIN32

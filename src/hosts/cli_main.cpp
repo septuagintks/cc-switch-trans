@@ -1,6 +1,6 @@
 #include "config/app_paths.hpp"
 #include "config/config_cli.hpp"
-#include "config/config_store.hpp"
+#include "config/composite_config_repository.hpp"
 #include "app/application_controller.hpp"
 #include "app/app_service.hpp"
 
@@ -23,6 +23,50 @@ void print_runtime_summary(
         << "  workers: " << snapshot.application.runtime.worker_threads << "\n"
         << "  max connections: " << snapshot.application.runtime.max_connections << "\n"
         << "  log: " << snapshot.log_path.string() << "\n";
+}
+
+bool is_storage_command(ccs::ConfigCliCommandKind kind) {
+    return kind == ccs::ConfigCliCommandKind::StorageStatus
+        || kind == ccs::ConfigCliCommandKind::StorageMigrate
+        || kind == ccs::ConfigCliCommandKind::StorageVerify;
+}
+
+bool execute_storage_command(
+    ccs::ConfigCliCommandKind kind,
+    ccs::CompositeConfigRepository& repository,
+    std::string& output,
+    std::string& error) {
+    if (kind == ccs::ConfigCliCommandKind::StorageStatus) {
+        ccs::StorageStatus status;
+        if (!repository.inspect_storage(status, error)) {
+            return false;
+        }
+        output = "state: " + std::string(ccs::storage_state_name(status.state)) + "\n";
+        if (status.state == ccs::StorageState::Ready) {
+            output += "profile revision: " + std::to_string(status.profile_revision) + "\n";
+            output += "migrated from: "
+                + status.migrated_from_sha256.value_or("<none>") + "\n";
+        }
+        if (!status.detail.empty()) {
+            output += "detail: " + status.detail + "\n";
+        }
+        return true;
+    }
+    if (kind == ccs::ConfigCliCommandKind::StorageMigrate) {
+        ccs::MigrationOutcome outcome;
+        if (!repository.migrate_v2(outcome, error)) {
+            return false;
+        }
+        output = outcome == ccs::MigrationOutcome::Migrated
+            ? "storage migrated\n"
+            : "storage already migrated\n";
+        return true;
+    }
+    if (!repository.verify_storage(error)) {
+        return false;
+    }
+    output = "storage verified\n";
+    return true;
 }
 
 } // namespace
@@ -50,13 +94,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (parsed.command.kind != ccs::ConfigCliCommandKind::Run) {
-        ccs::ConfigStore store(paths);
-        if (!store.load(error)) {
-            std::cerr << "error: " << error << "\n";
-            return 1;
-        }
+        ccs::CompositeConfigRepository repository(paths);
         std::string output;
-        if (!ccs::execute_config_cli(parsed.command, store, output, error)) {
+        const bool succeeded = is_storage_command(parsed.command.kind)
+            ? execute_storage_command(parsed.command.kind, repository, output, error)
+            : repository.load(error)
+                && ccs::execute_config_cli(parsed.command, repository, output, error);
+        if (!succeeded) {
             std::cerr << "error: " << error << "\n";
             return 1;
         }
