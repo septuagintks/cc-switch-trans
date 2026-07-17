@@ -18,10 +18,11 @@ move-only RAII lease、inflight/generation/control metrics、retired generation 
 request/Rule/response/logger staging 记账均已接入；
 request header 单次解析、response 分段发送、budget-aware Rule allocator、logger lazy rendering 和有界
 ControlExecutor 也已完成。Windows 当前 Release/warnings 均完成 `19/19` CTest；A2 的五档组合基准
-满足默认配置门槛，当前 shared/tray integration passed。`0.7-A3` 保留 macOS 编译、cURL/header
-资源路径和本机
-性能验证，不把 Windows 结果外推为 macOS passed。SQLite 3.53.3 官方 amalgamation 已按固定 hash
-vendoring 为独立静态 C 目标；macOS 同 source/options 构建验证仍属于平台回传条件。
+满足默认配置门槛，当前 shared/tray integration passed。`0.7-A3` 的 macOS platform-local cURL 硬化、
+Release 构建、integration、短负载和 profiler 已在 `b8fc353` 完成；正式退出仍被并行 Windows SQLite
+提交的 AppleClang dead-constant warning 与默认 macOS `TMPDIR` symlink 测试夹具阻塞，不能声明完整
+A3 passed。SQLite 3.53.3 官方 amalgamation 已按固定 hash vendoring 为独立静态 C 目标；macOS 同
+source/options 的 Release build/probe passed，严格 warnings 与默认环境 CTest 仍待 Windows 修复后复验。
 
 ## 目标与不进入范围
 
@@ -210,6 +211,93 @@ task、logger queue 和 inflight current 均回到零：
 0.7-A2-windows-rule-629e059-run2.jsonl     44803C17E3A0E02DC72F4E459F6265661E8102229C48B4D7D74EB70DD527BE1A
 0.7-A2-windows-rule-629e059-run3.jsonl     E256A0FA10E3DF8D38178F18A7F6E4289D58F5DC97C9B351CC8DC7E804C92A31
 ```
+
+### macOS `0.7-A3` 结果
+
+macOS 从委派基线 `62deb98` 开始，在并行 Windows SQLite store 提交 `4febba8` 上重放并完成 exact
+source `b8fc353e5b5c9d9ba4a00016cb8bba1e5e5ed518`。产品提交只修改
+`src/transport/macos/curl_transport.cpp` 和
+`tests/integration/run_macos_transport_resource_integration.py`，已由默认 GPG key
+`3DF828FDD419996E11B2FD2881BFB01482975987` 签名并推送。环境为 macOS 26.5.2 build 25F84、
+arm64、Command Line Tools SDK 26.5、Apple Clang 21.0.0、CMake 4.4.0 和 Ninja 1.13.2；完整 Xcode/
+`xctrace` 不可用，因此 prerequisite 记为一项 blocked，而不是全通过。CLI/app 均为 arm64-only，链接
+selected SDK `/usr/lib/libcurl.4.dylib`，开发期版本仍按计划为 `0.6.0`；CLI/app executable SHA-256
+分别为 `9E1AB62872B7A741E920E19710D2DB9D8D982C22C35285D869D121F71091B728` 和
+`E4B5EDCB556222DC480C27A479B8AD9FB2D1557539CD7D4B7ECC61FCBA0C225C`。
+
+构建与测试状态严格区分如下：
+
+- fresh Release 全构建 `88/88` passed，第二次构建为 `ninja: no work to do.`；
+- fresh warnings-as-errors 在 Windows-owned `src/storage/sqlite_profile_store.cpp:27` failed：
+  `kTemporaryPositionOffset` 只有定义、没有引用，AppleClang 报 `-Wunused-const-variable`。仅把这一个
+  warning 降级的诊断构建完成全部 target，且 `17/17` CTest passed，证明未发现第二个严格编译阻塞；
+  该诊断不计作正式 warnings passed，正式 warnings CTest 为 not run；
+- Release 默认环境首次 CTest 为 `16/17`：SQLite store test 使用 `/var/...` 临时根，而 macOS
+  `/var` 是指向 `/private/var` 的 symlink，`SQLITE_OPEN_NOFOLLOW` 按安全合同拒绝该路径。保持产品
+  `NOFOLLOW` 不变，以 canonical `/private/tmp` 运行完整 CTest 为 `17/17` passed；最小共享修复是 test
+  fixture canonicalize `temp_directory_path()`；
+- shared integration、macOS proxy integration、新 cURL resource integration 与 menu/main-window
+  integration 均 passed。resource integration 验证 64 KiB aggregate response-header cap 稳定返回 502、
+  连续失败后的 slot 复用、SSE trailer 不重复发送 response head、客户端断连归类 cancellation，以及
+  stop 后 inflight/generation/connection/control/logger queue current 全部归零。
+
+cURL platform-local 实现现在在 libcurl C callback 内 containment C++ exception；区分 transport allocation
+failure 与用户 callback exception；stream 已开始后以 `ProxyError` 关闭而不写第二个 HTTP response。
+response header 和过滤期第二份 payload 都在 append/copy 前取得 inflight lease，新 status 清理旧
+header/body 时同步回滚 lease。easy/multi/slot/header list 使用 owner/RAII，pool 预留回收容量；
+`curl_multi_remove_handle` 失败会 poison pool，连续失败时有界放弃仍 attached 的 handle pair，且
+poison 使用 `notify_all()` 唤醒全部 waiter。没有把 SSE minimum chunk allowance 单边加到 macOS，
+避免与 WinHTTP 合同分叉。
+
+默认 `log_body=false` 三轮五档均零请求失败、零 upstream failure、零 logger backpressure/writer
+failure；以下为三轮中位数。当前没有同一工具链、同一 runner 的有效 macOS `0.6.0` 三轮 A0 文件，
+因此只报告本机绝对值，不用 Windows 或陈旧 `0.5.0` 文件做正式 5% 跨版本判断。
+
+| Profile | added TTFB p50/p95 | proxied total p50 | log records/bytes | peak inflight/RSS |
+| --- | ---: | ---: | ---: | ---: |
+| `smoke` | `0.170 / 0.407 ms` | `3.108 ms` | `161 / 86,078` | `88,573 bytes / 9.72 MiB` |
+| `desktop-8` | `-1.310 / 1.481 ms` | `6,341.293 ms` | `1,018 / 334,044` | `25,995 bytes / 9.83 MiB` |
+| `desktop-16` | `1.051 / 0.664 ms` | `6,342.753 ms` | `2,010 / 608,642` | `49,415 bytes / 10.75 MiB` |
+| `mixed-16` | `2.872 / 0.734 ms` | `6,333.029 ms` | `2,034 / 606,718` | `48,849 bytes / 11.03 MiB` |
+| `stress-50` | `4.647 / 2,088.194 ms` | `2,106.351 ms` | `2,218 / 687,265` | `97,024 bytes / 12.52 MiB` |
+
+六个 short 文件合计 `486/486` proxied request 成功；六次 mixed 的 Responses/Chat Usage 各 `12/12`
+且都在 SSE 期间完成。stress-50 p95 对应超过 32 worker 后约 2.095 秒的有界排队。`log_body=true`
+三轮中位数为 desktop-16 `4.565/3.377 ms`、mixed-16 `-0.786/1.733 ms` added p50/p95；事件数保持
+`2,010/2,034`，日志字节增至约 4.36 倍，peak inflight 约 `93 KiB`，仍无 failure/backpressure。
+一个 stress periodic snapshot 在 server stop 前尚有 `35` 条、`13,016 bytes` log queue/inflight，不能把
+short periodic snapshot 写成全部 drain；独立 stop evidence 补齐了最终归零证明。
+
+60 秒 mixed resource 诊断实际运行 66.342 秒/10 轮：`160/160` stream 与两类 Usage 各 `120/120`
+成功，400 request/upstream 生命周期配对，`20,148/20,148` log records 写完，所有 current 与失败
+指标为零。RSS `8.53 -> 11.14 MiB`，fd/thread 后半程斜率为零；短窗口 RSS 后半程折算
+`+2.25 MiB/h` 不能外推为泄漏。120 秒 menu idle CPU 为 `0.000%`、RSS `+32 KiB` 且后半程斜率
+为零，fd 恒 45、idle 日志零增长，stop current 全零。三轮 Rule matrix 各 30 条/25 iterations；空
+pipeline 仍零 parse/serialize，1 MiB/32 Rule 三轮中位数为 modified total p50 `3,206 us`、unchanged
+`1,907 us`、unmatched `1,901 us`，modified 的 parse/rule/serialize mean 为
+`1,896.76/12.08/1,326.36 us`。
+
+30 秒 mixed `sample` 中，`response_body_callback` inclusive 约 `234/19,704` samples（单核时间保守
+上界约 1.19%，包含日志与 socket send），callback 顶层仅 23 个；临时 string allocation 路径为 5 个，
+约 0.025%，不是可见 hotspot。cancellation monitor 的 19,704 个 samples 中，18,196 个阻塞在 `poll`、
+1,500 个在 condition timed wait，非等待路径约 8 个，array rebuild/allocation 只有 4 个。60/120 秒 menu
+idle 均未观察到 CPU/内存回退；menu sample call graph 为空，且没有 `xctrace` wake-up 计数，所以结论是
+“没有达到重写触发条件”，不是“wake-up 为零”。保持 shared string callback、50 ms cancellation poll
+和 1 秒 menu polling 架构不变。
+
+以下项目没有被 A3 证据覆盖，不能写成 passed：easy/multi/slist/remove/OOM 与 throwing callback 的
+deterministic fault injection；连续 remove failure 下被有界放弃的 attached handles 归零。APPLE-only
+fault target 需要根 CMake 接线，留给 Windows/shared 集成。整个 `0.7-A` 也保持 open：两平台仍需在
+SSE headers 前统一最小 chunk allowance；`Logger::drain()` 应先释放 batch lease 再发布 flushed
+sequence；server 需处理 logger 拒绝的有界 emergency error path、消除 release-before-free 窗口；
+大量 header 的 shared filter O(n^2) 仍待后续。没有 profiler 证据支持现在改 byte-view 或 polling。
+
+ignored evidence 位于 `benchmark-results/0.7-A3-macos-b8fc353-final/`，包含 prerequisite、6 个 short
+JSON、3 个 Rule JSONL、4 个 soak/profile JSON、两组 PID/sample/vmmap，共 20 个文件；逐文件 hash 在
+`SHA256SUMS.txt`，该 manifest SHA-256 为
+`3843B03063F2AF6A1266E3152531AFCDD7FA067C053D079A50FAB52B491D89AE`。原始 JSON/sample/log/body 不进入
+Git。A3 platform-local 实现和可观察资源路径完成；在 Windows 删除死常量、修正 temp fixture 并由
+macOS 重跑正式 warnings/default CTest 前，A3 退出条件仍为 blocked。
 
 ## 目标模型与依赖边界
 
@@ -679,7 +767,7 @@ JSON 并以中位数作为本机对照；发布归档中的历史数字只用于
 - [x] 实现共享 RAII budget，不改变 v2 on-disk schema；
 - [x] 跑 `0.7-A1` Release/warnings CTest 与 shared/tray integration；
 - [x] 完成 `0.7-A2` Windows 实现、fresh 双构建、integration、Rule matrix 与组合基准对照；
-- [ ] 通过交接仓库指派 `0.7-A3` macOS 窄验证。
+- [x] 通过交接仓库指派 `0.7-A3` macOS 窄验证；平台结果与共享 blocker 已回传。
 
 没有需要用户在开工前额外选择的阻塞项。SQLite 精确版本与 512 MiB 默认值的唯一允许调整窗口分别
 是 `0.7-B` 官方依赖取证和 `0.7-A` 候选基准；调整必须带证据并同步本文。
