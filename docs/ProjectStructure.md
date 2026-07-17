@@ -97,6 +97,8 @@ cc-switch-trans/
         local_socket.hpp
         posix/local_socket.cpp
         windows/local_socket.cpp
+    storage/
+      sqlite_profile_store.hpp/.cpp
     transport/
       header_filter.hpp/.cpp
       upstream_transport.hpp/.cpp
@@ -127,6 +129,8 @@ cc-switch-trans/
       protocol_tests.cpp
       route_table_tests.cpp
       rule_pipeline_tests.cpp
+      sqlite_dependency_tests.cpp
+      sqlite_profile_store_tests.cpp
     integration/
       mock_upstream.py
       reload_integration.cpp
@@ -186,6 +190,7 @@ cc-switch-trans/
 | `src/rules` | Rule factory、平台无关 descriptor、共享 DOM pipeline、JSON Pointer 与 `remove_tool` |
 | `src/runtime` | 不可变 RuntimeSnapshot 的聚合类型 |
 | `src/server` | 单 listener、FIFO worker、generation、路由/Rule/transport 编排 |
+| `src/storage` | SQLite schema、逐操作 connection/transaction、Profile/Rule stable key、revision 与 CRUD snapshot |
 | `src/transport` | 跨平台 upstream 接口、header policy 与平台网络实现 |
 | `tests/unit` | 配置 repository/editing、路由、protocol、Rule、logger、生命周期和本地错误合约 |
 | `tests/integration` | 单端口协议、桌面宿主、SSE/Usage/reload、取消和平台 proxy 策略 |

@@ -196,6 +196,7 @@ add_library(ccs-trans-core STATIC
     src/rules/rule_json.cpp
     src/rules/rule_registry.cpp
     src/server/server.cpp
+    src/storage/sqlite_profile_store.cpp
     src/transport/header_filter.cpp
     src/transport/upstream_transport.cpp
     ${CCS_TRANS_PLATFORM_SOURCES}
@@ -209,7 +210,14 @@ target_include_directories(ccs-trans-core PUBLIC
 )
 
 if(WIN32)
-    target_link_libraries(ccs-trans-core PRIVATE ws2_32 winhttp shell32 ole32 advapi32)
+    target_link_libraries(ccs-trans-core PRIVATE
+        ccs-trans-sqlite3
+        ws2_32
+        winhttp
+        shell32
+        ole32
+        advapi32
+    )
 elseif(APPLE)
     find_library(
         CCS_TRANS_SYSTEM_CURL
@@ -221,7 +229,10 @@ elseif(APPLE)
     if(NOT CCS_TRANS_SYSTEM_CURL MATCHES "/[^/]*MacOSX[^/]*\\.sdk/usr/lib/libcurl")
         message(FATAL_ERROR "macOS must link libcurl from the selected Xcode SDK")
     endif()
-    target_link_libraries(ccs-trans-core PRIVATE "${CCS_TRANS_SYSTEM_CURL}")
+    target_link_libraries(ccs-trans-core PRIVATE
+        ccs-trans-sqlite3
+        "${CCS_TRANS_SYSTEM_CURL}"
+    )
 endif()
 
 add_executable(ccs-trans
@@ -282,6 +293,18 @@ if(BUILD_TESTING)
     add_test(
         NAME ccs-trans-sqlite-dependency-tests
         COMMAND ccs-trans-sqlite-dependency-tests
+    )
+
+    add_executable(ccs-trans-sqlite-profile-store-tests
+        tests/unit/sqlite_profile_store_tests.cpp
+    )
+    target_link_libraries(ccs-trans-sqlite-profile-store-tests PRIVATE
+        ccs-trans-core
+        ccs-trans-sqlite3
+    )
+    add_test(
+        NAME ccs-trans-sqlite-profile-store-tests
+        COMMAND ccs-trans-sqlite-profile-store-tests
     )
 
     add_executable(ccs-trans-core-tests
