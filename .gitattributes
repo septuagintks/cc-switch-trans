@@ -1,5 +1,9 @@
 third_party/nlohmann/json.hpp text eol=lf
 third_party/nlohmann/LICENSE.MIT text eol=lf
+third_party/sqlite/sqlite3.c text eol=lf whitespace=-trailing-space
+third_party/sqlite/sqlite3.h text eol=lf whitespace=-trailing-space
+third_party/sqlite/sqlite3ext.h text eol=lf whitespace=-trailing-space
+third_party/sqlite/NOTICE.md text eol=lf
 *.sh text eol=lf
 *.m text eol=lf
 *.mm text eol=lf

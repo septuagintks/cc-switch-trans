@@ -164,6 +164,11 @@ cc-switch-trans/
     nlohmann/
       json.hpp
       LICENSE.MIT
+    sqlite/
+      sqlite3.c
+      sqlite3.h
+      sqlite3ext.h
+      NOTICE.md
 ```
 
 ## 目录职责

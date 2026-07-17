@@ -12,7 +12,7 @@ if(CMAKE_HOST_APPLE)
     endif()
 endif()
 
-project(ccs_trans VERSION 0.6.0 LANGUAGES CXX)
+project(ccs_trans VERSION 0.6.0 LANGUAGES C CXX)
 
 if(APPLE)
     enable_language(OBJCXX)
@@ -39,6 +39,9 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
 option(CCS_TRANS_WARNINGS_AS_ERRORS "Enable strict C++ warnings and treat them as errors" OFF)
 if(CCS_TRANS_WARNINGS_AS_ERRORS)
@@ -70,6 +73,25 @@ configure_file(
     "${CCS_TRANS_GENERATED_DIR}/include/core/version.hpp"
     @ONLY
 )
+
+add_library(ccs-trans-sqlite3 STATIC
+    third_party/sqlite/sqlite3.c
+)
+target_include_directories(ccs-trans-sqlite3 PUBLIC
+    third_party/sqlite
+)
+target_compile_definitions(ccs-trans-sqlite3 PRIVATE
+    SQLITE_THREADSAFE=1
+    SQLITE_DQS=0
+    SQLITE_DEFAULT_FOREIGN_KEYS=1
+    SQLITE_ENABLE_API_ARMOR
+    SQLITE_LIKE_DOESNT_MATCH_BLOBS
+    SQLITE_OMIT_DEPRECATED
+    SQLITE_OMIT_LOAD_EXTENSION
+)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(ccs-trans-sqlite3 PRIVATE -Wno-stringop-overread)
+endif()
 
 set(CCS_TRANS_PLATFORM_SOURCES)
 if(WIN32)
@@ -253,6 +275,15 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(ccs-trans-sqlite-dependency-tests
+        tests/unit/sqlite_dependency_tests.cpp
+    )
+    target_link_libraries(ccs-trans-sqlite-dependency-tests PRIVATE ccs-trans-sqlite3)
+    add_test(
+        NAME ccs-trans-sqlite-dependency-tests
+        COMMAND ccs-trans-sqlite-dependency-tests
+    )
+
     add_executable(ccs-trans-core-tests
         tests/unit/core_tests.cpp
     )

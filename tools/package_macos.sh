@@ -56,6 +56,7 @@ for document in MacOSValidationCheckResult.md Reconstruction.md Release-0.5.0.md
     cp "$repository_root/docs/Archived/$document" "$stage/docs/Archived/$document"
 done
 cp "$repository_root/third_party/nlohmann/LICENSE.MIT" "$stage/licenses/nlohmann-LICENSE.MIT"
+cp "$repository_root/third_party/sqlite/NOTICE.md" "$stage/licenses/sqlite-NOTICE.md"
 
 codesign --force --options runtime --timestamp=none --sign - "$stage/ccs-trans"
 codesign --force --options runtime --timestamp=none \

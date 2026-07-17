@@ -86,6 +86,8 @@ foreach ($document in $documents) {
 
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "third_party/nlohmann/LICENSE.MIT") `
     -Destination (Join-Path $packageRoot "THIRD_PARTY_LICENSES/nlohmann-json.MIT")
+Copy-Item -LiteralPath (Join-Path $repositoryRoot "third_party/sqlite/NOTICE.md") `
+    -Destination (Join-Path $packageRoot "THIRD_PARTY_LICENSES/sqlite-NOTICE.md")
 
 $hashLines = foreach ($name in $executables) {
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $packageRoot $name)).Hash
@@ -98,6 +100,7 @@ $expectedFiles = @(
     "README.md",
     "SHA256SUMS.txt",
     "THIRD_PARTY_LICENSES/nlohmann-json.MIT",
+    "THIRD_PARTY_LICENSES/sqlite-NOTICE.md",
     "ccs-trans-tray.exe",
     "ccs-trans.exe"
 ) + ($documents | ForEach-Object { "docs/$_" })

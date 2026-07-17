@@ -13,12 +13,14 @@
 | 目标发行包 | `ccs-trans-0.7.0-Windows-x64`、`ccs-trans-0.7.0-macOS-arm64` |
 | 开发期版本号 | `0.7-D` 开始写入 v3/SQLite 前显示 `0.7.0-dev`；最终发行提交去掉 suffix |
 
-当前实施进度：`0.7-A1/A2` 已完成。进程级 512 MiB budget、move-only RAII lease、inflight/generation/
-control metrics、retired generation 生命周期，以及 request/Rule/response/logger staging 记账均已接入；
+当前实施进度：`0.7-A1/A2` 与 `0.7-B` Windows 实现已完成。进程级 512 MiB budget、move-only RAII
+lease、inflight/generation/control metrics、retired generation 生命周期，以及 request/Rule/response/logger
+staging 记账均已接入；
 request header 单次解析、response 分段发送、budget-aware Rule allocator、logger lazy rendering 和有界
-ControlExecutor 也已完成。Windows Release/warnings 均完成 `17/17` CTest、shared integration 和 tray
-integration，五档组合基准满足默认配置门槛。`0.7-A3` 保留 macOS 编译、cURL/header 资源路径和本机
-性能验证，不把 Windows 结果外推为 macOS passed。
+ControlExecutor 也已完成。Windows 当前 Release/warnings 均完成 `18/18` CTest；A2 的 shared/tray
+integration 与五档组合基准满足默认配置门槛。`0.7-A3` 保留 macOS 编译、cURL/header 资源路径和本机
+性能验证，不把 Windows 结果外推为 macOS passed。SQLite 3.53.3 官方 amalgamation 已按固定 hash
+vendoring 为独立静态 C 目标；macOS 同 source/options 构建验证仍属于平台回传条件。
 
 ## 目标与不进入范围
 
@@ -41,7 +43,7 @@ integration，五档组合基准满足默认配置门槛。`0.7-A3` 保留 macOS
 | Profile/Rule | 固定路径 `~/.ccs-trans/profiles.db`，路径不可由配置或 CLI 改写 |
 | UI preferences | 继续独立存放在 `state/ui.json`，不进入 SQLite |
 | SQLite 来源 | SQLite 官方 amalgamation，项目内固定版本静态编译；不使用机器上的偶然动态库 |
-| SQLite 版本 | 在 `0.7-B` 首个依赖提交从 SQLite 官方文件确认并记录版本、原始文件 hash 与来源 URL |
+| SQLite 版本 | 官方 amalgamation 3.53.3（`3530300`），来源、archive/file hash 与 source id 固定在 `third_party/sqlite/NOTICE.md` |
 | SQLite threading | `SQLITE_THREADSAFE=1`；repository 每次操作使用短生命周期连接，不跨线程共享 connection |
 | journal | WAL、`synchronous=FULL`、foreign keys、2 秒 busy timeout；SQL 不进入请求热路径 |
 | Profile 身份 | SQLite integer `profile_key` 是 GUI/repository 稳定身份；用户可见 `profile_id` 保持唯一且可重命名 |
@@ -59,8 +61,8 @@ integration，五档组合基准满足默认配置门槛。`0.7-A3` 保留 macOS
 | 开发构建 | `0.7.0-dev` 不生成正式发行文件名，migration manifest 记录完整版本与 source commit |
 | 平台顺序 | 共享 model/service/repository/descriptor 先完成，随后 Win32，再交接 AppKit |
 
-SQLite 的精确版本号不是凭开发机缓存或记忆填写。`0.7-B` 必须从官方 amalgamation 下载物取证后才
-冻结；该延后只影响依赖 metadata，不影响本文已冻结的所有权、schema、事务和构建边界。512 MiB
+SQLite 版本已从 2026 官方 download metadata、ZIP 和 `sqlite3.h` 三处交叉确认后冻结为 3.53.3，
+不是从开发机缓存或记忆填写。该选择不改变本文已冻结的所有权、schema、事务和构建边界。512 MiB
 预算默认值可在 `0.7-A` 候选基准后调整一次，但字段语义和“拒绝而非无界等待”不再改变。
 
 ## 0.6.0 性能审计映射
@@ -342,6 +344,22 @@ SQLITE_OMIT_LOAD_EXTENSION
 
 不得启用运行时 extension loading、FTS 或项目未使用的可选模块。SQLite source/version/hash、public
 domain notice 和项目实际 compile definitions 写入第三方说明，并进入两平台固定包白名单。
+
+`0.7-B` 取证与 Windows 验证结果：
+
+- 官方 URL：`https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip`；archive size
+  `2,945,929` bytes；官方与本地一致的 SHA3-256 为
+  `d45c688a8cb23f68611a894a756a12d7eb6ab6e9e2468ca70adbeab3808b5ab9`；本地 SHA-256 为
+  `646421e12aac110282ef8cc68f1a62d4bb15fc7b8f09da0b53e29ee690500431`；
+- header 确认 `SQLITE_VERSION_NUMBER=3053003`，source id 为
+  `2026-06-26 20:14:12 d4c0e51e4aeb96955b99185ab9cde75c339e2c29c3f3f12428d364a10d782c62`；
+- 只 vendor `sqlite3.c/.h/sqlite3ext.h`，不包含 shell；`NOTICE.md` 保存 file hash、compile definitions
+  与官方 public-domain 声明，Windows/macOS package whitelist 均已接入；
+- fresh Windows Release 与 warnings-as-errors 全构建无项目/第三方 warning，两套 CTest 均
+  `18/18`；dependency probe 验证版本/source id、七个 compile option、serialized threading、默认 FK、
+  JSON、DQS=0、API armor 和静态链接；
+- Windows package + static verifier passed；macOS package scripts 通过 shell syntax，但同 source/options
+  的真实 Apple Clang/system platform build 尚未执行，不能声明 macOS passed。
 
 每次 repository operation 新建 connection、配置、执行事务并关闭。初始运行参数：
 

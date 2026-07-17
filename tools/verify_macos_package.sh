@@ -32,6 +32,14 @@ expected=$(printf '%s\n' README.md SHA256SUMS ccs-trans ccs-trans.app docs licen
     exit 1
 }
 
+actual_licenses=$(find "$root/licenses" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
+expected_licenses=$(printf '%s\n' nlohmann-LICENSE.MIT sqlite-NOTICE.md | LC_ALL=C sort)
+[ "$actual_licenses" = "$expected_licenses" ] || {
+    printf 'archive license whitelist mismatch\n' >&2
+    printf '%s\n' "$actual_licenses" >&2
+    exit 1
+}
+
 (
     cd "$root"
     shasum -a 256 -c SHA256SUMS

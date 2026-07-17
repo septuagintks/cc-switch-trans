@@ -62,6 +62,10 @@ try {
         "docs",
         "docs/Archived"
     )
+    $thirdPartyFiles = @(
+        "THIRD_PARTY_LICENSES/nlohmann-json.MIT",
+        "THIRD_PARTY_LICENSES/sqlite-NOTICE.md"
+    )
     if ($rootEntries[0].Name -ceq $historicalPackageName) {
         $documents = @(
             "Design.md",
@@ -74,6 +78,7 @@ try {
             "THIRD_PARTY_LICENSES",
             "docs"
         )
+        $thirdPartyFiles = @("THIRD_PARTY_LICENSES/nlohmann-json.MIT")
         Write-Output "Verifying historical Windows package layout: $historicalPackageName"
     } elseif ($rootEntries[0].Name -cne $packageName) {
         throw "Archive root directory is unexpected: $($rootEntries[0].Name)"
@@ -82,10 +87,9 @@ try {
     $expectedFiles = @(
         "README.md",
         "SHA256SUMS.txt",
-        "THIRD_PARTY_LICENSES/nlohmann-json.MIT",
         "ccs-trans-tray.exe",
         "ccs-trans.exe"
-    ) + ($documents | ForEach-Object { "docs/$_" })
+    ) + $thirdPartyFiles + ($documents | ForEach-Object { "docs/$_" })
 
     $actualFiles = @(
         Get-ChildItem -LiteralPath $packageRoot -Recurse -File | ForEach-Object {
