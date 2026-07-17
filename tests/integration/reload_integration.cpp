@@ -2,6 +2,7 @@
 #include "config/config_document.hpp"
 #include "config/config_store.hpp"
 #include "config/runtime_compiler.hpp"
+#include "core/inflight_memory_budget.hpp"
 #include "app/app_service.hpp"
 
 #include <nlohmann/json.hpp>
@@ -644,6 +645,7 @@ void test_reload_generation_and_profile_io() {
     std::uint64_t log_path_generation = 0;
     bool log_path_swap_logged = false;
     bool healthy_writer_snapshot = false;
+    bool generation_metrics_drained = false;
     for (const auto& event : reloaded_events) {
         if (event.value("event", "") == "request_received"
             && event.value("query", "") == "case=log-path") {
@@ -661,12 +663,25 @@ void test_reload_generation_and_profile_io() {
             && event.value("log_writer_failures", std::uint64_t{0}) >= 1) {
             healthy_writer_snapshot = true;
         }
+        if (event.value("event", "") == "performance_snapshot"
+            && event.value("reason", "") == "server_stop"
+            && event.value("inflight_budget_bytes", std::uint64_t{0})
+                == ccs::kDefaultInflightMemoryBudget
+            && event.value("current_inflight_bytes", std::uint64_t{1}) == 0
+            && event.value("current_generation_requests", std::uint64_t{1}) == 0
+            && event.value("peak_generation_requests", std::uint64_t{0}) >= 1
+            && event.value("current_retired_generations", std::uint64_t{1}) == 0
+            && event.value("peak_retired_generations", std::uint64_t{0}) >= 1) {
+            generation_metrics_drained = true;
+        }
     }
     require(log_path_generation != 0 && log_path_generation != new_generation,
         "log path reload publishes another observable generation");
     require(log_path_swap_logged, "log path swap links its previous generation");
     require(healthy_writer_snapshot,
         "retired and rejected writers do not clear the active generation health metric");
+    require(generation_metrics_drained,
+        "generation and inflight metrics retain peaks and drain at server stop");
 
     std::error_code remove_error;
     std::filesystem::remove_all(root, remove_error);

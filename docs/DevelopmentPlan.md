@@ -65,6 +65,15 @@ suffix；最终发行源码提交去掉 suffix 并固定为 `0.7.0`。
 6. 增加 undo/redo、批量操作、错误定位、搜索、键盘操作和完整辅助功能；
 7. 对长 Rule 列表使用增量更新和稳定 selection，禁止编辑动作触发无关页面全量重建。
 
+`0.8.0` 同时冻结双平台 GUI 动效合同：所有可交互内容必须同时提供可辨识的 hover colour、hover
+scale 和 pressed/click scale 状态，包括导航、按钮、列表行、菜单项、开关、输入容器、Rule 操作和
+可点击状态项。缩放只作用于视觉 transform，不改变布局占位、hit target 或相邻控件位置；键盘 focus
+与 touch/辅助功能路径提供等价状态，不能把 hover 作为唯一反馈。任何位置、尺寸、展开、折叠、排序或
+页面切换等动态移动不得瞬移，至少使用连续线性插值；允许使用更平滑曲线，但不能低于线性动画的连续
+程度。遵守 Windows animation/high-contrast 与 macOS Reduce Motion 设置：减少动态时允许把 duration
+降为零或最短，但最终 colour/scale/focus 状态仍必须正确。动画期间不得阻塞 UI thread、重排请求热
+路径、模糊文本或造成 hover 抖动，并增加帧时间、快速指针进出、连续点击、键盘操作和资源回收测试。
+
 版本结束时，用户应能完全通过 GUI 管理 Profile、全局配置和 Rule，不需要直接编辑数据库或完整
 配置文件。
 

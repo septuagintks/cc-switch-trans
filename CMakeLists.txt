@@ -152,6 +152,7 @@ add_library(ccs-trans-core STATIC
     src/config/config_store.cpp
     src/config/runtime_compiler.cpp
     src/core/cancellation.cpp
+    src/core/inflight_memory_budget.cpp
     src/core/request_id.cpp
     src/core/runtime_metrics.cpp
     src/core/url.cpp
@@ -263,6 +264,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(ccs-trans-control-executor-tests PRIVATE ccs-trans-core)
     add_test(NAME ccs-trans-control-executor-tests COMMAND ccs-trans-control-executor-tests)
+
+    add_executable(ccs-trans-inflight-memory-budget-tests
+        tests/unit/inflight_memory_budget_tests.cpp
+    )
+    target_link_libraries(ccs-trans-inflight-memory-budget-tests PRIVATE ccs-trans-core)
+    add_test(
+        NAME ccs-trans-inflight-memory-budget-tests
+        COMMAND ccs-trans-inflight-memory-budget-tests
+    )
 
     add_executable(ccs-trans-local-socket-tests
         tests/unit/local_socket_tests.cpp

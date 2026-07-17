@@ -1,5 +1,6 @@
 #include "core/runtime_metrics.hpp"
 
+#include <cassert>
 #include <chrono>
 
 namespace ccs {
@@ -17,6 +18,85 @@ void RuntimeMetrics::update_peak(std::atomic<std::uint64_t>& peak, std::uint64_t
     while (current < value
         && !peak.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
     }
+}
+
+void RuntimeMetrics::decrement(std::atomic<std::uint64_t>& value) noexcept {
+    auto current = value.load(std::memory_order_relaxed);
+    while (current != 0
+        && !value.compare_exchange_weak(
+            current, current - 1, std::memory_order_relaxed)) {
+    }
+    assert(current != 0);
+}
+
+bool RuntimeMetrics::configure_inflight_budget(std::uint64_t bytes) noexcept {
+    if (bytes == 0) {
+        return false;
+    }
+    auto current = inflight_budget_bytes_.load(std::memory_order_relaxed);
+    while (current == 0) {
+        if (inflight_budget_bytes_.compare_exchange_weak(
+                current, bytes, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return current == bytes;
+}
+
+bool RuntimeMetrics::try_acquire_inflight(std::uint64_t bytes) noexcept {
+    if (bytes == 0) {
+        return true;
+    }
+    const auto capacity = inflight_budget_bytes_.load(std::memory_order_relaxed);
+    if (capacity == 0) {
+        inflight_budget_rejections_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    auto current = current_inflight_bytes_.load(std::memory_order_relaxed);
+    while (bytes <= capacity - std::min(capacity, current)) {
+        const auto next = current + bytes;
+        if (current_inflight_bytes_.compare_exchange_weak(
+                current, next, std::memory_order_relaxed)) {
+            update_peak(peak_inflight_bytes_, next);
+            return true;
+        }
+    }
+    inflight_budget_rejections_.fetch_add(1, std::memory_order_relaxed);
+    return false;
+}
+
+void RuntimeMetrics::release_inflight(std::uint64_t bytes) noexcept {
+    if (bytes == 0) {
+        return;
+    }
+    auto current = current_inflight_bytes_.load(std::memory_order_relaxed);
+    while (current >= bytes) {
+        if (current_inflight_bytes_.compare_exchange_weak(
+                current, current - bytes, std::memory_order_relaxed)) {
+            return;
+        }
+    }
+    assert(false && "inflight memory accounting underflow");
+}
+
+void RuntimeMetrics::generation_request_started() {
+    const auto current = current_generation_requests_.fetch_add(
+        1, std::memory_order_relaxed) + 1;
+    update_peak(peak_generation_requests_, current);
+}
+
+void RuntimeMetrics::generation_request_finished() noexcept {
+    decrement(current_generation_requests_);
+}
+
+void RuntimeMetrics::generation_retired() {
+    const auto current = current_retired_generations_.fetch_add(
+        1, std::memory_order_relaxed) + 1;
+    update_peak(peak_retired_generations_, current);
+}
+
+void RuntimeMetrics::retired_generation_released() noexcept {
+    decrement(current_retired_generations_);
 }
 
 void RuntimeMetrics::connection_accepted(std::size_t current, std::size_t queued) {
@@ -231,6 +311,14 @@ void RuntimeMetrics::log_storage_changed(
 RuntimeMetricsSnapshot RuntimeMetrics::snapshot() const {
     RuntimeMetricsSnapshot result;
 #define CCS_LOAD_METRIC(name) result.name = load(name##_)
+    CCS_LOAD_METRIC(inflight_budget_bytes);
+    CCS_LOAD_METRIC(current_inflight_bytes);
+    CCS_LOAD_METRIC(peak_inflight_bytes);
+    CCS_LOAD_METRIC(inflight_budget_rejections);
+    CCS_LOAD_METRIC(current_generation_requests);
+    CCS_LOAD_METRIC(peak_generation_requests);
+    CCS_LOAD_METRIC(current_retired_generations);
+    CCS_LOAD_METRIC(peak_retired_generations);
     CCS_LOAD_METRIC(connections_accepted);
     CCS_LOAD_METRIC(connections_rejected);
     CCS_LOAD_METRIC(connections_completed);

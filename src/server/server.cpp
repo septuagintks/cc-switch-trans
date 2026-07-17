@@ -62,6 +62,7 @@ public:
         , cancellation_(std::move(cancellation)) {
         if (metrics_) {
             metrics_->request_started();
+            metrics_->generation_request_started();
         }
     }
 
@@ -72,6 +73,7 @@ public:
             } else {
                 metrics_->request_completed();
             }
+            metrics_->generation_request_finished();
         }
     }
 
@@ -776,9 +778,27 @@ public:
               static_cast<std::size_t>(runtime.application.runtime.max_response_body_size),
               metrics,
               static_cast<std::size_t>(runtime.application.runtime.worker_threads)))
-        , logger(std::move(shared_logger)) {
+        , logger(std::move(shared_logger))
+        , metrics_(metrics) {
         if (!logger) {
             throw std::invalid_argument("request generation must have a logger");
+        }
+        if (!metrics_) {
+            throw std::invalid_argument("request generation must have metrics");
+        }
+    }
+
+    ~RequestGeneration() {
+        if (retired_.load(std::memory_order_relaxed)) {
+            metrics_->retired_generation_released();
+        }
+    }
+
+    void mark_retired() noexcept {
+        bool expected = false;
+        if (retired_.compare_exchange_strong(
+                expected, true, std::memory_order_relaxed)) {
+            metrics_->generation_retired();
         }
     }
 
@@ -787,6 +807,10 @@ public:
     const RuntimeSnapshot& runtime;
     std::unique_ptr<UpstreamTransport> transport;
     std::shared_ptr<Logger> logger;
+
+private:
+    std::shared_ptr<RuntimeMetrics> metrics_;
+    std::atomic_bool retired_{false};
 };
 
 Server::Server(
@@ -794,6 +818,8 @@ Server::Server(
     LogSinkFactory log_sink_factory,
     bool handle_process_signals)
     : metrics_(std::make_shared<RuntimeMetrics>())
+    , inflight_budget_(std::make_shared<InflightMemoryBudget>(
+          kDefaultInflightMemoryBudget, metrics_))
     , log_sink_factory_(std::move(log_sink_factory))
     , handle_process_signals_(handle_process_signals) {
     const auto& runtime = require_runtime_snapshot(snapshot);
@@ -926,6 +952,7 @@ ReloadResult Server::reload(RuntimeSnapshotPtr snapshot, std::string& error) {
             next_generation_id(), std::move(snapshot), metrics_, std::move(logger));
         {
             std::unique_lock<std::shared_mutex> generation_lock(generation_mutex_);
+            current->mark_retired();
             generation_ = next;
         }
         next->logger->log("info", "config_reload", {
@@ -1347,6 +1374,14 @@ void Server::log_performance_snapshot(const std::string& reason) const {
     generation->logger->log("info", "performance_snapshot", {
         field_number("generation_id", static_cast<long long>(generation->id)),
         field_string("reason", reason),
+        field_number("inflight_budget_bytes", static_cast<long long>(snapshot.inflight_budget_bytes)),
+        field_number("current_inflight_bytes", static_cast<long long>(snapshot.current_inflight_bytes)),
+        field_number("peak_inflight_bytes", static_cast<long long>(snapshot.peak_inflight_bytes)),
+        field_number("inflight_budget_rejections", static_cast<long long>(snapshot.inflight_budget_rejections)),
+        field_number("current_generation_requests", static_cast<long long>(snapshot.current_generation_requests)),
+        field_number("peak_generation_requests", static_cast<long long>(snapshot.peak_generation_requests)),
+        field_number("current_retired_generations", static_cast<long long>(snapshot.current_retired_generations)),
+        field_number("peak_retired_generations", static_cast<long long>(snapshot.peak_retired_generations)),
         field_number("connections_accepted", static_cast<long long>(snapshot.connections_accepted)),
         field_number("connections_rejected", static_cast<long long>(snapshot.connections_rejected)),
         field_number("connections_completed", static_cast<long long>(snapshot.connections_completed)),
@@ -1534,6 +1569,8 @@ int Server::run(const StartupCallback& startup_callback) {
             field_string("upstream_proxy_mode", startup_generation->transport->proxy_mode()),
             field_number("worker_threads", application.runtime.worker_threads),
             field_number("max_connections", application.runtime.max_connections),
+            field_number("inflight_budget_bytes", static_cast<long long>(
+                inflight_budget_->capacity())),
             field_number("metrics_interval_ms", application.runtime.metrics_interval_ms),
             field_number("resolve_timeout_ms", application.timeouts.resolve_ms),
             field_number("connect_timeout_ms", application.timeouts.connect_ms),

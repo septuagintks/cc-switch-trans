@@ -17,6 +17,14 @@ enum class UpstreamTimeoutPhase {
 };
 
 struct RuntimeMetricsSnapshot {
+    std::uint64_t inflight_budget_bytes = 0;
+    std::uint64_t current_inflight_bytes = 0;
+    std::uint64_t peak_inflight_bytes = 0;
+    std::uint64_t inflight_budget_rejections = 0;
+    std::uint64_t current_generation_requests = 0;
+    std::uint64_t peak_generation_requests = 0;
+    std::uint64_t current_retired_generations = 0;
+    std::uint64_t peak_retired_generations = 0;
     std::uint64_t connections_accepted = 0;
     std::uint64_t connections_rejected = 0;
     std::uint64_t connections_completed = 0;
@@ -87,6 +95,15 @@ struct RuntimeMetricsSnapshot {
 
 class RuntimeMetrics {
 public:
+    bool configure_inflight_budget(std::uint64_t bytes) noexcept;
+    bool try_acquire_inflight(std::uint64_t bytes) noexcept;
+    void release_inflight(std::uint64_t bytes) noexcept;
+
+    void generation_request_started();
+    void generation_request_finished() noexcept;
+    void generation_retired();
+    void retired_generation_released() noexcept;
+
     void connection_accepted(std::size_t current, std::size_t queued);
     void connection_rejected();
     void worker_started(std::size_t queued, std::uint64_t queue_wait_us);
@@ -135,6 +152,16 @@ public:
 
 private:
     static void update_peak(std::atomic<std::uint64_t>& peak, std::uint64_t value);
+    static void decrement(std::atomic<std::uint64_t>& value) noexcept;
+
+    std::atomic<std::uint64_t> inflight_budget_bytes_{0};
+    std::atomic<std::uint64_t> current_inflight_bytes_{0};
+    std::atomic<std::uint64_t> peak_inflight_bytes_{0};
+    std::atomic<std::uint64_t> inflight_budget_rejections_{0};
+    std::atomic<std::uint64_t> current_generation_requests_{0};
+    std::atomic<std::uint64_t> peak_generation_requests_{0};
+    std::atomic<std::uint64_t> current_retired_generations_{0};
+    std::atomic<std::uint64_t> peak_retired_generations_{0};
 
     std::atomic<std::uint64_t> connections_accepted_{0};
     std::atomic<std::uint64_t> connections_rejected_{0};

@@ -2,6 +2,7 @@
 
 #include "core/cancellation.hpp"
 #include "core/http_types.hpp"
+#include "core/inflight_memory_budget.hpp"
 #include "core/runtime_metrics.hpp"
 #include "logging/logger.hpp"
 #include "routing/route_table.hpp"
@@ -77,6 +78,7 @@ private:
     void log_performance_snapshot(const std::string& reason) const;
 
     std::shared_ptr<RuntimeMetrics> metrics_;
+    std::shared_ptr<InflightMemoryBudget> inflight_budget_;
     LogSinkFactory log_sink_factory_;
     mutable std::shared_ptr<RequestGeneration> generation_;
     mutable std::shared_mutex generation_mutex_;

@@ -13,6 +13,11 @@
 | 目标发行包 | `ccs-trans-0.7.0-Windows-x64`、`ccs-trans-0.7.0-macOS-arm64` |
 | 开发期版本号 | `0.7-D` 开始写入 v3/SQLite 前显示 `0.7.0-dev`；最终发行提交去掉 suffix |
 
+当前实施进度：`0.7-A1` 已完成。进程级 512 MiB budget facade、move-only RAII lease、
+inflight/generation current/peak/rejection metrics 与 retired generation 生命周期已经接入；Windows
+Release/warnings 均完成 `17/17` CTest、shared integration 和 tray integration。实际 request、Rule、
+response、logger staging 记账以及 control queue 硬化继续由 `0.7-A2` 完成。
+
 ## 目标与不进入范围
 
 `0.7.0` 完成三件事：
@@ -497,6 +502,17 @@ Win32 主窗口改为三个稳定视图：Profiles、Rules、Settings。Profiles
 当前 Profile 的原生 multiline text editor、Format 与校验结果；Settings 按 descriptor 创建 typed
 controls 和滚动布局。避免 section/card 套叠，不为每个字段创建独立顶层窗口。
 
+Windows 同阶段完成轻量主题优化，macOS 不随本工作包改视觉主题。实现继续使用系统 Win32、DWM 和
+Common Controls；优先通过 owner-draw background/border、圆角宿主和无边框 child control 组合实现，
+不引入 WebView、Qt 或常驻第三方主题运行时。除滚动条、文本 caret、分隔线等本质线性元素外，可见的
+窗口、导航项、按钮、输入容器、列表 selection、tooltip、菜单和状态面都不得保留完全直角的矩形
+轮廓；原生 edit/list view 若不能直接圆角，放入带 clipping/padding 的圆角宿主，而不是绘制方形边框。
+
+主题使用一个共享 Windows palette/metrics 对象管理 radius、padding、border、surface、text、focus 和
+状态色，支持 Windows 11 light/dark 与高对比模式。圆角不得缩小可点击区域、截断长 URL/Unicode、破坏
+DPI scaling 或造成列表滚动时重绘抖动。优先复用系统 brush/font/icon，缓存按 DPI/theme 分代并在窗口
+销毁时释放；只有实测 GDI 无法满足抗锯齿或后续动画时才局部使用系统 Direct2D，不引入自带渲染引擎。
+
 共享 ViewModel 负责 draft、busy、dirty、stale、Apply/Discard/Reload、migration required 和
 SavedPendingRuntimeApply；Win32 只负责 HWND 生命周期、DPI、focus、accessibility 与消息派发。单字段更新
 不得重建整个窗口或 Profile 列表。完成默认/最小尺寸、100%/150%/200% DPI、light/dark、长 URL、
@@ -508,6 +524,9 @@ Unicode、Tab loop、Narrator label 与 128 Profile 列表验证。
 Profiles/Rules/Settings 信息架构和结果语义；平台代码只实现 NSControl/NSTextView、Auto Layout、
 Retina、appearance、focus 与 accessibility。不得为 macOS 建第二套 validation、SQLite wrapper 或
 runtime。
+
+`0.7-G` 保持当前 macOS 视觉主题，不为了 Windows 圆角化重写 AppKit 外观；只实现 0.7 新增字段、Rule
+文本和 repository 状态的功能对等，并继续遵守现有 native appearance、Retina 与 accessibility 合同。
 
 交接退出条件包括 Release/warnings build、全部 CTest、shared/proxy/menu integration、v2 migration、
 SQLite lock/recovery、文本 Rule、100 次窗口资源循环和 16 路 SSE 精确回传。
@@ -574,9 +593,10 @@ JSON 并以中位数作为本机对照；发布归档中的历史数字只用于
 - [x] Windows `0.7-A0` 三轮五档短负载与三轮 Rule matrix 已归档为 ignored evidence；
 - [x] benchmark annotated tag 已改为 peeled commit，并以 `0.6.0` smoke 验证；
 - [x] 准备阶段 Release/warnings CTest `16/16`、两套 shared integration、Release tray integration passed；
-- [ ] 为 budget/generation/control metrics 添加失败优先单元测试；
-- [ ] 实现共享 RAII budget，不改变 v2 on-disk schema；
-- [ ] 跑 Release/warnings CTest、shared/tray integration 与基准对照；
+- [x] 为 budget/generation metrics 添加失败优先单元测试；control metrics 留在 `0.7-A2`；
+- [x] 实现共享 RAII budget，不改变 v2 on-disk schema；
+- [x] 跑 `0.7-A1` Release/warnings CTest 与 shared/tray integration；
+- [ ] 完成 `0.7-A2` 后跑 Windows 单变量 A/B 与组合基准对照；
 - [ ] 通过交接仓库指派 `0.7-A3` macOS 窄验证。
 
 没有需要用户在开工前额外选择的阻塞项。SQLite 精确版本与 512 MiB 默认值的唯一允许调整窗口分别
