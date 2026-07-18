@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import platform
+import plistlib
 import shutil
 import sys
 import time
@@ -18,6 +19,7 @@ from run_benchmark import (
     git_commit,
     git_dirty,
     latest_performance_snapshot,
+    migrate_proxy_config,
     post_json,
     resolve_git_ref,
     run_mixed_requests,
@@ -37,6 +39,16 @@ def require(condition, message):
 
 def file_size(path):
     return path.stat().st_size if path.exists() else 0
+
+
+def menu_bundle_version(exe):
+    plist_path = exe.parent.parent / "Info.plist"
+    try:
+        with plist_path.open("rb") as source:
+            value = plistlib.load(source).get("CFBundleShortVersionString")
+        return str(value) if value else "unknown"
+    except (OSError, plistlib.InvalidFileException):
+        return "unknown"
 
 
 def wait_idle(process, duration_seconds):
@@ -205,6 +217,7 @@ def main():
     initial_host_log_size = 0
     pre_stop_host_log_size = 0
     try:
+        migrate_proxy_config(exe, environment)
         upstream = start_process(
             [sys.executable, str(ROOT / "tests" / "benchmark" / "mock_upstream.py"), "--port", str(upstream_port)],
             upstream_output,
@@ -262,7 +275,11 @@ def main():
             "executable": {
                 "path": str(exe),
                 "sha256": sha256(exe),
-                "version": executable_version(exe) if args.host == "cli" else "0.6.0",
+                "version": (
+                    executable_version(exe)
+                    if args.host == "cli"
+                    else menu_bundle_version(exe)
+                ),
             },
             "environment": {
                 "platform": platform.platform(),

@@ -834,6 +834,21 @@ def start_process(command, stdout_path, graceful_group=False, environment=None):
     return process
 
 
+def migrate_proxy_config(exe, environment):
+    result = subprocess.run(
+        [str(exe), "storage", "migrate"],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stdout.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"benchmark config migration failed: {detail}")
+
+
 def stop_process(process, graceful=False):
     if process is None:
         return
@@ -931,6 +946,7 @@ def main():
             proxy_environment["NO_PROXY"] = "127.0.0.1,localhost"
             proxy_environment["no_proxy"] = "127.0.0.1,localhost"
             try:
+                migrate_proxy_config(exe, proxy_environment)
                 proxy = start_process(
                     [str(exe), "run"],
                     proxy_output,
