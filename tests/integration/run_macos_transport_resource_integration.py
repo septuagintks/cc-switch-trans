@@ -181,6 +181,12 @@ def main():
     environment["NO_PROXY"] = "127.0.0.1,localhost"
     environment["no_proxy"] = "127.0.0.1,localhost"
 
+    subprocess.check_call(
+        [str(executable), "storage", "migrate"],
+        cwd=ROOT,
+        env=environment,
+    )
+
     process = subprocess.Popen(
         [str(executable), "run"],
         cwd=ROOT,
