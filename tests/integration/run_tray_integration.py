@@ -44,6 +44,15 @@ MAIN_PROFILE_ENABLED = 2007
 MAIN_APPLY = 2008
 MAIN_RELOAD_DRAFT = 2014
 MAIN_PROFILE_STATUS = 2015
+MAIN_NAV_PROFILES = 2016
+MAIN_NAV_RULES = 2017
+MAIN_NAV_SETTINGS = 2018
+MAIN_RULES_EDIT = 2021
+MAIN_RULES_FORMAT = 2022
+MAIN_UPDATE_SETTINGS = 2025
+MAIN_SETTINGS_VIEWPORT = 2027
+MAIN_SETTINGS_CONTENT = 2028
+MAIN_SETTINGS_LISTENER_HOST = 2200
 IDYES = 6
 IDNO = 7
 VK_HOME = 0x24
@@ -683,6 +692,29 @@ def main() -> int:
                 ),
                 "Windows Profile detail did not render the Rule summary",
             )
+
+            # 0.7 three-view shell, canonical Rule editor, and descriptor Settings controls.
+            click_control(reused, MAIN_NAV_RULES)
+            rules_edit = validate_control(reused, MAIN_RULES_EDIT)
+            require(
+                "ccs-trans.rules/v1" in control_text(reused, MAIN_RULES_EDIT),
+                "Rules view did not publish canonical text",
+            )
+            before = view_command_count(host_log, "format_rules_text")
+            click_control(reused, MAIN_RULES_FORMAT)
+            result = wait_for_view_command(host_log, "format_rules_text", before)
+            require(result.get("outcome") == "succeeded", "GUI Rule Format failed")
+            require(bool(rules_edit), "Rules editor handle was not retained")
+
+            click_control(reused, MAIN_NAV_SETTINGS)
+            settings_viewport = validate_control(reused, MAIN_SETTINGS_VIEWPORT)
+            settings_content = validate_control(settings_viewport, MAIN_SETTINGS_CONTENT)
+            validate_control(settings_content, MAIN_SETTINGS_LISTENER_HOST)
+            before = view_command_count(host_log, "update_application_fields")
+            click_control(reused, MAIN_UPDATE_SETTINGS)
+            result = wait_for_view_command(host_log, "update_application_fields", before)
+            require(result.get("outcome") == "succeeded", "GUI Settings update failed")
+            click_control(reused, MAIN_NAV_PROFILES)
 
             # Profile draft create, rename, validation, Apply, checkbox, and Remove.
             set_control_text(reused, MAIN_NEW_PROFILE_EDIT, "gui-draft")

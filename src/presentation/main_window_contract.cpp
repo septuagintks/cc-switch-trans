@@ -58,8 +58,18 @@ const char* main_window_command_name(MainWindowCommand command) noexcept {
         return "rename_profile";
     case MainWindowCommand::RemoveProfile:
         return "remove_profile";
+    case MainWindowCommand::MoveProfile:
+        return "move_profile";
     case MainWindowCommand::SetProfileEnabled:
         return "set_profile_enabled";
+    case MainWindowCommand::UpdateProfileFields:
+        return "update_profile_fields";
+    case MainWindowCommand::UpdateApplicationFields:
+        return "update_application_fields";
+    case MainWindowCommand::ReplaceRulesText:
+        return "replace_rules_text";
+    case MainWindowCommand::FormatRulesText:
+        return "format_rules_text";
     case MainWindowCommand::ApplyDraft:
         return "apply_draft";
     case MainWindowCommand::DiscardDraft:
@@ -218,17 +228,41 @@ const ProfileListItem* find_profile_list_item(
     return found == state.profiles.end() ? nullptr : &*found;
 }
 
+const ProfileListItem* find_profile_list_item(
+    const MainWindowState& state,
+    ProfileKey profile_key) noexcept {
+    const auto found = std::find_if(
+        state.profiles.begin(), state.profiles.end(), [profile_key](const auto& profile) {
+            return profile.key == profile_key;
+        });
+    return found == state.profiles.end() ? nullptr : &*found;
+}
+
 bool select_profile(MainWindowState& state, std::string_view profile_id) {
     const auto* profile = find_profile_list_item(state, profile_id);
     if (profile == nullptr) {
         return false;
     }
     state.selected_profile_id = profile->id;
+    state.selected_profile_key = profile->key;
+    return true;
+}
+
+bool select_profile(MainWindowState& state, ProfileKey profile_key) {
+    const auto* profile = find_profile_list_item(state, profile_key);
+    if (profile == nullptr) {
+        return false;
+    }
+    state.selected_profile_id = profile->id;
+    state.selected_profile_key = profile->key;
     return true;
 }
 
 void clear_profile_selection(MainWindowState& state) noexcept {
     state.selected_profile_id.reset();
+    state.selected_profile_key.reset();
+    state.profile_editor.reset();
+    state.rules_editor.reset();
 }
 
 MainWindowCloseAction resolve_main_window_close(

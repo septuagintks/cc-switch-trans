@@ -2,13 +2,15 @@
 
 #include "app/application_control.hpp"
 #include "app/control_executor.hpp"
-#include "config/config_editing_service.hpp"
+#include "config/configuration_editor.hpp"
+#include "config/configuration_repository.hpp"
 #include "presentation/main_window_contract.hpp"
 #include "presentation/ui_preferences_repository.hpp"
 
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -33,6 +35,10 @@ struct MainWindowCommandRequest {
     std::string replacement_profile_id;
     bool enabled = false;
     std::optional<UnsavedChangesDecision> unsaved_changes_decision;
+    std::optional<ProfileKey> profile_key;
+    std::size_t position = 0;
+    std::vector<ConfigurationFieldEdit> field_edits;
+    std::string text;
 };
 
 using MainWindowStateSnapshot = std::shared_ptr<const MainWindowState>;
@@ -42,8 +48,8 @@ using MainWindowDispatcher = std::function<void(std::function<void()>)>;
 class MainWindowViewModel {
 public:
     MainWindowViewModel(
-        ConfigRepository& repository,
-        ConfigEditingService& editing,
+        ConfigurationRepository& repository,
+        ConfigurationEditor& editing,
         ApplicationControl& application,
         UiPreferencesRepository& preferences,
         MainWindowDispatcher dispatcher = {},
@@ -82,12 +88,17 @@ private:
         bool force_reload,
         std::optional<UnsavedChangesDecision> unsaved_decision);
     ExecutionResult mutate_draft(const MainWindowCommandRequest& request);
+    ExecutionResult update_fields(const MainWindowCommandRequest& request);
+    ExecutionResult update_rules(const MainWindowCommandRequest& request, bool format);
     ExecutionResult apply_draft();
     ExecutionResult discard_draft();
     ExecutionResult set_lightweight_mode(bool enabled);
     ExecutionResult execute_service_command(MainWindowCommand command);
 
-    void rebuild_profile_list(const std::optional<std::string>& preferred_selection = std::nullopt);
+    void rebuild_editor_state(
+        std::optional<ProfileKey> preferred_key = std::nullopt,
+        std::optional<std::string> preferred_id = std::nullopt,
+        bool preserve_rules_text = false);
     void publish_state_change(const std::function<void(MainWindowState&)>& update);
     MainWindowStateSnapshot snapshot_locked() const;
     void notify(const MainWindowStateSnapshot& state) const;
@@ -95,8 +106,8 @@ private:
     static MainWindowError classify_validation_error(const std::string& error);
     static MainWindowError classify_repository_error(ConfigRepositoryFailure failure);
 
-    ConfigRepository& repository_;
-    ConfigEditingService& editing_;
+    ConfigurationRepository& repository_;
+    ConfigurationEditor& editing_;
     ApplicationControl& application_;
     UiPreferencesRepository& preferences_;
     UiPreferences preference_values_;

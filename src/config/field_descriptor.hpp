@@ -62,6 +62,11 @@ bool apply_application_field(
     const ConfigurationFieldDescriptor& descriptor,
     const ConfigurationFieldValue& value,
     std::string& error);
+bool read_application_field(
+    const ApplicationSettings& application,
+    const ConfigurationFieldDescriptor& descriptor,
+    ConfigurationFieldValue& value,
+    std::string& error);
 bool reset_application_field(
     ApplicationSettings& application,
     const ConfigurationFieldDescriptor& descriptor,
@@ -70,6 +75,11 @@ bool apply_profile_field(
     StoredProfile& profile,
     const ConfigurationFieldDescriptor& descriptor,
     const ConfigurationFieldValue& value,
+    std::string& error);
+bool read_profile_field(
+    const StoredProfile& profile,
+    const ConfigurationFieldDescriptor& descriptor,
+    std::optional<ConfigurationFieldValue>& value,
     std::string& error);
 bool reset_profile_field(
     StoredProfile& profile,

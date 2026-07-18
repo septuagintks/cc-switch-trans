@@ -5,7 +5,7 @@
 #include "app/application_controller.hpp"
 #include "app/control_executor.hpp"
 #include "config/composite_config_repository.hpp"
-#include "config/config_editing_service.hpp"
+#include "config/configuration_editor.hpp"
 #include "hosts/windows/main_window.hpp"
 #include "hosts/windows/windows_host_platform.hpp"
 #include "logging/logger.hpp"
@@ -101,7 +101,7 @@ private:
     WindowsHostPlatform platform_;
     ControlExecutor executor_;
     CompositeConfigRepository config_repository_;
-    ConfigEditingService config_editing_;
+    ConfigurationEditor config_editing_;
     UiPreferencesStore ui_preferences_;
     MainWindowViewModel view_model_;
     std::unique_ptr<WindowsMainWindow> main_window_;

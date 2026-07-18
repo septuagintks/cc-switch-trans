@@ -1,5 +1,6 @@
 #include "presentation/main_window_view_model.hpp"
 
+#include "config/configuration_conversion.hpp"
 #include "protocols/protocol_registry.hpp"
 #include "rules/rule_registry.hpp"
 
@@ -24,12 +25,14 @@ std::string with_profile_context(
 }
 
 ProfileListItem make_profile_list_item(
-    const std::string& profile_id,
+    const StoredProfile& stored,
     const ProfileDefinition& profile,
     const std::shared_ptr<const ProtocolRegistry>& protocols,
     const std::shared_ptr<const RuleRegistry>& rules) {
     ProfileListItem item;
-    item.id = profile_id;
+    const auto& profile_id = stored.profile_id;
+    item.key = stored.key;
+    item.id = stored.profile_id;
     item.enabled = profile.enabled;
     item.rule_count = profile.rules.size();
     item.enabled_rule_count = static_cast<std::size_t>(std::count_if(
@@ -74,11 +77,65 @@ ProfileListItem make_profile_list_item(
     return item;
 }
 
+ConfigurationFieldState make_field_state(
+    const ConfigurationFieldDescriptor& descriptor,
+    std::optional<ConfigurationFieldValue> value) {
+    ConfigurationFieldState state;
+    state.key = descriptor.key;
+    state.scope = descriptor.scope;
+    state.input_kind = descriptor.input_kind;
+    state.required = descriptor.required;
+    state.minimum = descriptor.minimum;
+    state.maximum = descriptor.maximum;
+    state.enum_values.reserve(descriptor.enum_values.size());
+    for (const auto entry : descriptor.enum_values) {
+        state.enum_values.emplace_back(entry);
+    }
+    state.display_name_key = descriptor.display_name_key;
+    state.apply_impact = descriptor.apply_impact;
+    state.value = std::move(value);
+    return state;
+}
+
+bool build_application_fields(
+    const ApplicationSettings& application,
+    std::vector<ConfigurationFieldState>& fields,
+    std::string& error) {
+    fields.clear();
+    fields.reserve(application_field_descriptors().size());
+    for (const auto& descriptor : application_field_descriptors()) {
+        ConfigurationFieldValue value;
+        if (!read_application_field(application, descriptor, value, error)) {
+            return false;
+        }
+        fields.push_back(make_field_state(descriptor, std::move(value)));
+    }
+    return true;
+}
+
+bool build_profile_editor(
+    const StoredProfile& profile,
+    ProfileEditorState& editor,
+    std::string& error) {
+    editor = {};
+    editor.key = profile.key;
+    editor.profile_id = profile.profile_id;
+    editor.fields.reserve(profile_field_descriptors().size());
+    for (const auto& descriptor : profile_field_descriptors()) {
+        std::optional<ConfigurationFieldValue> value;
+        if (!read_profile_field(profile, descriptor, value, error)) {
+            return false;
+        }
+        editor.fields.push_back(make_field_state(descriptor, std::move(value)));
+    }
+    return true;
+}
+
 } // namespace
 
 MainWindowViewModel::MainWindowViewModel(
-    ConfigRepository& repository,
-    ConfigEditingService& editing,
+    ConfigurationRepository& repository,
+    ConfigurationEditor& editing,
     ApplicationControl& application,
     UiPreferencesRepository& preferences,
     MainWindowDispatcher dispatcher,
@@ -255,8 +312,16 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_command(
     case MainWindowCommand::CreateProfile:
     case MainWindowCommand::RenameProfile:
     case MainWindowCommand::RemoveProfile:
+    case MainWindowCommand::MoveProfile:
     case MainWindowCommand::SetProfileEnabled:
         return mutate_draft(request);
+    case MainWindowCommand::UpdateProfileFields:
+    case MainWindowCommand::UpdateApplicationFields:
+        return update_fields(request);
+    case MainWindowCommand::ReplaceRulesText:
+        return update_rules(request, false);
+    case MainWindowCommand::FormatRulesText:
+        return update_rules(request, true);
     case MainWindowCommand::ApplyDraft:
         return apply_draft();
     case MainWindowCommand::DiscardDraft:
@@ -269,9 +334,26 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_command(
     case MainWindowCommand::QuitApplication:
         return execute_service_command(request.command);
     case MainWindowCommand::Refresh:
-        rebuild_profile_list();
+        rebuild_editor_state({}, {}, true);
         return {};
     case MainWindowCommand::SelectProfile:
+        if (request.profile_key) {
+            if (find_profile_list_item(*snapshot(), *request.profile_key) == nullptr) {
+                return ExecutionResult{
+                    CommandOutcome::Rejected,
+                    MainWindowError::ProfileNotFound,
+                    request.profile_id,
+                    {},
+                    "profile key no longer exists",
+                    std::nullopt,
+                };
+            }
+            publish_state_change([&](MainWindowState& state) {
+                (void)select_profile(state, *request.profile_key);
+            });
+            rebuild_editor_state(*request.profile_key);
+            return {};
+        }
         if (find_profile_list_item(*snapshot(), request.profile_id) == nullptr) {
             return ExecutionResult{
                 CommandOutcome::Rejected,
@@ -285,6 +367,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_command(
         publish_state_change([&](MainWindowState& state) {
             (void)select_profile(state, request.profile_id);
         });
+        rebuild_editor_state({}, request.profile_id);
         return {};
     case MainWindowCommand::OpenWindow:
     case MainWindowCommand::CloseWindow:
@@ -372,7 +455,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
         publish_state_change([&](MainWindowState& state) {
             state.draft.phase = DraftPhase::Unloaded;
             state.profiles.clear();
-            state.selected_profile_id.reset();
+            state.application_fields.clear();
+            clear_profile_selection(state);
         });
         return ExecutionResult{
             CommandOutcome::Failed,
@@ -387,7 +471,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
         publish_state_change([](MainWindowState& state) {
             state.draft.phase = DraftPhase::Unloaded;
             state.profiles.clear();
-            state.selected_profile_id.reset();
+            state.application_fields.clear();
+            clear_profile_selection(state);
         });
         return ExecutionResult{
             CommandOutcome::Failed,
@@ -405,7 +490,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
             ? DraftPhase::SavedPendingRuntimeApply
             : DraftPhase::Clean;
     });
-    rebuild_profile_list();
+    rebuild_editor_state();
     if (!preferences_loaded) {
         return ExecutionResult{
             CommandOutcome::Failed,
@@ -432,34 +517,40 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::mutate_draft(
         };
     }
 
-    auto candidate = editing_.draft();
-    auto profile = candidate.profiles.find(request.profile_id);
-    std::optional<std::string> preferred_selection;
+    const auto before = editing_.draft();
+    std::string error;
+    std::optional<ProfileKey> preferred_key = request.profile_key;
+    std::string result_profile_id = request.profile_id;
+
     if (request.command == MainWindowCommand::CreateProfile) {
-        if (!is_valid_profile_id(request.profile_id)) {
+        ProfileKey created_key = 0;
+        if (!editing_.create_profile(request.profile_id, created_key, error)) {
             return ExecutionResult{
                 CommandOutcome::Rejected,
-                MainWindowError::InvalidArgument,
+                error.find("already exists") != std::string::npos
+                    ? MainWindowError::ProfileAlreadyExists
+                    : MainWindowError::InvalidArgument,
                 request.profile_id,
                 "profile_id",
-                "invalid profile id: " + request.profile_id,
+                std::move(error),
                 std::nullopt,
             };
         }
-        if (profile != candidate.profiles.end()) {
-            return ExecutionResult{
-                CommandOutcome::Rejected,
-                MainWindowError::ProfileAlreadyExists,
-                request.profile_id,
-                "profile_id",
-                "profile already exists: " + request.profile_id,
-                std::nullopt,
-            };
-        }
-        candidate.profiles.emplace(request.profile_id, ProfileDefinition{});
-        preferred_selection = request.profile_id;
+        preferred_key = created_key;
     } else {
-        if (profile == candidate.profiles.end()) {
+        const StoredProfile* selected = nullptr;
+        if (request.profile_key) {
+            const auto found = std::find_if(
+                editing_.draft().profiles.begin(),
+                editing_.draft().profiles.end(),
+                [&](const auto& profile) { return profile.key == *request.profile_key; });
+            if (found != editing_.draft().profiles.end()) {
+                selected = &*found;
+            }
+        } else {
+            selected = editing_.find_profile_by_id(request.profile_id);
+        }
+        if (selected == nullptr) {
             return ExecutionResult{
                 CommandOutcome::Rejected,
                 MainWindowError::ProfileNotFound,
@@ -469,83 +560,220 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::mutate_draft(
                 std::nullopt,
             };
         }
+        const auto profile_key = selected->key;
+        preferred_key = profile_key;
+        result_profile_id = selected->profile_id;
         if (request.command == MainWindowCommand::RenameProfile) {
-            if (request.replacement_profile_id == request.profile_id) {
+            const std::array set_commands = {SetConfigurationFieldCommand{
+                profile_key,
+                "id",
+                request.replacement_profile_id,
+            }};
+            if (!editing_.apply_batch(set_commands, {}, false, error)) {
                 return ExecutionResult{
-                    CommandOutcome::Succeeded,
-                    MainWindowError::None,
-                    request.profile_id,
-                    {},
-                    {},
+                    CommandOutcome::Rejected,
+                    error.find("already exists") != std::string::npos
+                        ? MainWindowError::ProfileAlreadyExists
+                        : MainWindowError::InvalidArgument,
+                    result_profile_id,
+                    "id",
+                    std::move(error),
                     std::nullopt,
                 };
             }
-            if (!is_valid_profile_id(request.replacement_profile_id)) {
+            result_profile_id = request.replacement_profile_id;
+        } else if (request.command == MainWindowCommand::RemoveProfile) {
+            if (!editing_.remove_profile(profile_key, error)) {
+                return ExecutionResult{
+                    CommandOutcome::Rejected,
+                    MainWindowError::ProfileNotFound,
+                    result_profile_id,
+                    {},
+                    std::move(error),
+                    std::nullopt,
+                };
+            }
+            preferred_key.reset();
+        } else if (request.command == MainWindowCommand::MoveProfile) {
+            if (!editing_.move_profile(profile_key, request.position, error)) {
                 return ExecutionResult{
                     CommandOutcome::Rejected,
                     MainWindowError::InvalidArgument,
-                    request.profile_id,
-                    "replacement_profile_id",
-                    "invalid profile id: " + request.replacement_profile_id,
+                    result_profile_id,
+                    "position",
+                    std::move(error),
                     std::nullopt,
                 };
             }
-            if (candidate.profiles.contains(request.replacement_profile_id)) {
+        } else {
+            const std::array set_commands = {SetConfigurationFieldCommand{
+                profile_key,
+                "enabled",
+                request.enabled,
+            }};
+            if (!editing_.apply_batch(set_commands, {}, true, error)) {
                 return ExecutionResult{
                     CommandOutcome::Rejected,
-                    MainWindowError::ProfileAlreadyExists,
-                    request.replacement_profile_id,
-                    "replacement_profile_id",
-                    "profile already exists: " + request.replacement_profile_id,
+                    classify_validation_error(error),
+                    result_profile_id,
+                    "enabled",
+                    std::move(error),
                     std::nullopt,
                 };
             }
-            auto node = candidate.profiles.extract(profile);
-            node.key() = request.replacement_profile_id;
-            candidate.profiles.insert(std::move(node));
-            preferred_selection = request.replacement_profile_id;
-        } else if (request.command == MainWindowCommand::RemoveProfile) {
-            candidate.profiles.erase(profile);
-        } else {
-            if (profile->second.enabled == request.enabled) {
-                return ExecutionResult{
-                    CommandOutcome::Succeeded,
-                    MainWindowError::None,
-                    request.profile_id,
-                    {},
-                    {},
-                    std::nullopt,
-                };
-            }
-            profile->second.enabled = request.enabled;
-            preferred_selection = request.profile_id;
         }
     }
 
-    std::string error;
-    if (!validate_config_candidate(candidate, repository_.paths().root, error)) {
+    if (editing_.draft() == before) {
+        return ExecutionResult{
+            CommandOutcome::Succeeded,
+            MainWindowError::None,
+            result_profile_id,
+            {},
+            {},
+            std::nullopt,
+        };
+    }
+    publish_state_change([](MainWindowState& state) {
+        state.draft.phase = DraftPhase::Dirty;
+    });
+    rebuild_editor_state(preferred_key, result_profile_id);
+    return ExecutionResult{
+        CommandOutcome::Succeeded,
+        MainWindowError::None,
+        result_profile_id,
+        {},
+        {},
+        std::nullopt,
+    };
+}
+
+MainWindowViewModel::ExecutionResult MainWindowViewModel::update_fields(
+    const MainWindowCommandRequest& request) {
+    if (!editing_.active()) {
         return ExecutionResult{
             CommandOutcome::Rejected,
-            classify_validation_error(error),
+            MainWindowError::ServiceUnavailable,
+            request.profile_id,
+            {},
+            "no draft is loaded",
+            MainWindowCommand::LoadDraft,
+        };
+    }
+    std::optional<ProfileKey> profile_key;
+    if (request.command == MainWindowCommand::UpdateProfileFields) {
+        profile_key = request.profile_key;
+        if (!profile_key) {
+            const auto* profile = editing_.find_profile_by_id(request.profile_id);
+            if (profile != nullptr) {
+                profile_key = profile->key;
+            }
+        }
+        if (!profile_key) {
+            return ExecutionResult{
+                CommandOutcome::Rejected,
+                MainWindowError::ProfileNotFound,
+                request.profile_id,
+                {},
+                "selected profile no longer exists",
+                std::nullopt,
+            };
+        }
+    }
+
+    std::vector<SetConfigurationFieldCommand> set_commands;
+    std::vector<ResetConfigurationFieldCommand> reset_commands;
+    set_commands.reserve(request.field_edits.size());
+    reset_commands.reserve(request.field_edits.size());
+    for (const auto& edit : request.field_edits) {
+        if (edit.value) {
+            set_commands.push_back({profile_key, edit.key, *edit.value});
+        } else {
+            reset_commands.push_back({profile_key, edit.key});
+        }
+    }
+    const auto before = editing_.draft();
+    std::string error;
+    if (!editing_.apply_batch(set_commands, reset_commands, true, error)) {
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            error.find("already exists") != std::string::npos
+                ? MainWindowError::ProfileAlreadyExists
+                : classify_validation_error(error),
             request.profile_id,
             {},
             std::move(error),
             std::nullopt,
         };
     }
-    editing_.draft() = std::move(candidate);
-    publish_state_change([](MainWindowState& state) {
-        state.draft.phase = DraftPhase::Dirty;
+    if (editing_.draft() != before) {
+        publish_state_change([](MainWindowState& state) {
+            state.draft.phase = DraftPhase::Dirty;
+        });
+    }
+    rebuild_editor_state(profile_key, request.profile_id);
+    return {};
+}
+
+MainWindowViewModel::ExecutionResult MainWindowViewModel::update_rules(
+    const MainWindowCommandRequest& request,
+    bool format) {
+    if (!editing_.active() || !request.profile_key) {
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::ServiceUnavailable,
+            request.profile_id,
+            "rules",
+            "no selected Profile draft is available",
+            MainWindowCommand::LoadDraft,
+        };
+    }
+    const auto before = editing_.draft();
+    RulesTextError diagnostic;
+    std::string error;
+    if (!editing_.replace_rules_text(*request.profile_key, request.text, diagnostic, error)) {
+        publish_state_change([&](MainWindowState& state) {
+            state.rules_editor = RulesEditorState{
+                *request.profile_key,
+                request.profile_id,
+                request.text,
+                diagnostic,
+            };
+        });
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::ValidationFailed,
+            request.profile_id,
+            "rules",
+            std::move(error),
+            std::nullopt,
+        };
+    }
+    std::string displayed = request.text;
+    if (format
+        && !editing_.format_rules_text(*request.profile_key, displayed, diagnostic, error)) {
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::ValidationFailed,
+            request.profile_id,
+            "rules",
+            std::move(error),
+            std::nullopt,
+        };
+    }
+    if (editing_.draft() != before) {
+        publish_state_change([](MainWindowState& state) {
+            state.draft.phase = DraftPhase::Dirty;
+        });
+    }
+    rebuild_editor_state(*request.profile_key, request.profile_id);
+    publish_state_change([&](MainWindowState& state) {
+        if (state.rules_editor && state.rules_editor->profile_key == *request.profile_key) {
+            state.rules_editor->text = std::move(displayed);
+            state.rules_editor->diagnostic.reset();
+        }
     });
-    rebuild_profile_list(preferred_selection);
-    return ExecutionResult{
-        CommandOutcome::Succeeded,
-        MainWindowError::None,
-        preferred_selection.value_or(request.profile_id),
-        {},
-        {},
-        std::nullopt,
-    };
+    return {};
 }
 
 MainWindowViewModel::ExecutionResult MainWindowViewModel::apply_draft() {
@@ -606,7 +834,9 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::apply_draft() {
     publish_state_change([](MainWindowState& state) {
         state.draft.phase = DraftPhase::Applying;
     });
-    if (!editing_.commit(error)) {
+    const auto selected_before_commit = snapshot()->selected_profile_id;
+    ConfigurationSnapshot committed;
+    if (!editing_.commit(committed, error)) {
         publish_state_change([](MainWindowState& state) {
             state.draft.phase = DraftPhase::Dirty;
         });
@@ -633,7 +863,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::apply_draft() {
                 : DraftPhase::SavedPendingRuntimeApply;
             state.draft.runtime_apply_pending = !runtime_applied;
             state.profiles.clear();
-            state.selected_profile_id.reset();
+            state.application_fields.clear();
+            clear_profile_selection(state);
         });
         return ExecutionResult{
             CommandOutcome::Failed,
@@ -650,7 +881,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::apply_draft() {
             : DraftPhase::SavedPendingRuntimeApply;
         state.draft.runtime_apply_pending = !runtime_applied;
     });
-    rebuild_profile_list();
+    rebuild_editor_state({}, selected_before_commit);
     if (!runtime_applied) {
         const auto failed_status = application_.status();
         const auto recovery = failed_status.state == ApplicationState::Running
@@ -685,7 +916,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::discard_draft() {
         publish_state_change([](MainWindowState& state) {
             state.draft.phase = DraftPhase::Unloaded;
             state.profiles.clear();
-            state.selected_profile_id.reset();
+            state.application_fields.clear();
+            clear_profile_selection(state);
         });
         return ExecutionResult{
             CommandOutcome::Failed,
@@ -701,7 +933,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::discard_draft() {
             ? DraftPhase::SavedPendingRuntimeApply
             : DraftPhase::Clean;
     });
-    rebuild_profile_list();
+    rebuild_editor_state();
     return {};
 }
 
@@ -768,30 +1000,128 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_service_comman
     return {};
 }
 
-void MainWindowViewModel::rebuild_profile_list(
-    const std::optional<std::string>& preferred_selection) {
+void MainWindowViewModel::rebuild_editor_state(
+    std::optional<ProfileKey> preferred_key,
+    std::optional<std::string> preferred_id,
+    bool preserve_rules_text) {
     std::vector<ProfileListItem> profiles;
+    std::vector<ConfigurationFieldState> application_fields;
+    std::optional<ProfileEditorState> profile_editor;
+    std::optional<RulesEditorState> rules_editor;
+    const auto previous = snapshot();
     if (editing_.active()) {
+        const auto& draft = editing_.draft();
         const auto protocols = builtin_protocol_registry();
         const auto rules = builtin_rule_registry();
-        profiles.reserve(editing_.draft().profiles.size());
-        for (const auto& [profile_id, profile] : editing_.draft().profiles) {
-            profiles.push_back(make_profile_list_item(
-                profile_id, profile, protocols, rules));
+        std::string error;
+        (void)build_application_fields(draft.application, application_fields, error);
+        profiles.reserve(draft.profiles.size());
+        for (const auto& stored : draft.profiles) {
+            ConfigurationSnapshot isolated;
+            isolated.application = draft.application;
+            isolated.profiles.push_back(stored);
+            ConfigDocument document;
+            error.clear();
+            if (configuration_snapshot_to_config_document(isolated, document, error)) {
+                profiles.push_back(make_profile_list_item(
+                    stored, document.profiles.at(stored.profile_id), protocols, rules));
+                continue;
+            }
+            ProfileListItem item;
+            item.key = stored.key;
+            item.id = stored.profile_id;
+            item.enabled = stored.enabled;
+            item.protocol = stored.protocol;
+            item.rule_count = stored.rules.size();
+            item.enabled_rule_count = static_cast<std::size_t>(std::count_if(
+                stored.rules.begin(), stored.rules.end(), [](const auto& rule) {
+                    return rule.enabled;
+                }));
+            item.readiness = ProfileReadiness::Invalid;
+            item.status_detail = with_profile_context(stored.profile_id, error);
+            profiles.push_back(std::move(item));
         }
     }
     sort_profile_list_items(profiles);
+
+    const auto find_key = [&](ProfileKey key) {
+        return std::find_if(profiles.begin(), profiles.end(), [&](const auto& profile) {
+            return profile.key == key;
+        });
+    };
+    const auto find_id = [&](std::string_view id) {
+        return std::find_if(profiles.begin(), profiles.end(), [&](const auto& profile) {
+            return profile.id == id;
+        });
+    };
+    auto selected = profiles.end();
+    if (preferred_key) selected = find_key(*preferred_key);
+    if (selected == profiles.end() && preferred_id) selected = find_id(*preferred_id);
+    if (selected == profiles.end() && previous->selected_profile_key) {
+        selected = find_key(*previous->selected_profile_key);
+    }
+    if (selected == profiles.end() && previous->selected_profile_id) {
+        selected = find_id(*previous->selected_profile_id);
+    }
+    if (selected == profiles.end() && !profiles.empty()) {
+        selected = profiles.begin();
+    }
+
+    if (editing_.active() && selected != profiles.end()) {
+        const auto& draft = editing_.draft();
+        const auto stored = std::find_if(
+            draft.profiles.begin(), draft.profiles.end(), [&](const auto& profile) {
+                return profile.key == selected->key;
+            });
+        if (stored != draft.profiles.end()) {
+            std::string error;
+            ProfileEditorState built_profile;
+            if (build_profile_editor(*stored, built_profile, error)) {
+                profile_editor = std::move(built_profile);
+            }
+            if (preserve_rules_text
+                && previous->rules_editor
+                && previous->rules_editor->profile_key == stored->key) {
+                rules_editor = previous->rules_editor;
+            } else {
+                std::string text;
+                RulesTextError diagnostic;
+                if (editing_.format_rules_text(stored->key, text, diagnostic, error)) {
+                    rules_editor = RulesEditorState{
+                        stored->key,
+                        stored->profile_id,
+                        std::move(text),
+                        std::nullopt,
+                    };
+                } else {
+                    rules_editor = RulesEditorState{
+                        stored->key,
+                        stored->profile_id,
+                        {},
+                        diagnostic,
+                    };
+                }
+            }
+        }
+    }
+
+    const auto selected_id = selected == profiles.end()
+        ? std::optional<std::string>{}
+        : std::optional<std::string>{selected->id};
+    const auto selected_key = selected == profiles.end()
+        ? std::optional<ProfileKey>{}
+        : std::optional<ProfileKey>{selected->key};
+
     publish_state_change([&](MainWindowState& state) {
         state.profiles = std::move(profiles);
-        const auto selection_exists = [&](const std::optional<std::string>& selection) {
-            return selection && find_profile_list_item(state, *selection) != nullptr;
-        };
-        if (selection_exists(preferred_selection)) {
-            state.selected_profile_id = preferred_selection;
-        } else if (!selection_exists(state.selected_profile_id)) {
-            state.selected_profile_id = state.profiles.empty()
-                ? std::nullopt
-                : std::optional<std::string>{state.profiles.front().id};
+        state.application_fields = std::move(application_fields);
+        state.profile_editor = std::move(profile_editor);
+        state.rules_editor = std::move(rules_editor);
+        if (!selected_id || !selected_key) {
+            clear_profile_selection(state);
+        } else {
+            state.selected_profile_id = selected_id;
+            state.selected_profile_key = selected_key;
         }
     });
 }

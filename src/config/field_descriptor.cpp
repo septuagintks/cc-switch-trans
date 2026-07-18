@@ -291,6 +291,45 @@ bool apply_application_field(
     return true;
 }
 
+bool read_application_field(
+    const ApplicationSettings& application,
+    const ConfigurationFieldDescriptor& descriptor,
+    ConfigurationFieldValue& value,
+    std::string& error) {
+    error.clear();
+    if (!require_scope(descriptor, ConfigurationFieldScope::Application, error)) {
+        return false;
+    }
+    const auto key = descriptor.key;
+    if (key == "listener.host") value = application.listener.host;
+    else if (key == "listener.port") value = static_cast<std::uint64_t>(application.listener.port);
+    else if (key == "runtime.worker-threads") value = static_cast<std::uint64_t>(application.runtime.worker_threads);
+    else if (key == "runtime.max-connections") value = static_cast<std::uint64_t>(application.runtime.max_connections);
+    else if (key == "runtime.max-request-body-size") value = application.runtime.max_request_body_size;
+    else if (key == "runtime.max-response-body-size") value = application.runtime.max_response_body_size;
+    else if (key == "runtime.max-inflight-bytes") value = application.runtime.max_inflight_bytes;
+    else if (key == "runtime.metrics-interval-ms") value = static_cast<std::uint64_t>(application.runtime.metrics_interval_ms);
+    else if (key == "timeouts.resolve-ms") value = static_cast<std::uint64_t>(application.timeouts.resolve_ms);
+    else if (key == "timeouts.connect-ms") value = static_cast<std::uint64_t>(application.timeouts.connect_ms);
+    else if (key == "timeouts.send-ms") value = static_cast<std::uint64_t>(application.timeouts.send_ms);
+    else if (key == "timeouts.response-header-ms") value = static_cast<std::uint64_t>(application.timeouts.response_header_ms);
+    else if (key == "timeouts.stream-idle-ms") value = static_cast<std::uint64_t>(application.timeouts.stream_idle_ms);
+    else if (key == "timeouts.total-ms") value = static_cast<std::uint64_t>(application.timeouts.total_ms);
+    else if (key == "logging.path") value = application.logging.path;
+    else if (key == "logging.level") value = application.logging.level;
+    else if (key == "logging.body") value = application.logging.body;
+    else if (key == "logging.redact-sensitive") value = application.logging.redact_sensitive;
+    else if (key == "logging.body-limit") value = application.logging.body_limit;
+    else if (key == "logging.queue-capacity") value = application.logging.queue_capacity;
+    else if (key == "logging.max-total-size") value = application.logging.max_total_size;
+    else if (key == "logging.flush-interval-ms") value = static_cast<std::uint64_t>(application.logging.flush_interval_ms);
+    else {
+        error = "unsupported application field: " + std::string(key);
+        return false;
+    }
+    return true;
+}
+
 bool reset_application_field(
     ApplicationSettings& application,
     const ConfigurationFieldDescriptor& descriptor,
@@ -360,6 +399,37 @@ bool apply_profile_field(
     } else if (key == "upstream.usage-path") {
         profile.upstream_usage_path = std::get<std::string>(value);
     } else {
+        error = "unsupported profile field: " + std::string(key);
+        return false;
+    }
+    return true;
+}
+
+bool read_profile_field(
+    const StoredProfile& profile,
+    const ConfigurationFieldDescriptor& descriptor,
+    std::optional<ConfigurationFieldValue>& value,
+    std::string& error) {
+    error.clear();
+    if (!require_scope(descriptor, ConfigurationFieldScope::Profile, error)) {
+        return false;
+    }
+    const auto key = descriptor.key;
+    if (key == "id") value = profile.profile_id;
+    else if (key == "enabled") value = profile.enabled;
+    else if (key == "protocol") value = profile.protocol
+        ? std::optional<ConfigurationFieldValue>{*profile.protocol} : std::nullopt;
+    else if (key == "local.request-path") value = profile.local_request_path
+        ? std::optional<ConfigurationFieldValue>{*profile.local_request_path} : std::nullopt;
+    else if (key == "local.usage-path") value = profile.local_usage_path
+        ? std::optional<ConfigurationFieldValue>{*profile.local_usage_path} : std::nullopt;
+    else if (key == "upstream.base-url") value = profile.upstream_base_url
+        ? std::optional<ConfigurationFieldValue>{*profile.upstream_base_url} : std::nullopt;
+    else if (key == "upstream.request-path") value = profile.upstream_request_path
+        ? std::optional<ConfigurationFieldValue>{*profile.upstream_request_path} : std::nullopt;
+    else if (key == "upstream.usage-path") value = profile.upstream_usage_path
+        ? std::optional<ConfigurationFieldValue>{*profile.upstream_usage_path} : std::nullopt;
+    else {
         error = "unsupported profile field: " + std::string(key);
         return false;
     }

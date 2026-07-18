@@ -1,6 +1,9 @@
 #include "config/app_paths.hpp"
+#include "config/configuration_conversion.hpp"
+#include "config/configuration_repository.hpp"
 #include "presentation/main_window_view_model.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -24,7 +27,7 @@ void require(bool condition, const std::string& message) {
     }
 }
 
-class MemoryConfigRepository final : public ccs::ConfigRepository {
+class MemoryConfigRepository final : public ccs::ConfigurationRepository {
 public:
     explicit MemoryConfigRepository(ccs::AppPaths paths)
         : paths_(std::move(paths)) {}
@@ -36,13 +39,57 @@ public:
             failure_ = ccs::ConfigRepositoryFailure::Io;
             return false;
         }
+        std::vector<ccs::StoredProfile> profiles;
+        profiles.reserve(document_.profiles.size());
+        for (const auto& [profile_id, definition] : document_.profiles) {
+            ccs::StoredProfile profile;
+            profile.key = definition.storage_key;
+            profile.profile_id = profile_id;
+            profile.enabled = definition.enabled;
+            if (definition.protocol) profile.protocol = definition.protocol->value;
+            profile.local_request_path = definition.local.request_path;
+            profile.local_usage_path = definition.local.usage_path;
+            profile.upstream_base_url = definition.upstream.base_url;
+            profile.upstream_request_path = definition.upstream.request_path;
+            profile.upstream_usage_path = definition.upstream.usage_path;
+            for (const auto& source_rule : definition.rules) {
+                nlohmann::json options = nlohmann::json::object();
+                for (const auto& [name, value] : source_rule.options) {
+                    options[name] = value;
+                }
+                profile.rules.push_back({
+                    source_rule.storage_key,
+                    source_rule.id.value,
+                    source_rule.enabled,
+                    source_rule.type,
+                    options.dump(),
+                });
+            }
+            profiles.push_back(std::move(profile));
+        }
+        for (auto& profile : profiles) {
+            if (profile.key == 0) {
+                profile.key = next_profile_key_++;
+            }
+            for (auto& rule : profile.rules) {
+                if (rule.key == 0) {
+                    rule.key = next_rule_key_++;
+                }
+            }
+        }
+        snapshot_.application = document_.application;
+        snapshot_.profiles = std::move(profiles);
+        snapshot_.revision.profile_revision = static_cast<ccs::ProfileRevision>(load_count_ + 1);
         loaded_ = true;
         failure_ = ccs::ConfigRepositoryFailure::None;
         ++load_count_;
         return true;
     }
 
-    bool save(const ccs::ConfigDocument& document, std::string& error) override {
+    bool save_snapshot(
+        const ccs::ConfigurationSnapshot& desired,
+        ccs::ConfigurationSnapshot& committed,
+        std::string& error) override {
         error.clear();
         if (save_failure_ != ccs::ConfigRepositoryFailure::None) {
             failure_ = save_failure_;
@@ -51,7 +98,23 @@ public:
                 : "injected config save failure";
             return false;
         }
-        document_ = document;
+        committed = desired;
+        for (auto& profile : committed.profiles) {
+            if (profile.key <= 0) {
+                profile.key = next_profile_key_++;
+            }
+            for (auto& rule : profile.rules) {
+                if (rule.key <= 0) {
+                    rule.key = next_rule_key_++;
+                }
+            }
+        }
+        ++committed.revision.profile_revision;
+        if (!ccs::configuration_snapshot_to_config_document(committed, document_, error)) {
+            failure_ = ccs::ConfigRepositoryFailure::InvalidDocument;
+            return false;
+        }
+        snapshot_ = committed;
         failure_ = ccs::ConfigRepositoryFailure::None;
         ++save_count_;
         return true;
@@ -61,8 +124,8 @@ public:
         return loaded_;
     }
 
-    const ccs::ConfigDocument& document() const override {
-        return document_;
+    const ccs::ConfigurationSnapshot& snapshot() const override {
+        return snapshot_;
     }
 
     const ccs::AppPaths& paths() const override {
@@ -77,6 +140,10 @@ public:
         return document_;
     }
 
+    const ccs::ConfigDocument& document() const {
+        return document_;
+    }
+
     void fail_save(ccs::ConfigRepositoryFailure failure) {
         save_failure_ = failure;
     }
@@ -88,12 +155,15 @@ public:
 private:
     ccs::AppPaths paths_;
     ccs::ConfigDocument document_ = ccs::make_default_config_document();
+    ccs::ConfigurationSnapshot snapshot_;
     ccs::ConfigRepositoryFailure failure_ = ccs::ConfigRepositoryFailure::None;
     ccs::ConfigRepositoryFailure save_failure_ = ccs::ConfigRepositoryFailure::None;
     bool loaded_ = false;
     bool fail_load_ = false;
     std::size_t load_count_ = 0;
     std::size_t save_count_ = 0;
+    ccs::ProfileKey next_profile_key_ = 1;
+    ccs::RuleKey next_rule_key_ = 1;
 };
 
 class MemoryPreferences final : public ccs::UiPreferencesRepository {
@@ -271,6 +341,15 @@ ccs::MainWindowStateSnapshot submit_and_wait(
     return wait_for_result(view_model, command);
 }
 
+const ccs::ConfigurationFieldState* find_field(
+    const std::vector<ccs::ConfigurationFieldState>& fields,
+    std::string_view key) {
+    const auto found = std::find_if(fields.begin(), fields.end(), [&](const auto& field) {
+        return field.key == key;
+    });
+    return found == fields.end() ? nullptr : &*found;
+}
+
 struct Fixture {
     Fixture()
         : root(std::filesystem::temp_directory_path()
@@ -288,7 +367,7 @@ struct Fixture {
 
     std::filesystem::path root;
     MemoryConfigRepository repository;
-    ccs::ConfigEditingService editing;
+    ccs::ConfigurationEditor editing;
     FakeApplicationControl application;
     MemoryPreferences preferences;
     ccs::MainWindowViewModel view_model;
@@ -552,7 +631,7 @@ void test_duplicate_command_and_callback_invalidation() {
     std::mutex queue_mutex;
     std::vector<std::function<void()>> queued;
     MemoryConfigRepository repository(ccs::make_app_paths(fixture.root / "callbacks"));
-    ccs::ConfigEditingService editing(repository);
+    ccs::ConfigurationEditor editing(repository);
     FakeApplicationControl application;
     MemoryPreferences preferences;
     ccs::MainWindowViewModel dispatched(
@@ -631,6 +710,108 @@ void test_noop_profile_mutations_preserve_clean_draft() {
         "setting the existing enabled value is a clean no-op");
 }
 
+void test_typed_fields_and_rules_text_workflow() {
+    Fixture fixture;
+    auto profile = complete_profile("/typed");
+    profile.rules.push_back(enabled_rule(
+        "remove-image", "remove_tool", {{"tool", "image_gen"}}));
+    fixture.repository.mutable_document().profiles.emplace("typed", std::move(profile));
+    auto state = submit_and_wait(fixture.view_model, {ccs::MainWindowCommand::LoadDraft});
+    require(state->selected_profile_key
+            && state->profile_editor
+            && state->profile_editor->fields.size() == ccs::profile_field_descriptors().size()
+            && state->application_fields.size() == ccs::application_field_descriptors().size(),
+        "0.7 ViewModel publishes descriptor-driven Profile and application fields");
+    require(state->rules_editor
+            && state->rules_editor->text.find("ccs-trans.rules/v1") != std::string::npos
+            && state->rules_editor->text.find("remove-image") != std::string::npos,
+        "selected Profile publishes canonical Rule text");
+
+    ccs::MainWindowCommandRequest profile_update;
+    profile_update.command = ccs::MainWindowCommand::UpdateProfileFields;
+    profile_update.profile_id = "typed";
+    profile_update.profile_key = state->selected_profile_key;
+    profile_update.field_edits.push_back({
+        "upstream.base-url",
+        ccs::ConfigurationFieldValue{std::string{"https://updated.example.com"}},
+    });
+    state = submit_and_wait(fixture.view_model, std::move(profile_update));
+    const auto* upstream = find_field(
+        state->profile_editor->fields, "upstream.base-url");
+    require(state->last_command->succeeded()
+            && state->draft.phase == ccs::DraftPhase::Dirty
+            && upstream != nullptr
+            && upstream->value
+            && std::get<std::string>(*upstream->value) == "https://updated.example.com",
+        "typed Profile field update is reflected in the shared editor state");
+
+    ccs::MainWindowCommandRequest invalid_settings;
+    invalid_settings.command = ccs::MainWindowCommand::UpdateApplicationFields;
+    invalid_settings.field_edits.push_back({
+        "listener.port",
+        ccs::ConfigurationFieldValue{static_cast<std::uint64_t>(17070)},
+    });
+    invalid_settings.field_edits.push_back({
+        "runtime.max-connections",
+        ccs::ConfigurationFieldValue{static_cast<std::uint64_t>(0)},
+    });
+    state = submit_and_wait(fixture.view_model, std::move(invalid_settings));
+    const auto* unchanged_port = find_field(state->application_fields, "listener.port");
+    require(state->last_command->error == ccs::MainWindowError::ValidationFailed
+            && unchanged_port != nullptr
+            && std::get<std::uint64_t>(*unchanged_port->value) == 15723,
+        "invalid typed Settings batch is atomic");
+
+    ccs::MainWindowCommandRequest settings_update;
+    settings_update.command = ccs::MainWindowCommand::UpdateApplicationFields;
+    settings_update.field_edits.push_back({
+        "listener.port",
+        ccs::ConfigurationFieldValue{static_cast<std::uint64_t>(17070)},
+    });
+    settings_update.field_edits.push_back({
+        "logging.body",
+        ccs::ConfigurationFieldValue{false},
+    });
+    state = submit_and_wait(fixture.view_model, std::move(settings_update));
+    const auto* updated_port = find_field(state->application_fields, "listener.port");
+    require(state->last_command->succeeded()
+            && updated_port != nullptr
+            && std::get<std::uint64_t>(*updated_port->value) == 17070,
+        "typed Settings update publishes the new draft values");
+
+    ccs::MainWindowCommandRequest invalid_rules;
+    invalid_rules.command = ccs::MainWindowCommand::ReplaceRulesText;
+    invalid_rules.profile_id = "typed";
+    invalid_rules.profile_key = state->selected_profile_key;
+    invalid_rules.text = "{\n  invalid";
+    state = submit_and_wait(fixture.view_model, std::move(invalid_rules));
+    require(state->last_command->error == ccs::MainWindowError::ValidationFailed
+            && state->rules_editor
+            && state->rules_editor->diagnostic
+            && state->rules_editor->text == "{\n  invalid",
+        "invalid Rule text preserves editor content and publishes a diagnostic");
+
+    ccs::MainWindowCommandRequest format_rules;
+    format_rules.command = ccs::MainWindowCommand::FormatRulesText;
+    format_rules.profile_id = "typed";
+    format_rules.profile_key = state->selected_profile_key;
+    format_rules.text = R"({"schema_version":"ccs-trans.rules/v1","rules":[{"options":{"tool":"web_search"},"type":"remove_tool","enabled":true,"id":"remove-web"}]})";
+    state = submit_and_wait(fixture.view_model, std::move(format_rules));
+    require(state->last_command->succeeded()
+            && state->rules_editor
+            && !state->rules_editor->diagnostic
+            && state->rules_editor->text.find("\n  \"rules\": [") != std::string::npos
+            && state->rules_editor->text.find("remove-web") != std::string::npos,
+        "Format validates and publishes canonical Rule text");
+
+    state = submit_and_wait(fixture.view_model, {ccs::MainWindowCommand::ApplyDraft});
+    require(state->last_command->succeeded()
+            && fixture.repository.document().application.listener.port == 17070
+            && fixture.repository.document().profiles.at("typed").rules.front().id.value
+                == "remove-web",
+        "Apply persists Profile fields, Settings, and Rule text together");
+}
+
 } // namespace
 
 int main() {
@@ -642,6 +823,7 @@ int main() {
         test_preference_failure_preserves_published_value();
         test_route_collision_is_classified_without_mutating_draft();
         test_noop_profile_mutations_preserve_clean_draft();
+        test_typed_fields_and_rules_text_workflow();
         std::cout << "main window view model tests ok\n";
         return 0;
     } catch (const std::exception& ex) {

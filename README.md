@@ -8,9 +8,9 @@ distribution is `0.6.0-Windows-x64`; the ad-hoc signed macOS distribution is
 The checked-out development source is `0.7.0-dev`. Its Windows implementation
 currently includes the 512 MiB process inflight budget, SQLite Profile/Rule
 storage, `ccs-trans.config/v3`, explicit v2 migration, typed field commands,
-and canonical Rule text. It is not a release build: both packaging scripts
-reject the `-dev` suffix. macOS validation for this development state remains
-a separate platform acceptance item.
+canonical Rule text, and the accepted Windows Profiles/Rules/Settings editor.
+It is not a release build: both packaging scripts reject the `-dev` suffix.
+The matching AppKit layout and macOS validation remain separate platform work.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
@@ -58,8 +58,13 @@ instance. Both native views provide service controls and basic Profile create,
 rename, remove, enable, Apply, Discard, and Reload Draft operations through the
 same shared ViewModel. Reload Draft is distinct from service Reload; a dirty
 draft requires explicit discard confirmation before disk state can replace it.
-Each Profile shows enabled and total Rule counts. Lightweight mode destroys a
-closed main window while leaving the desktop host and listener running; normal
+The current Windows `0.7.0-dev` view additionally provides complete typed
+Profile and application fields plus canonical Rule text editing in stable
+Profiles, Rules, and Settings views. The AppKit implementation will follow the
+same accepted information architecture and overall layout while retaining the
+native macOS appearance. Each Profile shows enabled and total Rule counts.
+Lightweight mode destroys a closed main window while leaving the desktop host
+and listener running; normal
 mode hides and reuses it. The published `0.6.0` package retains
 `ccs-trans.config/v2`; the current `0.7.0-dev` source uses v3 application
 settings plus SQLite Profile/Rule storage.

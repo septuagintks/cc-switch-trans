@@ -45,6 +45,7 @@ cc-switch-trans/
       config_store.hpp/.cpp
       configuration_conversion.hpp
       configuration_editor.hpp/.cpp
+      configuration_repository.hpp
       configuration_snapshot.hpp/.cpp
       field_descriptor.hpp/.cpp
       profile_model.hpp
@@ -78,6 +79,7 @@ cc-switch-trans/
         tray_main.cpp
         windows_error.hpp/.cpp
         windows_host_platform.hpp/.cpp
+        windows_theme.hpp/.cpp
     logging/
       logger.hpp/.cpp
     presentation/
@@ -299,12 +301,13 @@ tools/
 ```
 
 ICO 与 RC 生成结果位于 CMake binary directory，不放回 `assets/`。Windows tray source
-只编译进 `ccs-trans-tray.exe`；`main_window.*` 持有 Win32 top-level/child HWND 和 DPI 布局，
+只编译进 `ccs-trans-tray.exe`；`main_window.*` 持有 Win32 top-level/child HWND、三视图、裁剪滚动容器和
+DPI 布局，`windows_theme.*` 集中持有 Windows palette/metrics、系统 appearance 与 GDI+ 圆角绘制，
 `tray_app.*` 持有宿主生命周期并把共享 ViewModel callback 派发回 UI thread。`ApplicationController`、
 control executor、presentation 与 HostPlatform 接口编译进共享 core，CLI 已复用共享 runtime loader。
-`run_tray_integration.py` 使用隔离 instance suffix 自动验证基础 Profile 编辑、Rule 摘要、CLI/GUI
-stale Apply 与显式 Reload Draft、dirty close、普通/轻量窗口、第二实例、两轮各 100 次资源生命周期，
-以及窗口抖动期间 `desktop-16` 完整回传。
+`run_tray_integration.py` 使用隔离 instance suffix 自动验证 Profile/typed Settings/Rule 文本编辑、
+CLI/GUI stale Apply 与显式 Reload Draft、dirty close、普通/轻量窗口、第二实例、两轮各 100 次资源
+生命周期，以及窗口抖动期间 `desktop-16` 完整回传。
 
 macOS 当前实现：
 
@@ -337,7 +340,8 @@ ICNS 都从它派生到 build/package directory，不能反向编辑或提交生
 文件拆分可在保持上述依赖边界的前提下调整，不要求为每个 adapter 建静态库。
 
 `main_window.*` 持有 AppKit `NSWindowController`、Auto Layout、Profile controls、dirty-close 和
-普通/轻量窗口生命周期。`menu_app.mm` 继续唯一持有 `ApplicationController`、共享 control executor、
+普通/轻量窗口生命周期。`0.7-G` 在这里按 Windows 已验收的三视图信息架构补齐布局与功能，但继续使用
+AppKit 原生主题、控件与滚动。`menu_app.mm` 继续唯一持有 `ApplicationController`、共享 control executor、
 ViewModel、menu/status item、distributed notification 与退出编排；窗口不创建第二套 runtime。
 `run_macos_menu_integration.py` 通过隔离 `HOME` 和仅测试启用的 scoped notification 自动验证窗口
 功能、Rule 摘要、CLI/GUI stale Apply 与显式 Reload Draft、100 次资源生命周期、pending Quit，

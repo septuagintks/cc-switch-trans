@@ -1,11 +1,12 @@
 #pragma once
 
-#include "config/composite_config_repository.hpp"
+#include "config/configuration_repository.hpp"
 #include "config/field_descriptor.hpp"
 #include "config/rules_text.hpp"
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -24,7 +25,7 @@ struct ResetConfigurationFieldCommand {
 
 class ConfigurationEditor final {
 public:
-    explicit ConfigurationEditor(CompositeConfigRepository& repository);
+    explicit ConfigurationEditor(ConfigurationRepository& repository);
 
     bool begin(std::string& error);
     void discard() noexcept;
@@ -33,6 +34,11 @@ public:
 
     bool apply(const SetConfigurationFieldCommand& command, std::string& error);
     bool apply(const ResetConfigurationFieldCommand& command, std::string& error);
+    bool apply_batch(
+        std::span<const SetConfigurationFieldCommand> set_commands,
+        std::span<const ResetConfigurationFieldCommand> reset_commands,
+        bool validate_candidate,
+        std::string& error);
 
     bool create_profile(std::string profile_id, std::string& error);
     bool create_profile(
@@ -94,7 +100,7 @@ private:
     const StoredProfile* find_profile(ProfileKey profile_key) const;
     bool require_active(std::string& error) const;
 
-    CompositeConfigRepository& repository_;
+    ConfigurationRepository& repository_;
     ConfigurationSnapshot draft_;
     ProfileKey next_draft_profile_key_ = -1;
     RuleKey next_draft_rule_key_ = -1;

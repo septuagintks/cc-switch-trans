@@ -22,7 +22,7 @@ auto find_rule(StoredProfile& profile, std::string_view rule_id) {
 
 } // namespace
 
-ConfigurationEditor::ConfigurationEditor(CompositeConfigRepository& repository)
+ConfigurationEditor::ConfigurationEditor(ConfigurationRepository& repository)
     : repository_(repository) {}
 
 bool ConfigurationEditor::begin(std::string& error) {
@@ -155,6 +155,35 @@ bool ConfigurationEditor::apply(
         return false;
     }
     return reset_profile_field(*profile, *descriptor, error);
+}
+
+bool ConfigurationEditor::apply_batch(
+    std::span<const SetConfigurationFieldCommand> set_commands,
+    std::span<const ResetConfigurationFieldCommand> reset_commands,
+    bool validate_candidate,
+    std::string& error) {
+    error.clear();
+    if (!require_active(error)) {
+        return false;
+    }
+    auto previous = draft_;
+    for (const auto& command : set_commands) {
+        if (!apply(command, error)) {
+            draft_ = std::move(previous);
+            return false;
+        }
+    }
+    for (const auto& command : reset_commands) {
+        if (!apply(command, error)) {
+            draft_ = std::move(previous);
+            return false;
+        }
+    }
+    if (validate_candidate && !validate(error)) {
+        draft_ = std::move(previous);
+        return false;
+    }
+    return true;
 }
 
 bool ConfigurationEditor::create_profile(std::string profile_id, std::string& error) {

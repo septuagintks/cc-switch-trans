@@ -2,6 +2,7 @@
 
 #include "config/application_config.hpp"
 #include "config/config_repository.hpp"
+#include "config/configuration_repository.hpp"
 #include "config/configuration_snapshot.hpp"
 
 #include <string>
@@ -28,7 +29,9 @@ enum class MigrationOutcome {
     AlreadyMigrated,
 };
 
-class CompositeConfigRepository final : public ConfigRepository {
+class CompositeConfigRepository final
+    : public ConfigRepository
+    , public ConfigurationRepository {
 public:
     explicit CompositeConfigRepository(AppPaths paths);
 
@@ -38,14 +41,14 @@ public:
     bool save_snapshot(
         const ConfigurationSnapshot& desired,
         ConfigurationSnapshot& committed,
-        std::string& error);
+        std::string& error) override;
     bool inspect_storage(StorageStatus& status, std::string& error);
     bool migrate_v2(MigrationOutcome& outcome, std::string& error);
     bool verify_storage(std::string& error);
 
     bool loaded() const override;
     const ConfigDocument& document() const override;
-    const ConfigurationSnapshot& snapshot() const;
+    const ConfigurationSnapshot& snapshot() const override;
     const AppPaths& paths() const override;
     ConfigRepositoryFailure last_failure() const noexcept override;
 

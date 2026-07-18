@@ -1,6 +1,8 @@
 #pragma once
 
 #include "app/application_status.hpp"
+#include "config/field_descriptor.hpp"
+#include "config/rules_text.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -24,7 +26,12 @@ enum class MainWindowCommand {
     CreateProfile,
     RenameProfile,
     RemoveProfile,
+    MoveProfile,
     SetProfileEnabled,
+    UpdateProfileFields,
+    UpdateApplicationFields,
+    ReplaceRulesText,
+    FormatRulesText,
     ApplyDraft,
     DiscardDraft,
     SetLightweightMode,
@@ -76,6 +83,7 @@ enum class ProfileReadiness {
 };
 
 struct ProfileListItem {
+    ProfileKey key = 0;
     std::string id;
     bool enabled = false;
     std::optional<std::string> protocol;
@@ -85,6 +93,45 @@ struct ProfileListItem {
     std::size_t enabled_rule_count = 0;
 
     bool operator==(const ProfileListItem&) const = default;
+};
+
+struct ConfigurationFieldEdit {
+    std::string key;
+    std::optional<ConfigurationFieldValue> value;
+
+    bool operator==(const ConfigurationFieldEdit&) const = default;
+};
+
+struct ConfigurationFieldState {
+    std::string key;
+    ConfigurationFieldScope scope = ConfigurationFieldScope::Application;
+    ConfigurationFieldInputKind input_kind = ConfigurationFieldInputKind::Text;
+    bool required = true;
+    std::optional<std::uint64_t> minimum;
+    std::optional<std::uint64_t> maximum;
+    std::vector<std::string> enum_values;
+    std::string display_name_key;
+    RuntimeApplyImpact apply_impact = RuntimeApplyImpact::RuntimeReload;
+    std::optional<ConfigurationFieldValue> value;
+
+    bool operator==(const ConfigurationFieldState&) const = default;
+};
+
+struct ProfileEditorState {
+    ProfileKey key = 0;
+    std::string profile_id;
+    std::vector<ConfigurationFieldState> fields;
+
+    bool operator==(const ProfileEditorState&) const = default;
+};
+
+struct RulesEditorState {
+    ProfileKey profile_key = 0;
+    std::string profile_id;
+    std::string text;
+    std::optional<RulesTextError> diagnostic;
+
+    bool operator==(const RulesEditorState&) const = default;
 };
 
 enum class DraftPhase {
@@ -118,7 +165,11 @@ struct MainWindowState {
     std::uint64_t revision = 0;
     ApplicationStatus application;
     std::vector<ProfileListItem> profiles;
+    std::vector<ConfigurationFieldState> application_fields;
     std::optional<std::string> selected_profile_id;
+    std::optional<ProfileKey> selected_profile_key;
+    std::optional<ProfileEditorState> profile_editor;
+    std::optional<RulesEditorState> rules_editor;
     DraftState draft;
     std::optional<CommandResult> last_command;
     bool lightweight_mode = true;
@@ -161,7 +212,11 @@ void sort_profile_list_items(std::vector<ProfileListItem>& profiles);
 const ProfileListItem* find_profile_list_item(
     const MainWindowState& state,
     std::string_view profile_id) noexcept;
+const ProfileListItem* find_profile_list_item(
+    const MainWindowState& state,
+    ProfileKey profile_key) noexcept;
 bool select_profile(MainWindowState& state, std::string_view profile_id);
+bool select_profile(MainWindowState& state, ProfileKey profile_key);
 void clear_profile_selection(MainWindowState& state) noexcept;
 
 MainWindowCloseAction resolve_main_window_close(

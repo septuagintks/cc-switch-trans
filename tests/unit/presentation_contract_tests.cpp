@@ -18,11 +18,11 @@ void test_profile_list_and_service_contract() {
     ccs::MainWindowState state;
     state.profiles = {
         ccs::ProfileListItem{
-            "zeta", false, std::nullopt, ccs::ProfileReadiness::Incomplete, {}},
+            3, "zeta", false, std::nullopt, ccs::ProfileReadiness::Incomplete, {}},
         ccs::ProfileListItem{
-            "alpha", true, std::string{"responses"}, ccs::ProfileReadiness::Ready, {}},
+            1, "alpha", true, std::string{"responses"}, ccs::ProfileReadiness::Ready, {}},
         ccs::ProfileListItem{
-            "middle", false, std::string{"chat"}, ccs::ProfileReadiness::Incomplete, {}},
+            2, "middle", false, std::string{"chat"}, ccs::ProfileReadiness::Incomplete, {}},
     };
     const auto original_profiles = state.profiles;
     ccs::sort_profile_list_items(state.profiles);
@@ -33,6 +33,7 @@ void test_profile_list_and_service_contract() {
         "Profile list is ordered by stable id");
     require(ccs::select_profile(state, "middle"), "known Profile can be selected");
     require(state.selected_profile_id == "middle", "selection is stored as UI state");
+    require(state.selected_profile_key == 2, "selection keeps the stable Profile key");
     require(!ccs::select_profile(state, "missing"), "unknown Profile selection is rejected");
     require(state.selected_profile_id == "middle", "failed selection preserves current selection");
     require(state.profiles[1].enabled == original_profiles[2].enabled,

@@ -9,11 +9,12 @@
 0.6.0-macOS-arm64
 ```
 
-当前开发源码为 `0.7.0-dev`。Windows 侧已完成 `0.7-A1/A2`、`0.7-B/C/D/E`：全进程 inflight
+当前开发源码为 `0.7.0-dev`。Windows 侧已完成 `0.7-A1/A2`、`0.7-B/C/D/E/F`：全进程 inflight
 budget、SQLite 3.53.3、schema v1、`ccs-trans.config/v3`、固定 `profiles.db`、组合 revision/恢复
 journal、显式 v2 migration、共享 field descriptor/typed command、Composite CLI 和 canonical
-Rule 文本模型均已进入生产路径。请求热路径仍只读取 immutable generation，不访问 JSON、SQLite、
-GUI 或 descriptor。`0.7-A3` 的 platform-local 实现与证据已回传；Windows 已修复回传指出的
+Rule 文本模型，以及 Win32 Profiles/Rules/Settings 三视图和轻量圆角主题均已进入生产路径。
+请求热路径仍只读取 immutable generation，不访问 JSON、SQLite、GUI 或 descriptor。`0.7-A3` 的
+platform-local 实现与证据已回传；Windows 已修复回传指出的
 AppleClang dead constant 和 macOS temp symlink 测试夹具，仍需 macOS 在合并后提交上复验正式
 warnings/default CTest，因此不能把 Windows 结果外推为完整 macOS passed。
 
@@ -52,8 +53,10 @@ SQL、GUI 查询或 Rule descriptor 枚举。
 7. `0.7-G`：交接并完成 AppKit 对等实现；
 8. `0.7-H`：完成数据/故障矩阵、负载与常驻测试、双平台同提交打包和签名发布。
 
-当前顺序：macOS 复验并关闭 `0.7-A3` 的两个共享 blocker，同时 Windows 进入 `0.7-F` 三视图与轻量
-圆角主题；`0.7-F` 冻结共享 GUI 合同后交接 `0.7-G`。`0.7-D/E` 不再保留“实现中”的旧分支方案。
+当前顺序：`0.7-F` 已完成 Windows 验收并冻结共享 GUI 合同，下一步交接 `0.7-G` AppKit 对等实现，
+同时由 macOS 关闭 `0.7-A3` 合并后复验。macOS 的信息架构、视图顺序和整体布局以已验收 Windows
+窗口为基准，但继续使用 AppKit 原生主题、控件、focus、滚动与辅助功能，不复制 Windows 自绘主题。
+`0.7-D/E/F` 不再保留“实现中”的旧分支方案。
 
 冻结边界：v3 应用设置继续位于 `config.json`，Profile/Rule 位于固定 `profiles.db`；迁移必须显式
 确认并可恢复；runtime 只消费 immutable 组合 snapshot；请求期禁止 SQL、文件 I/O 或 GUI 查询。

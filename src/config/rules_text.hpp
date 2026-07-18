@@ -18,6 +18,8 @@ struct RulesTextError {
     std::string rule_id;
     std::string rule_type;
     std::string option;
+
+    bool operator==(const RulesTextError&) const = default;
 };
 
 bool parse_rules_text(
