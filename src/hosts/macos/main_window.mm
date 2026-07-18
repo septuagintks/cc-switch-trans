@@ -4,9 +4,12 @@
 
 #import <AppKit/AppKit.h>
 
+#include <algorithm>
 #include <charconv>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -53,7 +56,118 @@ NSButton* push_button(NSString* title, id target, SEL action, NSString* accessib
     return button;
 }
 
+NSString* field_display_name(std::string_view key) {
+    if (key == "field.listener.host") return @"Listener address";
+    if (key == "field.listener.port") return @"Listener port";
+    if (key == "field.runtime.worker_threads") return @"Worker threads";
+    if (key == "field.runtime.max_connections") return @"Maximum connections";
+    if (key == "field.runtime.max_request_body_size") return @"Request body limit (bytes)";
+    if (key == "field.runtime.max_response_body_size") return @"Response body limit (bytes)";
+    if (key == "field.runtime.max_inflight_bytes") return @"Inflight memory budget (bytes)";
+    if (key == "field.runtime.metrics_interval_ms") return @"Metrics interval (ms)";
+    if (key == "field.timeouts.resolve_ms") return @"Resolve timeout (ms)";
+    if (key == "field.timeouts.connect_ms") return @"Connect timeout (ms)";
+    if (key == "field.timeouts.send_ms") return @"Send timeout (ms)";
+    if (key == "field.timeouts.response_header_ms") return @"Response header timeout (ms)";
+    if (key == "field.timeouts.stream_idle_ms") return @"Stream idle timeout (ms)";
+    if (key == "field.timeouts.total_ms") return @"Total timeout (ms)";
+    if (key == "field.logging.path") return @"Log path";
+    if (key == "field.logging.level") return @"Log level";
+    if (key == "field.logging.body") return @"Record bodies";
+    if (key == "field.logging.redact_sensitive") return @"Redact sensitive headers";
+    if (key == "field.logging.body_limit") return @"Logged body limit (bytes)";
+    if (key == "field.logging.queue_capacity") return @"Log queue capacity (bytes)";
+    if (key == "field.logging.max_total_size") return @"Total log limit (bytes)";
+    if (key == "field.logging.flush_interval_ms") return @"Log flush interval (ms)";
+    if (key == "field.profile.protocol") return @"Protocol";
+    if (key == "field.profile.local_request_path") return @"Local request path";
+    if (key == "field.profile.local_usage_path") return @"Local usage path";
+    if (key == "field.profile.upstream_base_url") return @"Upstream base URL";
+    if (key == "field.profile.upstream_request_path") return @"Upstream request path";
+    if (key == "field.profile.upstream_usage_path") return @"Upstream usage path";
+    return @"Configuration field";
+}
+
+NSString* field_value_text(const ccs::ConfigurationFieldValue& value) {
+    if (const auto* text = std::get_if<std::string>(&value)) {
+        return ns_string(*text);
+    }
+    if (const auto* number = std::get_if<std::uint64_t>(&value)) {
+        return [NSString stringWithFormat:@"%llu", static_cast<unsigned long long>(*number)];
+    }
+    return std::get<bool>(value) ? @"true" : @"false";
+}
+
+std::string canonical_newlines(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        if (value[index] == '\r') {
+            if (index + 1 < value.size() && value[index + 1] == '\n') {
+                continue;
+            }
+            result.push_back('\n');
+        } else {
+            result.push_back(value[index]);
+        }
+    }
+    return result;
+}
+
+const ccs::ConfigurationFieldState* find_field_state(
+    const std::vector<ccs::ConfigurationFieldState>& fields,
+    std::string_view key) {
+    const auto found = std::find_if(fields.begin(), fields.end(), [key](const auto& field) {
+        return field.key == key;
+    });
+    return found == fields.end() ? nullptr : &*found;
+}
+
+NSControl* configuration_field_control(
+    const ccs::ConfigurationFieldDescriptor& descriptor,
+    id target,
+    SEL action) {
+    const auto name = field_display_name(descriptor.display_name_key);
+    if (descriptor.input_kind == ccs::ConfigurationFieldInputKind::Boolean) {
+        NSButton* checkbox = [NSButton checkboxWithTitle:@"On" target:target action:action];
+        checkbox.accessibilityLabel = name;
+        return checkbox;
+    }
+    if (descriptor.input_kind == ccs::ConfigurationFieldInputKind::Enumeration) {
+        NSPopUpButton* popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+        popup.target = target;
+        popup.action = action;
+        popup.accessibilityLabel = name;
+        if (!descriptor.required) {
+            [popup addItemWithTitle:@"Not configured"];
+        }
+        for (const auto value : descriptor.enum_values) {
+            [popup addItemWithTitle:ns_string(std::string(value))];
+        }
+        return popup;
+    }
+    NSTextField* field = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    field.accessibilityLabel = name;
+    if (!descriptor.required) {
+        field.placeholderString = @"Not configured";
+    }
+    return field;
+}
+
 } // namespace
+
+typedef NS_ENUM(NSInteger, CCSMainWindowView) {
+    CCSMainWindowViewProfiles,
+    CCSMainWindowViewRules,
+    CCSMainWindowViewSettings,
+};
+
+@interface CCSFlippedView : NSView
+@end
+
+@implementation CCSFlippedView
+- (BOOL)isFlipped { return YES; }
+@end
 
 @interface CCSMainWindowResource : NSWindow
 @end
@@ -113,7 +227,7 @@ public:
 
     MainWindowStateSnapshot state() const { return state_; }
     const ProfileListItem* selected_profile() const noexcept;
-    void submit(MainWindowCommandRequest request);
+    bool submit(MainWindowCommandRequest request);
     void request_window_close(
         std::optional<UnsavedChangesDecision> decision = std::nullopt);
 
@@ -139,14 +253,23 @@ private:
 @interface CCSMainWindowController : NSWindowController <
     NSWindowDelegate,
     NSTableViewDataSource,
-    NSTableViewDelegate> {
+    NSTableViewDelegate,
+    NSTextFieldDelegate,
+    NSTextViewDelegate> {
     ccs::MacMainWindow::Impl* _owner;
+    NSTextField* _brandLabel;
     NSTextField* _serviceStatus;
     NSTextField* _listenerStatus;
     NSButton* _startButton;
     NSButton* _stopButton;
     NSButton* _reloadButton;
     NSButton* _lightweightCheckbox;
+    NSButton* _profilesNavigationButton;
+    NSButton* _rulesNavigationButton;
+    NSButton* _settingsNavigationButton;
+    NSView* _profilesView;
+    NSView* _rulesView;
+    NSView* _settingsView;
     NSTableView* _profileTable;
     NSTextField* _newProfileField;
     NSButton* _addButton;
@@ -158,10 +281,35 @@ private:
     NSTextField* _readinessValue;
     NSTextField* _rulesValue;
     NSTextField* _profileDetail;
+    NSMutableArray<NSDictionary<NSString*, id>*>* _profileFieldControls;
+    NSButton* _updateProfileFieldsButton;
+    NSPopUpButton* _rulesProfilePopup;
+    NSTextView* _rulesTextView;
+    NSTextField* _rulesStatus;
+    NSButton* _formatRulesButton;
+    NSButton* _updateRulesButton;
+    NSMutableArray<NSDictionary<NSString*, id>*>* _settingsFieldControls;
+    NSButton* _updateSettingsButton;
     NSTextField* _commandStatus;
     NSButton* _reloadDraftButton;
     NSButton* _applyButton;
     NSButton* _discardButton;
+    NSString* _localStatus;
+    BOOL _localStatusIsError;
+    CCSMainWindowView _currentView;
+    BOOL _profileLocalDirty;
+    BOOL _rulesLocalDirty;
+    BOOL _settingsLocalDirty;
+    BOOL _profileUpdateAwaiting;
+    BOOL _rulesUpdateAwaiting;
+    BOOL _settingsUpdateAwaiting;
+    std::uint64_t _profileUpdatePreviousSequence;
+    std::uint64_t _rulesUpdatePreviousSequence;
+    std::uint64_t _settingsUpdatePreviousSequence;
+    BOOL _hasProfileLocalKey;
+    BOOL _hasRulesLocalKey;
+    ccs::ProfileKey _profileLocalKey;
+    ccs::ProfileKey _rulesLocalKey;
     BOOL _updating;
     BOOL _resourceCounted;
 }
@@ -169,8 +317,22 @@ private:
 - (instancetype)initWithOwner:(ccs::MacMainWindow::Impl*)owner;
 - (void)invalidateOwner;
 - (void)render;
+- (void)showView:(CCSMainWindowView)view;
+- (CCSMainWindowView)currentView;
 - (void)configureKeyLoop;
 - (void)setLocalStatus:(NSString*)message error:(BOOL)error;
+- (BOOL)hasLocalEdits;
+- (void)discardLocalEdits;
+- (BOOL)confirmDiscardLocalEdits;
+- (BOOL)confirmDiscardProfileEditors;
+- (void)resolvePendingEditorUpdates;
+- (void)updateEnabledStates;
+- (void)populateFieldControls:(NSArray<NSDictionary<NSString*, id>*>*)entries
+    states:(const std::vector<ccs::ConfigurationFieldState>&)states;
+- (BOOL)collectFieldEdits:(NSArray<NSDictionary<NSString*, id>*>*)entries
+    states:(const std::vector<ccs::ConfigurationFieldState>&)states
+    edits:(std::vector<ccs::ConfigurationFieldEdit>&)edits
+    error:(std::string&)error;
 - (BOOL)validateLayout:(std::string&)error;
 - (BOOL)validateKeyboard:(std::string&)error;
 - (BOOL)validateRetina:(std::string&)error;
@@ -182,7 +344,7 @@ private:
 
 - (instancetype)initWithOwner:(ccs::MacMainWindow::Impl*)owner {
     NSWindow* window = [[CCSMainWindowResource alloc]
-        initWithContentRect:NSMakeRect(0.0, 0.0, 900.0, 590.0)
+        initWithContentRect:NSMakeRect(0.0, 0.0, 1120.0, 720.0)
         styleMask:(NSWindowStyleMaskTitled
             | NSWindowStyleMaskClosable
             | NSWindowStyleMaskMiniaturizable
@@ -197,7 +359,7 @@ private:
     ++live_controller_count;
     _owner = owner;
     window.title = @"ccs-trans";
-    window.minSize = NSMakeSize(760.0, 500.0);
+    window.minSize = NSMakeSize(920.0, 620.0);
     window.restorable = NO;
     window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.excludedFromWindowsMenu = YES;
@@ -205,7 +367,9 @@ private:
     window.delegate = self;
     [window center];
 
-    _serviceStatus = label(@"Service: stopped", @"Service status");
+    _brandLabel = label(@"ccs-trans", @"ccs-trans");
+    _brandLabel.font = [NSFont systemFontOfSize:22.0 weight:NSFontWeightSemibold];
+    _serviceStatus = label(@"Stopped", @"Service status");
     _serviceStatus.font = [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold];
     _listenerStatus = label(@"Listener inactive", @"Listener address");
     _startButton = push_button(@"Start", self, @selector(startService:), @"Start service");
@@ -217,22 +381,49 @@ private:
     _lightweightCheckbox.accessibilityLabel = @"Lightweight Mode";
 
     NSStackView* serviceText = [NSStackView stackViewWithViews:@[_serviceStatus, _listenerStatus]];
-    serviceText.orientation = NSUserInterfaceLayoutOrientationVertical;
-    serviceText.alignment = NSLayoutAttributeLeading;
-    serviceText.spacing = 3.0;
+    serviceText.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    serviceText.alignment = NSLayoutAttributeCenterY;
+    serviceText.spacing = 14.0;
+    NSStackView* identity = [NSStackView stackViewWithViews:@[_brandLabel, serviceText]];
+    identity.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    identity.alignment = NSLayoutAttributeCenterY;
+    identity.spacing = 24.0;
     NSStackView* serviceActions = [NSStackView stackViewWithViews:@[
         _startButton, _stopButton, _reloadButton, _lightweightCheckbox]];
     serviceActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     serviceActions.alignment = NSLayoutAttributeCenterY;
     serviceActions.spacing = 8.0;
-    NSStackView* serviceRow = [NSStackView stackViewWithViews:@[serviceText, serviceActions]];
+    NSStackView* serviceRow = [NSStackView stackViewWithViews:@[identity, serviceActions]];
     serviceRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     serviceRow.alignment = NSLayoutAttributeCenterY;
     serviceRow.distribution = NSStackViewDistributionFill;
-    [serviceText setContentHuggingPriority:NSLayoutPriorityDefaultLow
+    [identity setContentHuggingPriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationHorizontal];
     [serviceActions setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
+
+    _profilesNavigationButton = push_button(
+        @"Profiles", self, @selector(showProfiles:), @"Show Profiles editor");
+    _rulesNavigationButton = push_button(
+        @"Rules", self, @selector(showRules:), @"Show Rules editor");
+    _settingsNavigationButton = push_button(
+        @"Settings", self, @selector(showSettings:), @"Show Settings editor");
+    for (NSButton* button in @[
+             _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton]) {
+        [button setButtonType:NSButtonTypeToggle];
+        button.alignment = NSTextAlignmentLeft;
+        button.bezelStyle = NSBezelStyleTexturedRounded;
+    }
+    NSStackView* navigation = [NSStackView stackViewWithViews:@[
+        _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton]];
+    navigation.orientation = NSUserInterfaceLayoutOrientationVertical;
+    navigation.alignment = NSLayoutAttributeLeading;
+    navigation.spacing = 8.0;
+    for (NSButton* button in @[
+             _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton]) {
+        [button.widthAnchor constraintEqualToAnchor:navigation.widthAnchor].active = YES;
+        [button.heightAnchor constraintEqualToConstant:38.0].active = YES;
+    }
 
     _profileTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
     _profileTable.dataSource = self;
@@ -264,23 +455,35 @@ private:
     _newProfileField = [[NSTextField alloc] initWithFrame:NSZeroRect];
     _newProfileField.placeholderString = @"New Profile ID";
     _newProfileField.accessibilityLabel = @"New Profile ID";
-    _addButton = push_button(@"Add", self, @selector(addProfile:), @"Add Profile");
-    _removeButton = push_button(@"Remove", self, @selector(removeProfile:), @"Remove selected Profile");
+    NSImage* addImage = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:@"Add Profile"];
+    NSImage* removeImage = [NSImage imageWithSystemSymbolName:@"trash" accessibilityDescription:@"Remove Profile"];
+    _addButton = [NSButton buttonWithImage:addImage target:self action:@selector(addProfile:)];
+    _addButton.accessibilityLabel = @"Add Profile";
+    _addButton.toolTip = @"Add Profile";
+    _removeButton = [NSButton buttonWithImage:removeImage target:self action:@selector(removeProfile:)];
+    _removeButton.accessibilityLabel = @"Remove selected Profile";
+    _removeButton.toolTip = @"Remove selected Profile";
+    _addButton.bezelStyle = NSBezelStyleRounded;
+    _removeButton.bezelStyle = NSBezelStyleRounded;
+    [_addButton.widthAnchor constraintEqualToConstant:32.0].active = YES;
+    [_removeButton.widthAnchor constraintEqualToConstant:32.0].active = YES;
     NSStackView* addRow = [NSStackView stackViewWithViews:@[
         _newProfileField, _addButton, _removeButton]];
     addRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     addRow.spacing = 8.0;
     [_newProfileField setContentHuggingPriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView* profiles = [NSStackView stackViewWithViews:@[
-        label(@"Profiles", @"Profiles section"), tableScroll, addRow]];
-    profiles.orientation = NSUserInterfaceLayoutOrientationVertical;
-    profiles.alignment = NSLayoutAttributeLeading;
-    profiles.spacing = 8.0;
-    [tableScroll.widthAnchor constraintGreaterThanOrEqualToConstant:275.0].active = YES;
-    [tableScroll.heightAnchor constraintGreaterThanOrEqualToConstant:270.0].active = YES;
-    [tableScroll.widthAnchor constraintEqualToAnchor:profiles.widthAnchor].active = YES;
-    [addRow.widthAnchor constraintEqualToAnchor:profiles.widthAnchor].active = YES;
+    NSTextField* profilesHeading = label(@"Profiles", @"Profiles list heading");
+    profilesHeading.font = [NSFont systemFontOfSize:17.0 weight:NSFontWeightSemibold];
+    NSStackView* profilesList = [NSStackView stackViewWithViews:@[
+        profilesHeading, tableScroll, addRow]];
+    profilesList.orientation = NSUserInterfaceLayoutOrientationVertical;
+    profilesList.alignment = NSLayoutAttributeLeading;
+    profilesList.spacing = 8.0;
+    [tableScroll.widthAnchor constraintEqualToAnchor:profilesList.widthAnchor].active = YES;
+    [addRow.widthAnchor constraintEqualToAnchor:profilesList.widthAnchor].active = YES;
+    [tableScroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
 
     _renameField = [[NSTextField alloc] initWithFrame:NSZeroRect];
     _renameField.placeholderString = @"Profile ID";
@@ -293,52 +496,236 @@ private:
         target:self
         action:@selector(toggleProfileEnabled:)];
     _enabledCheckbox.accessibilityLabel = @"Profile enabled";
-    _protocolValue = label(@"No Profile selected", @"Profile protocol");
-    _readinessValue = label(@"", @"Profile readiness");
-    _rulesValue = label(@"", @"Profile Rule summary");
-    _profileDetail = label(@"", @"Profile validation detail");
+    _protocolValue = label(@"", @"Profile protocol");
+    _readinessValue = label(@"No selection", @"Profile readiness");
+    _rulesValue = label(@"0 enabled / 0 total", @"Profile Rule summary");
+    _profileDetail = label(@"Select or create a Profile.", @"Profile validation detail");
     _profileDetail.lineBreakMode = NSLineBreakByWordWrapping;
     _profileDetail.maximumNumberOfLines = 0;
     [_profileDetail setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
-    NSGridView* detailsGrid = [NSGridView gridViewWithViews:@[
-        @[label(@"Protocol", @"Protocol label"), _protocolValue],
-        @[label(@"Readiness", @"Readiness label"), _readinessValue],
-        @[label(@"Rules", @"Rules label"), _rulesValue],
-        @[label(@"Details", @"Validation details label"), _profileDetail],
-    ]];
-    detailsGrid.rowSpacing = 12.0;
-    detailsGrid.columnSpacing = 14.0;
-    [detailsGrid columnAtIndex:0].xPlacement = NSGridCellPlacementLeading;
-    [detailsGrid columnAtIndex:1].xPlacement = NSGridCellPlacementFill;
+    _profileFieldControls = [NSMutableArray array];
+    NSMutableArray<NSArray<NSView*>*>* profileFieldRows = [NSMutableArray array];
+    for (const auto& descriptor : ccs::profile_field_descriptors()) {
+        if (descriptor.key == "id" || descriptor.key == "enabled") {
+            continue;
+        }
+        const auto name = field_display_name(descriptor.display_name_key);
+        NSControl* input = configuration_field_control(
+            descriptor, self, @selector(profileFieldChanged:));
+        input.identifier = ns_string(std::string(descriptor.key));
+        if ([input isKindOfClass:NSTextField.class]) {
+            static_cast<NSTextField*>(input).delegate = self;
+        }
+        [_profileFieldControls addObject:@{
+            @"key": ns_string(std::string(descriptor.key)),
+            @"input": input,
+            @"kind": @(static_cast<NSInteger>(descriptor.input_kind)),
+            @"required": @(descriptor.required),
+            @"name": name,
+        }];
+        [profileFieldRows addObject:@[label(name, name), input]];
+    }
+    NSGridView* profileFieldsGrid = [NSGridView gridViewWithViews:profileFieldRows];
+    profileFieldsGrid.rowSpacing = 10.0;
+    profileFieldsGrid.columnSpacing = 18.0;
+    [profileFieldsGrid columnAtIndex:0].xPlacement = NSGridCellPlacementLeading;
+    [profileFieldsGrid columnAtIndex:1].xPlacement = NSGridCellPlacementFill;
+    _updateProfileFieldsButton = push_button(
+        @"Update Profile", self, @selector(updateProfileFields:), @"Update Profile fields");
+    NSTextField* profileDetailsHeading = label(@"Profile details", @"Profile details heading");
+    profileDetailsHeading.font = [NSFont systemFontOfSize:17.0 weight:NSFontWeightSemibold];
+    NSStackView* readinessRow = [NSStackView stackViewWithViews:@[
+        label(@"Readiness", @"Readiness label"), _readinessValue,
+        label(@"Rules", @"Rules label"), _rulesValue]];
+    readinessRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    readinessRow.alignment = NSLayoutAttributeCenterY;
+    readinessRow.spacing = 8.0;
+    NSStackView* profileUpdateRow = [NSStackView stackViewWithViews:@[
+        _profileDetail, _updateProfileFieldsButton]];
+    profileUpdateRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    profileUpdateRow.alignment = NSLayoutAttributeCenterY;
+    profileUpdateRow.spacing = 12.0;
+    [_profileDetail setContentHuggingPriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView* details = [NSStackView stackViewWithViews:@[
-        label(@"Profile Details", @"Profile details section"),
-        renameRow,
-        _enabledCheckbox,
-        detailsGrid,
-    ]];
+        profileDetailsHeading, readinessRow, renameRow, _enabledCheckbox,
+        profileFieldsGrid, profileUpdateRow]];
     details.orientation = NSUserInterfaceLayoutOrientationVertical;
     details.alignment = NSLayoutAttributeLeading;
-    details.spacing = 12.0;
+    details.spacing = 10.0;
     [renameRow.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
-    [detailsGrid.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
+    [profileFieldsGrid.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
+    [profileUpdateRow.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
+
+    CCSFlippedView* detailsDocument = [[CCSFlippedView alloc]
+        initWithFrame:NSMakeRect(0.0, 0.0, 560.0, 470.0)];
+    detailsDocument.autoresizingMask = NSViewWidthSizable;
+    details.translatesAutoresizingMaskIntoConstraints = NO;
+    [detailsDocument addSubview:details];
+    [NSLayoutConstraint activateConstraints:@[
+        [details.leadingAnchor constraintEqualToAnchor:detailsDocument.leadingAnchor constant:12.0],
+        [details.trailingAnchor constraintEqualToAnchor:detailsDocument.trailingAnchor constant:-12.0],
+        [details.topAnchor constraintEqualToAnchor:detailsDocument.topAnchor constant:8.0],
+    ]];
+    NSScrollView* detailsScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    detailsScroll.documentView = detailsDocument;
+    detailsScroll.hasVerticalScroller = YES;
+    detailsScroll.borderType = NSNoBorder;
 
     NSSplitView* split = [[NSSplitView alloc] initWithFrame:NSZeroRect];
     split.vertical = YES;
     split.dividerStyle = NSSplitViewDividerStyleThin;
-    [split addArrangedSubview:profiles];
-    [split addArrangedSubview:details];
-    [profiles.widthAnchor constraintGreaterThanOrEqualToConstant:275.0].active = YES;
-    [details.widthAnchor constraintGreaterThanOrEqualToConstant:330.0].active = YES;
+    [split addArrangedSubview:profilesList];
+    [split addArrangedSubview:detailsScroll];
+    [profilesList.widthAnchor constraintGreaterThanOrEqualToConstant:275.0].active = YES;
+    [profilesList.widthAnchor constraintLessThanOrEqualToConstant:340.0].active = YES;
+    [detailsScroll.widthAnchor constraintGreaterThanOrEqualToConstant:430.0].active = YES;
+    _profilesView = split;
+
+    _rulesProfilePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    _rulesProfilePopup.target = self;
+    _rulesProfilePopup.action = @selector(selectRulesProfile:);
+    _rulesProfilePopup.accessibilityLabel = @"Rules Profile";
+    _formatRulesButton = push_button(
+        @"Format", self, @selector(formatRules:), @"Format Rules text");
+    _updateRulesButton = push_button(
+        @"Update Rules", self, @selector(updateRules:), @"Update Rules text");
+    NSTextField* rulesHeading = label(@"Rules", @"Rules editor heading");
+    rulesHeading.font = [NSFont systemFontOfSize:17.0 weight:NSFontWeightSemibold];
+    NSStackView* rulesActions = [NSStackView stackViewWithViews:@[
+        _rulesProfilePopup, _formatRulesButton, _updateRulesButton]];
+    rulesActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    rulesActions.alignment = NSLayoutAttributeCenterY;
+    rulesActions.spacing = 8.0;
+    [_rulesProfilePopup setContentHuggingPriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    _rulesTextView = [[NSTextView alloc] initWithFrame:NSZeroRect];
+    _rulesTextView.delegate = self;
+    _rulesTextView.accessibilityLabel = @"Rules JSON";
+    _rulesTextView.font = [NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular];
+    _rulesTextView.automaticQuoteSubstitutionEnabled = NO;
+    _rulesTextView.automaticDashSubstitutionEnabled = NO;
+    _rulesTextView.automaticTextReplacementEnabled = NO;
+    _rulesTextView.textContainerInset = NSMakeSize(8.0, 8.0);
+    _rulesTextView.minSize = NSMakeSize(0.0, 0.0);
+    _rulesTextView.maxSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
+    _rulesTextView.verticallyResizable = YES;
+    _rulesTextView.horizontallyResizable = NO;
+    _rulesTextView.autoresizingMask = NSViewWidthSizable;
+    _rulesTextView.textContainer.widthTracksTextView = YES;
+    NSScrollView* rulesScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    rulesScroll.documentView = _rulesTextView;
+    rulesScroll.hasVerticalScroller = YES;
+    rulesScroll.hasHorizontalScroller = NO;
+    rulesScroll.borderType = NSBezelBorder;
+    _rulesStatus = label(@"Select a Profile to edit its Rules.", @"Rules validation status");
+    _rulesStatus.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSStackView* rulesStack = [NSStackView stackViewWithViews:@[
+        rulesHeading, rulesActions, rulesScroll, _rulesStatus]];
+    rulesStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    rulesStack.alignment = NSLayoutAttributeLeading;
+    rulesStack.spacing = 10.0;
+    [rulesActions.widthAnchor constraintEqualToAnchor:rulesStack.widthAnchor].active = YES;
+    [rulesScroll.widthAnchor constraintEqualToAnchor:rulesStack.widthAnchor].active = YES;
+    [rulesScroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
+    _rulesView = rulesStack;
+
+    _settingsFieldControls = [NSMutableArray array];
+    NSMutableArray<NSArray<NSView*>*>* settingsFieldRows = [NSMutableArray array];
+    for (const auto& descriptor : ccs::application_field_descriptors()) {
+        const auto name = field_display_name(descriptor.display_name_key);
+        NSControl* input = configuration_field_control(
+            descriptor, self, @selector(settingsFieldChanged:));
+        input.identifier = ns_string(std::string(descriptor.key));
+        if ([input isKindOfClass:NSTextField.class]) {
+            static_cast<NSTextField*>(input).delegate = self;
+        }
+        [_settingsFieldControls addObject:@{
+            @"key": ns_string(std::string(descriptor.key)),
+            @"input": input,
+            @"kind": @(static_cast<NSInteger>(descriptor.input_kind)),
+            @"required": @(descriptor.required),
+            @"name": name,
+        }];
+        [settingsFieldRows addObject:@[label(name, name), input]];
+    }
+    NSGridView* settingsGrid = [NSGridView gridViewWithViews:settingsFieldRows];
+    settingsGrid.rowSpacing = 10.0;
+    settingsGrid.columnSpacing = 18.0;
+    [settingsGrid columnAtIndex:0].xPlacement = NSGridCellPlacementLeading;
+    [settingsGrid columnAtIndex:1].xPlacement = NSGridCellPlacementFill;
+    const CGFloat settingsHeight = static_cast<CGFloat>(_settingsFieldControls.count) * 50.0;
+    CCSFlippedView* settingsDocument = [[CCSFlippedView alloc]
+        initWithFrame:NSMakeRect(0.0, 0.0, 720.0, settingsHeight)];
+    settingsDocument.autoresizingMask = NSViewWidthSizable;
+    settingsGrid.translatesAutoresizingMaskIntoConstraints = NO;
+    [settingsDocument addSubview:settingsGrid];
+    [NSLayoutConstraint activateConstraints:@[
+        [settingsGrid.leadingAnchor constraintEqualToAnchor:settingsDocument.leadingAnchor constant:8.0],
+        [settingsGrid.trailingAnchor constraintEqualToAnchor:settingsDocument.trailingAnchor constant:-12.0],
+        [settingsGrid.topAnchor constraintEqualToAnchor:settingsDocument.topAnchor constant:8.0],
+    ]];
+    NSScrollView* settingsScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    settingsScroll.documentView = settingsDocument;
+    settingsScroll.hasVerticalScroller = YES;
+    settingsScroll.borderType = NSNoBorder;
+    _updateSettingsButton = push_button(
+        @"Update Settings", self, @selector(updateSettings:), @"Update application Settings");
+    NSTextField* settingsHeading = label(@"Settings", @"Settings editor heading");
+    settingsHeading.font = [NSFont systemFontOfSize:17.0 weight:NSFontWeightSemibold];
+    NSStackView* settingsHeader = [NSStackView stackViewWithViews:@[
+        settingsHeading, _updateSettingsButton]];
+    settingsHeader.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    settingsHeader.alignment = NSLayoutAttributeCenterY;
+    settingsHeader.distribution = NSStackViewDistributionFill;
+    [settingsHeading setContentHuggingPriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView* settingsStack = [NSStackView stackViewWithViews:@[
+        settingsHeader, settingsScroll]];
+    settingsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    settingsStack.alignment = NSLayoutAttributeLeading;
+    settingsStack.spacing = 10.0;
+    [settingsHeader.widthAnchor constraintEqualToAnchor:settingsStack.widthAnchor].active = YES;
+    [settingsScroll.widthAnchor constraintEqualToAnchor:settingsStack.widthAnchor].active = YES;
+    [settingsScroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
+    _settingsView = settingsStack;
+
+    NSView* editorHost = [[NSView alloc] initWithFrame:NSZeroRect];
+    for (NSView* editor in @[_profilesView, _rulesView, _settingsView]) {
+        editor.translatesAutoresizingMaskIntoConstraints = NO;
+        [editorHost addSubview:editor];
+        [NSLayoutConstraint activateConstraints:@[
+            [editor.leadingAnchor constraintEqualToAnchor:editorHost.leadingAnchor],
+            [editor.trailingAnchor constraintEqualToAnchor:editorHost.trailingAnchor],
+            [editor.topAnchor constraintEqualToAnchor:editorHost.topAnchor],
+            [editor.bottomAnchor constraintEqualToAnchor:editorHost.bottomAnchor],
+        ]];
+    }
+    NSBox* navigationSeparator = [[NSBox alloc] initWithFrame:NSZeroRect];
+    navigationSeparator.boxType = NSBoxSeparator;
+    NSStackView* workspace = [NSStackView stackViewWithViews:@[
+        navigation, navigationSeparator, editorHost]];
+    workspace.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    workspace.alignment = NSLayoutAttributeTop;
+    workspace.spacing = 16.0;
+    [navigation.widthAnchor constraintEqualToConstant:132.0].active = YES;
+    [navigationSeparator.widthAnchor constraintEqualToConstant:1.0].active = YES;
+    [editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
 
     _commandStatus = label(@"", @"Command status");
     _commandStatus.lineBreakMode = NSLineBreakByTruncatingTail;
     _reloadDraftButton = push_button(
-        @"Reload Draft", self, @selector(reloadDraft:), @"Reload Profile configuration from disk");
-    _applyButton = push_button(@"Apply", self, @selector(applyDraft:), @"Apply Profile changes");
-    _discardButton = push_button(@"Discard", self, @selector(discardDraft:), @"Discard Profile changes");
+        @"Reload draft", self, @selector(reloadDraft:), @"Reload configuration from disk");
+    _discardButton = push_button(@"Discard", self, @selector(discardDraft:), @"Discard changes");
+    _applyButton = push_button(@"Apply changes", self, @selector(applyDraft:), @"Apply changes");
     NSStackView* footer = [NSStackView stackViewWithViews:@[
-        _commandStatus, _reloadDraftButton, _applyButton, _discardButton]];
+        _commandStatus, _reloadDraftButton, _discardButton, _applyButton]];
     footer.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     footer.alignment = NSLayoutAttributeCenterY;
     footer.spacing = 8.0;
@@ -351,11 +738,16 @@ private:
     [_discardButton setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    NSStackView* root = [NSStackView stackViewWithViews:@[serviceRow, split, footer]];
+    NSBox* headerSeparator = [[NSBox alloc] initWithFrame:NSZeroRect];
+    headerSeparator.boxType = NSBoxSeparator;
+    NSBox* footerSeparator = [[NSBox alloc] initWithFrame:NSZeroRect];
+    footerSeparator.boxType = NSBoxSeparator;
+    NSStackView* root = [NSStackView stackViewWithViews:@[
+        serviceRow, headerSeparator, workspace, footerSeparator, footer]];
     root.translatesAutoresizingMaskIntoConstraints = NO;
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
     root.alignment = NSLayoutAttributeLeading;
-    root.spacing = 14.0;
+    root.spacing = 10.0;
     NSView* content = [[NSView alloc] initWithFrame:NSZeroRect];
     window.contentView = content;
     [content addSubview:root];
@@ -365,10 +757,16 @@ private:
         [root.topAnchor constraintEqualToAnchor:content.topAnchor constant:16.0],
         [root.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-16.0],
         [serviceRow.widthAnchor constraintEqualToAnchor:root.widthAnchor],
-        [split.widthAnchor constraintEqualToAnchor:root.widthAnchor],
+        [headerSeparator.widthAnchor constraintEqualToAnchor:root.widthAnchor],
+        [workspace.widthAnchor constraintEqualToAnchor:root.widthAnchor],
+        [footerSeparator.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [footer.widthAnchor constraintEqualToAnchor:root.widthAnchor],
     ]];
+    [workspace setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
 
+    _localStatus = @"";
+    [self showView:CCSMainWindowViewProfiles];
     window.defaultButtonCell = _applyButton.cell;
     [self configureKeyLoop];
     return self;
@@ -381,16 +779,52 @@ private:
 }
 
 - (void)configureKeyLoop {
-    _newProfileField.nextKeyView = _addButton;
-    _addButton.nextKeyView = _removeButton;
-    _removeButton.nextKeyView = _profileTable;
-    _profileTable.nextKeyView = _renameField;
-    _renameField.nextKeyView = _renameButton;
-    _renameButton.nextKeyView = _enabledCheckbox;
-    _enabledCheckbox.nextKeyView = _reloadDraftButton;
-    _reloadDraftButton.nextKeyView = _applyButton;
-    _applyButton.nextKeyView = _discardButton;
-    _discardButton.nextKeyView = _newProfileField;
+    NSMutableArray<NSView*>* controls = [NSMutableArray arrayWithArray:@[
+        _startButton, _stopButton, _reloadButton, _lightweightCheckbox,
+        _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton,
+    ]];
+    if (_currentView == CCSMainWindowViewProfiles) {
+        [controls addObjectsFromArray:@[
+            _profileTable, _newProfileField, _addButton, _removeButton,
+            _renameField, _renameButton, _enabledCheckbox,
+        ]];
+        for (NSDictionary* entry in _profileFieldControls) {
+            [controls addObject:entry[@"input"]];
+        }
+        [controls addObject:_updateProfileFieldsButton];
+    } else if (_currentView == CCSMainWindowViewRules) {
+        [controls addObjectsFromArray:@[
+            _rulesProfilePopup, _rulesTextView, _formatRulesButton, _updateRulesButton,
+        ]];
+    } else {
+        for (NSDictionary* entry in _settingsFieldControls) {
+            [controls addObject:entry[@"input"]];
+        }
+        [controls addObject:_updateSettingsButton];
+    }
+    [controls addObjectsFromArray:@[_reloadDraftButton, _discardButton, _applyButton]];
+    for (NSUInteger index = 0; index < controls.count; ++index) {
+        NSView* current = controls[index];
+        current.nextKeyView = controls[(index + 1) % controls.count];
+    }
+}
+
+- (void)showView:(CCSMainWindowView)view {
+    _currentView = view;
+    _profilesView.hidden = view != CCSMainWindowViewProfiles;
+    _rulesView.hidden = view != CCSMainWindowViewRules;
+    _settingsView.hidden = view != CCSMainWindowViewSettings;
+    _profilesNavigationButton.state = view == CCSMainWindowViewProfiles
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    _rulesNavigationButton.state = view == CCSMainWindowViewRules
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    _settingsNavigationButton.state = view == CCSMainWindowViewSettings
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    [self configureKeyLoop];
+}
+
+- (CCSMainWindowView)currentView {
+    return _currentView;
 }
 
 - (void)invalidateOwner {
@@ -398,6 +832,261 @@ private:
     self.window.delegate = nil;
     _profileTable.dataSource = nil;
     _profileTable.delegate = nil;
+    _rulesTextView.delegate = nil;
+    for (NSDictionary* entry in _profileFieldControls) {
+        NSControl* input = entry[@"input"];
+        if ([input isKindOfClass:NSTextField.class]) {
+            static_cast<NSTextField*>(input).delegate = nil;
+        }
+    }
+    for (NSDictionary* entry in _settingsFieldControls) {
+        NSControl* input = entry[@"input"];
+        if ([input isKindOfClass:NSTextField.class]) {
+            static_cast<NSTextField*>(input).delegate = nil;
+        }
+    }
+}
+
+- (BOOL)hasLocalEdits {
+    return _profileLocalDirty || _rulesLocalDirty || _settingsLocalDirty
+        || _profileUpdateAwaiting || _rulesUpdateAwaiting || _settingsUpdateAwaiting;
+}
+
+- (void)discardLocalEdits {
+    _profileLocalDirty = NO;
+    _rulesLocalDirty = NO;
+    _settingsLocalDirty = NO;
+    _profileUpdateAwaiting = NO;
+    _rulesUpdateAwaiting = NO;
+    _settingsUpdateAwaiting = NO;
+    _hasProfileLocalKey = NO;
+    _hasRulesLocalKey = NO;
+    _localStatus = @"";
+    _localStatusIsError = NO;
+    if (_owner != nullptr) {
+        [self render];
+    }
+}
+
+- (BOOL)confirmDiscardLocalEdits {
+    if (![self hasLocalEdits]) {
+        return YES;
+    }
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"Unsubmitted editor changes";
+    alert.informativeText = @"Discard changes that have not been updated to the draft?";
+    [alert addButtonWithTitle:@"Discard local edits"];
+    [alert addButtonWithTitle:@"Keep editing"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+        return NO;
+    }
+    [self discardLocalEdits];
+    return YES;
+}
+
+- (BOOL)confirmDiscardProfileEditors {
+    if (!_profileLocalDirty && !_rulesLocalDirty
+        && !_profileUpdateAwaiting && !_rulesUpdateAwaiting) {
+        return YES;
+    }
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"Unsubmitted Profile editor changes";
+    alert.informativeText = @"Discard local Profile or Rules edits before changing selection?";
+    [alert addButtonWithTitle:@"Discard local edits"];
+    [alert addButtonWithTitle:@"Keep editing"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+        return NO;
+    }
+    _profileLocalDirty = NO;
+    _rulesLocalDirty = NO;
+    _profileUpdateAwaiting = NO;
+    _rulesUpdateAwaiting = NO;
+    _hasProfileLocalKey = NO;
+    _hasRulesLocalKey = NO;
+    return YES;
+}
+
+- (void)resolvePendingEditorUpdates {
+    if (_owner == nullptr) {
+        return;
+    }
+    const auto state = _owner->state();
+    if (state == nullptr || state->command_pending || !state->last_command) {
+        return;
+    }
+    const auto& result = *state->last_command;
+    if (_profileUpdateAwaiting
+        && result.sequence > _profileUpdatePreviousSequence
+        && result.command == ccs::MainWindowCommand::UpdateProfileFields) {
+        _profileUpdateAwaiting = NO;
+        if (result.succeeded()) {
+            _profileLocalDirty = NO;
+            _hasProfileLocalKey = NO;
+        }
+    }
+    if (_rulesUpdateAwaiting
+        && result.sequence > _rulesUpdatePreviousSequence
+        && (result.command == ccs::MainWindowCommand::ReplaceRulesText
+            || result.command == ccs::MainWindowCommand::FormatRulesText)) {
+        _rulesUpdateAwaiting = NO;
+        if (result.succeeded()) {
+            _rulesLocalDirty = NO;
+            _hasRulesLocalKey = NO;
+        }
+    }
+    if (_settingsUpdateAwaiting
+        && result.sequence > _settingsUpdatePreviousSequence
+        && result.command == ccs::MainWindowCommand::UpdateApplicationFields) {
+        _settingsUpdateAwaiting = NO;
+        if (result.succeeded()) {
+            _settingsLocalDirty = NO;
+        }
+    }
+}
+
+- (void)populateFieldControls:(NSArray<NSDictionary<NSString*, id>*>*)entries
+    states:(const std::vector<ccs::ConfigurationFieldState>&)states {
+    for (NSDictionary* entry in entries) {
+        const auto key = utf8_string(entry[@"key"]);
+        const auto* field = find_field_state(states, key);
+        if (field == nullptr) {
+            continue;
+        }
+        NSControl* input = entry[@"input"];
+        if (field->input_kind == ccs::ConfigurationFieldInputKind::Boolean) {
+            const bool checked = field->value
+                && std::holds_alternative<bool>(*field->value)
+                && std::get<bool>(*field->value);
+            static_cast<NSButton*>(input).state = checked
+                ? NSControlStateValueOn : NSControlStateValueOff;
+        } else if (field->input_kind == ccs::ConfigurationFieldInputKind::Enumeration) {
+            NSPopUpButton* popup = static_cast<NSPopUpButton*>(input);
+            if (!field->value && !field->required) {
+                [popup selectItemAtIndex:0];
+            } else if (field->value) {
+                [popup selectItemWithTitle:field_value_text(*field->value)];
+            }
+        } else {
+            NSTextField* text = static_cast<NSTextField*>(input);
+            text.stringValue = field->value ? field_value_text(*field->value) : @"";
+        }
+    }
+}
+
+- (BOOL)collectFieldEdits:(NSArray<NSDictionary<NSString*, id>*>*)entries
+    states:(const std::vector<ccs::ConfigurationFieldState>&)states
+    edits:(std::vector<ccs::ConfigurationFieldEdit>&)edits
+    error:(std::string&)error {
+    edits.clear();
+    error.clear();
+    edits.reserve(entries.count);
+    for (NSDictionary* entry in entries) {
+        const auto key = utf8_string(entry[@"key"]);
+        const auto* field = find_field_state(states, key);
+        if (field == nullptr) {
+            error = "field is not present in the current snapshot: " + key;
+            return NO;
+        }
+        NSControl* input = entry[@"input"];
+        std::string raw;
+        if (field->input_kind == ccs::ConfigurationFieldInputKind::Boolean) {
+            raw = static_cast<NSButton*>(input).state == NSControlStateValueOn
+                ? "true" : "false";
+        } else if (field->input_kind == ccs::ConfigurationFieldInputKind::Enumeration) {
+            NSPopUpButton* popup = static_cast<NSPopUpButton*>(input);
+            const NSInteger index = popup.indexOfSelectedItem;
+            if (!field->required && index == 0) {
+                if (!field->value) {
+                    continue;
+                }
+                edits.push_back({key, std::nullopt});
+                continue;
+            }
+            raw = utf8_string(popup.titleOfSelectedItem);
+        } else {
+            raw = utf8_string(static_cast<NSTextField*>(input).stringValue);
+            if (raw.empty() && !field->required) {
+                if (!field->value) {
+                    continue;
+                }
+                edits.push_back({key, std::nullopt});
+                continue;
+            }
+        }
+        const auto* descriptor = ccs::find_configuration_field_descriptor(
+            field->scope, key);
+        ccs::ConfigurationFieldValue value;
+        std::string parse_error;
+        if (descriptor == nullptr
+            || !ccs::parse_configuration_field_value(*descriptor, raw, value, parse_error)) {
+            error = utf8_string(entry[@"name"]);
+            error += ": ";
+            error += parse_error;
+            [self.window makeFirstResponder:input];
+            return NO;
+        }
+        if (field->value && *field->value == value) {
+            continue;
+        }
+        edits.push_back({key, std::move(value)});
+    }
+    return YES;
+}
+
+- (void)profileFieldChanged:(id)sender {
+    (void)sender;
+    if (_updating || _owner == nullptr) {
+        return;
+    }
+    const auto state = _owner->state();
+    if (state && state->profile_editor) {
+        _profileLocalDirty = YES;
+        _hasProfileLocalKey = YES;
+        _profileLocalKey = state->profile_editor->key;
+        [self updateEnabledStates];
+    }
+}
+
+- (void)settingsFieldChanged:(id)sender {
+    (void)sender;
+    if (_updating || _owner == nullptr) {
+        return;
+    }
+    _settingsLocalDirty = YES;
+    [self updateEnabledStates];
+}
+
+- (void)controlTextDidChange:(NSNotification*)notification {
+    if (_updating) {
+        return;
+    }
+    id object = notification.object;
+    for (NSDictionary* entry in _profileFieldControls) {
+        if (entry[@"input"] == object) {
+            [self profileFieldChanged:object];
+            return;
+        }
+    }
+    for (NSDictionary* entry in _settingsFieldControls) {
+        if (entry[@"input"] == object) {
+            [self settingsFieldChanged:object];
+            return;
+        }
+    }
+}
+
+- (void)textDidChange:(NSNotification*)notification {
+    if (!_updating && notification.object == _rulesTextView && _owner != nullptr) {
+        const auto state = _owner->state();
+        if (state && state->rules_editor) {
+            _rulesLocalDirty = YES;
+            _hasRulesLocalKey = YES;
+            _rulesLocalKey = state->rules_editor->profile_key;
+            [self updateEnabledStates];
+        }
+    }
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView*)tableView {
@@ -444,9 +1133,19 @@ private:
         return;
     }
     const auto& profile = state->profiles[static_cast<std::size_t>(row)];
-    if (!state->selected_profile_id || *state->selected_profile_id != profile.id) {
-        _owner->submit({ccs::MainWindowCommand::SelectProfile, profile.id});
+    if (state->selected_profile_key && *state->selected_profile_key == profile.key) {
+        return;
     }
+    if (![self confirmDiscardProfileEditors]) {
+        _updating = YES;
+        [self render];
+        _updating = NO;
+        return;
+    }
+    ccs::MainWindowCommandRequest request{
+        ccs::MainWindowCommand::SelectProfile, profile.id};
+    request.profile_key = profile.key;
+    _owner->submit(std::move(request));
 }
 
 - (BOOL)windowShouldClose:(NSWindow*)sender {
@@ -465,9 +1164,9 @@ private:
     if (state == nullptr) {
         return;
     }
+    [self resolvePendingEditorUpdates];
     _updating = YES;
-    _serviceStatus.stringValue = [NSString stringWithFormat:@"Service: %s",
-        ccs::application_state_name(state->application.state)];
+    _serviceStatus.stringValue = ns_string(ccs::application_state_name(state->application.state));
     if (state->application.listener_host.empty() || state->application.listener_port == 0) {
         _listenerStatus.stringValue = @"Listener inactive";
     } else {
@@ -480,7 +1179,14 @@ private:
         : NSControlStateValueOff;
     [_profileTable reloadData];
     NSInteger selected_row = -1;
-    if (state->selected_profile_id) {
+    if (state->selected_profile_key) {
+        for (std::size_t index = 0; index < state->profiles.size(); ++index) {
+            if (state->profiles[index].key == *state->selected_profile_key) {
+                selected_row = static_cast<NSInteger>(index);
+                break;
+            }
+        }
+    } else if (state->selected_profile_id) {
         for (std::size_t index = 0; index < state->profiles.size(); ++index) {
             if (state->profiles[index].id == *state->selected_profile_id) {
                 selected_row = static_cast<NSInteger>(index);
@@ -498,19 +1204,29 @@ private:
 
     const auto* profile = _owner->selected_profile();
     if (profile == nullptr) {
-        _renameField.stringValue = @"";
-        _enabledCheckbox.state = NSControlStateValueOff;
+        if (!_profileLocalDirty) {
+            _renameField.stringValue = @"";
+            _enabledCheckbox.state = NSControlStateValueOff;
+        }
         _protocolValue.stringValue = @"No Profile selected";
         _readinessValue.stringValue = @"";
         _rulesValue.stringValue = @"";
-        _profileDetail.stringValue = @"";
-    } else {
-        if (utf8_string(_renameField.stringValue) != profile->id) {
-            _renameField.stringValue = ns_string(profile->id);
+        if (!_profileLocalDirty) {
+            _profileDetail.stringValue = @"Select or create a Profile.";
         }
-        _enabledCheckbox.state = profile->enabled
-            ? NSControlStateValueOn
-            : NSControlStateValueOff;
+    } else {
+        if (!_profileLocalDirty) {
+            if (utf8_string(_renameField.stringValue) != profile->id) {
+                _renameField.stringValue = ns_string(profile->id);
+            }
+            _enabledCheckbox.state = profile->enabled
+                ? NSControlStateValueOn
+                : NSControlStateValueOff;
+            if (state->profile_editor) {
+                [self populateFieldControls:_profileFieldControls
+                    states:state->profile_editor->fields];
+            }
+        }
         _protocolValue.stringValue = profile->protocol
             ? ns_string(*profile->protocol)
             : @"Not configured";
@@ -521,7 +1237,49 @@ private:
         _profileDetail.stringValue = ns_string(profile->status_detail);
     }
 
-    if (state->command_pending) {
+    [_rulesProfilePopup removeAllItems];
+    NSInteger selected_rule_index = -1;
+    for (std::size_t index = 0; index < state->profiles.size(); ++index) {
+        const auto& item = state->profiles[index];
+        [_rulesProfilePopup addItemWithTitle:ns_string(item.id)];
+        [_rulesProfilePopup itemAtIndex:static_cast<NSInteger>(index)].representedObject =
+            @(static_cast<long long>(item.key));
+        if (state->rules_editor && item.key == state->rules_editor->profile_key) {
+            selected_rule_index = static_cast<NSInteger>(index);
+        }
+    }
+    if (selected_rule_index >= 0) {
+        [_rulesProfilePopup selectItemAtIndex:selected_rule_index];
+    }
+    if (state->rules_editor) {
+        if (!_rulesLocalDirty) {
+            _rulesTextView.string = ns_string(canonical_newlines(state->rules_editor->text));
+        }
+        if (state->rules_editor->diagnostic) {
+            const auto& diagnostic = *state->rules_editor->diagnostic;
+            _rulesStatus.stringValue = [NSString stringWithFormat:@"Line %zu, column %zu: %@",
+                diagnostic.line, diagnostic.column, ns_string(diagnostic.message)];
+            _rulesStatus.textColor = NSColor.systemRedColor;
+        } else {
+            _rulesStatus.stringValue = @"Canonical ccs-trans.rules/v1 JSON";
+            _rulesStatus.textColor = NSColor.secondaryLabelColor;
+        }
+    } else {
+        if (!_rulesLocalDirty) {
+            _rulesTextView.string = @"";
+        }
+        _rulesStatus.stringValue = @"Select a Profile to edit its Rules.";
+        _rulesStatus.textColor = NSColor.secondaryLabelColor;
+    }
+    if (!_settingsLocalDirty && !_settingsUpdateAwaiting) {
+        [self populateFieldControls:_settingsFieldControls states:state->application_fields];
+    }
+
+    if (_localStatus.length > 0) {
+        [_commandStatus setStringValue:_localStatus];
+        _commandStatus.textColor = _localStatusIsError
+            ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+    } else if (state->command_pending) {
         [self setLocalStatus:@"Working..." error:NO];
     } else if (state->last_command) {
         const auto& result = *state->last_command;
@@ -537,29 +1295,59 @@ private:
         [self setLocalStatus:@"" error:NO];
     }
 
+    [self updateEnabledStates];
+    _updating = NO;
+}
+
+- (void)setLocalStatus:(NSString*)message error:(BOOL)error {
+    _localStatus = message == nil ? @"" : message;
+    _localStatusIsError = error;
+    _commandStatus.stringValue = _localStatus;
+    _commandStatus.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+}
+
+- (void)updateEnabledStates {
+    if (_owner == nullptr) {
+        return;
+    }
+    const auto state = _owner->state();
+    if (state == nullptr) {
+        return;
+    }
     const bool pending = state->command_pending;
     const auto service_actions = ccs::service_actions_for(state->application.state);
     _startButton.enabled = !pending && service_actions.can_start;
     _stopButton.enabled = !pending && service_actions.can_stop;
     _reloadButton.enabled = !pending && service_actions.can_reload;
     _lightweightCheckbox.enabled = !pending;
+    _profilesNavigationButton.enabled = !pending;
+    _rulesNavigationButton.enabled = !pending;
+    _settingsNavigationButton.enabled = !pending;
     _profileTable.enabled = !pending;
     _newProfileField.enabled = !pending;
     _addButton.enabled = !pending;
-    const bool has_profile = profile != nullptr;
+    const bool has_profile = _owner->selected_profile() != nullptr;
     _removeButton.enabled = !pending && has_profile;
     _renameField.enabled = !pending && has_profile;
     _renameButton.enabled = !pending && has_profile;
     _enabledCheckbox.enabled = !pending && has_profile;
+    for (NSDictionary* entry in _profileFieldControls) {
+        static_cast<NSControl*>(entry[@"input"]).enabled = !pending && has_profile;
+    }
+    _updateProfileFieldsButton.enabled = !pending && has_profile;
+    _rulesProfilePopup.enabled = !pending && !state->profiles.empty();
+    _rulesTextView.editable = !pending && has_profile;
+    _formatRulesButton.enabled = !pending && has_profile;
+    _updateRulesButton.enabled = !pending && has_profile;
+    for (NSDictionary* entry in _settingsFieldControls) {
+        static_cast<NSControl*>(entry[@"input"]).enabled = !pending;
+    }
+    _updateSettingsButton.enabled = !pending && _settingsFieldControls.count > 0;
     _reloadDraftButton.enabled = !pending && state->draft.loaded() && !state->draft.busy();
-    _applyButton.enabled = !pending && state->draft.dirty();
-    _discardButton.enabled = !pending && state->draft.dirty();
-    _updating = NO;
-}
-
-- (void)setLocalStatus:(NSString*)message error:(BOOL)error {
-    _commandStatus.stringValue = message == nil ? @"" : message;
-    _commandStatus.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
+    const bool local_dirty = _profileLocalDirty || _rulesLocalDirty || _settingsLocalDirty
+        || _profileUpdateAwaiting || _rulesUpdateAwaiting || _settingsUpdateAwaiting;
+    _applyButton.enabled = !pending && state->draft.dirty() && !local_dirty;
+    _discardButton.enabled = !pending && (state->draft.dirty() || local_dirty);
 }
 
 - (BOOL)validateLayout:(std::string&)error {
@@ -579,13 +1367,21 @@ private:
         error = "main window has no valid backing scale";
         return NO;
     }
-    const NSArray<NSView*>* required_controls = @[
-        _serviceStatus, _listenerStatus, _startButton, _stopButton, _reloadButton,
-        _lightweightCheckbox, _profileTable, _newProfileField, _addButton, _removeButton,
-        _renameField, _renameButton, _enabledCheckbox, _protocolValue, _readinessValue,
-        _rulesValue, _profileDetail, _commandStatus, _reloadDraftButton, _applyButton,
-        _discardButton,
-    ];
+    NSMutableArray<NSView*>* required_controls = [NSMutableArray arrayWithArray:@[
+        _brandLabel, _serviceStatus, _listenerStatus, _startButton, _stopButton, _reloadButton,
+        _lightweightCheckbox, _profilesNavigationButton, _rulesNavigationButton,
+        _settingsNavigationButton, _profileTable, _newProfileField, _addButton, _removeButton,
+        _renameField, _renameButton, _enabledCheckbox, _readinessValue, _rulesValue,
+        _profileDetail, _updateProfileFieldsButton, _rulesProfilePopup, _rulesTextView,
+        _rulesStatus, _formatRulesButton, _updateRulesButton, _updateSettingsButton,
+        _commandStatus, _reloadDraftButton, _applyButton, _discardButton,
+    ]];
+    for (NSDictionary* entry in _profileFieldControls) {
+        [required_controls addObject:entry[@"input"]];
+    }
+    for (NSDictionary* entry in _settingsFieldControls) {
+        [required_controls addObject:entry[@"input"]];
+    }
     for (NSView* control in required_controls) {
         if (control.accessibilityLabel.length == 0) {
             error = "a main window control is missing its accessibility label";
@@ -601,20 +1397,41 @@ private:
         error = "main window has no default button";
         return NO;
     }
-    NSSet<NSView*>* required = [NSSet setWithArray:@[
-        _newProfileField, _addButton, _removeButton, _profileTable, _renameField,
-        _renameButton, _enabledCheckbox, _reloadDraftButton, _applyButton, _discardButton,
+    NSMutableArray<NSView*>* expected = [NSMutableArray arrayWithArray:@[
+        _startButton, _stopButton, _reloadButton, _lightweightCheckbox,
+        _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton,
     ]];
+    if (_currentView == CCSMainWindowViewProfiles) {
+        [expected addObjectsFromArray:@[
+            _profileTable, _newProfileField, _addButton, _removeButton,
+            _renameField, _renameButton, _enabledCheckbox,
+        ]];
+        for (NSDictionary* entry in _profileFieldControls) {
+            [expected addObject:entry[@"input"]];
+        }
+        [expected addObject:_updateProfileFieldsButton];
+    } else if (_currentView == CCSMainWindowViewRules) {
+        [expected addObjectsFromArray:@[
+            _rulesProfilePopup, _rulesTextView, _formatRulesButton, _updateRulesButton,
+        ]];
+    } else {
+        for (NSDictionary* entry in _settingsFieldControls) {
+            [expected addObject:entry[@"input"]];
+        }
+        [expected addObject:_updateSettingsButton];
+    }
+    [expected addObjectsFromArray:@[_reloadDraftButton, _discardButton, _applyButton]];
+    NSSet<NSView*>* required = [NSSet setWithArray:expected];
     NSMutableSet<NSView*>* visited = [NSMutableSet set];
-    NSView* current = _newProfileField;
-    for (NSInteger step = 0; current != nil && step < 64; ++step) {
+    NSView* current = expected.firstObject;
+    for (NSInteger step = 0; current != nil && step < 128; ++step) {
         [visited addObject:current];
         current = current.nextKeyView;
-        if (current == _newProfileField) {
+        if (current == expected.firstObject) {
             break;
         }
     }
-    if (current != _newProfileField || ![required isSubsetOfSet:visited]) {
+    if (current != expected.firstObject || ![required isSubsetOfSet:visited]) {
         error = "main window Tab key loop does not reach every interactive editing control";
         return NO;
     }
@@ -645,6 +1462,154 @@ private:
         return NO;
     }
     return YES;
+}
+
+- (void)showProfiles:(id)sender {
+    (void)sender;
+    [self showView:CCSMainWindowViewProfiles];
+}
+
+- (void)showRules:(id)sender {
+    (void)sender;
+    [self showView:CCSMainWindowViewRules];
+}
+
+- (void)showSettings:(id)sender {
+    (void)sender;
+    [self showView:CCSMainWindowViewSettings];
+}
+
+- (void)selectRulesProfile:(id)sender {
+    (void)sender;
+    if (_updating || _owner == nullptr) {
+        return;
+    }
+    const auto state = _owner->state();
+    const NSInteger index = _rulesProfilePopup.indexOfSelectedItem;
+    if (state == nullptr || index < 0
+        || static_cast<std::size_t>(index) >= state->profiles.size()) {
+        return;
+    }
+    const auto& profile = state->profiles[static_cast<std::size_t>(index)];
+    if (state->rules_editor && state->rules_editor->profile_key == profile.key) {
+        return;
+    }
+    if (![self confirmDiscardProfileEditors]) {
+        _updating = YES;
+        [self render];
+        _updating = NO;
+        return;
+    }
+    ccs::MainWindowCommandRequest request{
+        ccs::MainWindowCommand::SelectProfile, profile.id};
+    request.profile_key = profile.key;
+    _owner->submit(std::move(request));
+}
+
+- (void)updateProfileFields:(id)sender {
+    (void)sender;
+    if (_owner == nullptr) {
+        return;
+    }
+    const auto state = _owner->state();
+    if (state == nullptr || !state->profile_editor || !state->selected_profile_key) {
+        return;
+    }
+    if (_hasProfileLocalKey && _profileLocalKey != state->profile_editor->key) {
+        [self setLocalStatus:@"The selected Profile changed; discard and re-enter local edits." error:YES];
+        return;
+    }
+    std::vector<ccs::ConfigurationFieldEdit> edits;
+    std::string error;
+    if (![self collectFieldEdits:_profileFieldControls
+        states:state->profile_editor->fields edits:edits error:error]) {
+        [self setLocalStatus:ns_string(error) error:YES];
+        return;
+    }
+    if (edits.empty()) {
+        _profileLocalDirty = NO;
+        _hasProfileLocalKey = NO;
+        [self setLocalStatus:@"Profile fields are up to date." error:NO];
+        [self render];
+        return;
+    }
+    ccs::MainWindowCommandRequest request;
+    request.command = ccs::MainWindowCommand::UpdateProfileFields;
+    request.profile_id = state->profile_editor->profile_id;
+    request.profile_key = state->profile_editor->key;
+    request.field_edits = std::move(edits);
+    _profileUpdatePreviousSequence = state->last_command
+        ? state->last_command->sequence : 0;
+    if (_owner->submit(std::move(request))) {
+        _profileUpdateAwaiting = YES;
+    }
+}
+
+- (void)updateSettings:(id)sender {
+    (void)sender;
+    if (_owner == nullptr) {
+        return;
+    }
+    const auto state = _owner->state();
+    if (state == nullptr) {
+        return;
+    }
+    std::vector<ccs::ConfigurationFieldEdit> edits;
+    std::string error;
+    if (![self collectFieldEdits:_settingsFieldControls
+        states:state->application_fields edits:edits error:error]) {
+        [self setLocalStatus:ns_string(error) error:YES];
+        return;
+    }
+    if (edits.empty()) {
+        _settingsLocalDirty = NO;
+        [self setLocalStatus:@"Settings are up to date." error:NO];
+        [self render];
+        return;
+    }
+    ccs::MainWindowCommandRequest request;
+    request.command = ccs::MainWindowCommand::UpdateApplicationFields;
+    request.field_edits = std::move(edits);
+    _settingsUpdatePreviousSequence = state->last_command
+        ? state->last_command->sequence : 0;
+    if (_owner->submit(std::move(request))) {
+        _settingsUpdateAwaiting = YES;
+    }
+}
+
+- (void)submitRulesUpdate:(ccs::MainWindowCommand)command {
+    if (_owner == nullptr) {
+        return;
+    }
+    const auto state = _owner->state();
+    if (state == nullptr || !state->rules_editor) {
+        [self setLocalStatus:@"Select a Profile before updating Rules." error:YES];
+        return;
+    }
+    if (_hasRulesLocalKey && _rulesLocalKey != state->rules_editor->profile_key) {
+        [self setLocalStatus:@"The selected Profile changed; discard and re-enter local Rules." error:YES];
+        return;
+    }
+    ccs::MainWindowCommandRequest request;
+    request.command = command;
+    request.profile_id = state->rules_editor->profile_id;
+    request.profile_key = state->rules_editor->profile_key;
+    request.text = canonical_newlines(utf8_string(_rulesTextView.string));
+    _rulesUpdatePreviousSequence = state->last_command
+        ? state->last_command->sequence : 0;
+    if (_owner->submit(std::move(request))) {
+        _rulesUpdateAwaiting = YES;
+    }
+}
+
+- (void)formatRules:(id)sender {
+    (void)sender;
+    [self submitRulesUpdate:ccs::MainWindowCommand::FormatRulesText];
+}
+
+- (void)updateRules:(id)sender {
+    (void)sender;
+    [self submitRulesUpdate:ccs::MainWindowCommand::ReplaceRulesText];
 }
 
 - (void)startService:(id)sender {
@@ -698,7 +1663,10 @@ private:
     if ([alert runModal] == NSAlertFirstButtonReturn && _owner != nullptr) {
         const auto state = _owner->state();
         if (state && state->selected_profile_id) {
-            _owner->submit({ccs::MainWindowCommand::RemoveProfile, *state->selected_profile_id});
+            ccs::MainWindowCommandRequest request{
+                ccs::MainWindowCommand::RemoveProfile, *state->selected_profile_id};
+            request.profile_key = state->selected_profile_key;
+            _owner->submit(std::move(request));
         }
     }
 }
@@ -713,11 +1681,12 @@ private:
         [self setLocalStatus:@"Profile ID cannot be empty." error:YES];
         return;
     }
-    _owner->submit({
+    ccs::MainWindowCommandRequest request{
         ccs::MainWindowCommand::RenameProfile,
         *state->selected_profile_id,
-        replacement,
-    });
+        replacement};
+    request.profile_key = state->selected_profile_key;
+    _owner->submit(std::move(request));
 }
 
 - (void)toggleProfileEnabled:(id)sender {
@@ -725,35 +1694,47 @@ private:
     if (_owner == nullptr || _updating) return;
     const auto state = _owner->state();
     if (state && state->selected_profile_id) {
-        _owner->submit({
+        ccs::MainWindowCommandRequest request{
             ccs::MainWindowCommand::SetProfileEnabled,
             *state->selected_profile_id,
             {},
-            _enabledCheckbox.state == NSControlStateValueOn,
-        });
+            _enabledCheckbox.state == NSControlStateValueOn};
+        request.profile_key = state->selected_profile_key;
+        _owner->submit(std::move(request));
     }
 }
 
 - (void)applyDraft:(id)sender {
     (void)sender;
-    if (_owner != nullptr) _owner->submit({ccs::MainWindowCommand::ApplyDraft});
+    if (_owner == nullptr) return;
+    if (_profileLocalDirty || _rulesLocalDirty || _settingsLocalDirty
+        || _profileUpdateAwaiting || _rulesUpdateAwaiting || _settingsUpdateAwaiting) {
+        [self setLocalStatus:@"Update the current editor before applying changes." error:YES];
+        return;
+    }
+    _owner->submit({ccs::MainWindowCommand::ApplyDraft});
 }
 
 - (void)reloadDraft:(id)sender {
     (void)sender;
     if (_owner == nullptr) return;
     const auto state = _owner->state();
-    if (state == nullptr || !state->draft.dirty()) {
+    if (state == nullptr) {
+        return;
+    }
+    const bool has_local = [self hasLocalEdits];
+    if (!state->draft.dirty() && !has_local) {
         _owner->submit({ccs::MainWindowCommand::ReloadDraft});
         return;
     }
     NSAlert* alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleWarning;
-    alert.messageText = @"Reload Profile Configuration?";
-    alert.informativeText = @"Discard unsaved Profile changes and reload the configuration from disk?";
+    alert.messageText = @"Reload configuration?";
+    alert.informativeText = @"Discard local and draft changes and reload the configuration from disk?";
     [alert addButtonWithTitle:@"Discard and Reload"];
     [alert addButtonWithTitle:@"Cancel"];
     if ([alert runModal] == NSAlertFirstButtonReturn && _owner != nullptr) {
+        [self discardLocalEdits];
         _owner->submit({
             ccs::MainWindowCommand::ReloadDraft,
             {},
@@ -766,7 +1747,10 @@ private:
 
 - (void)discardDraft:(id)sender {
     (void)sender;
-    if (_owner != nullptr) _owner->submit({ccs::MainWindowCommand::DiscardDraft});
+    if (_owner != nullptr) {
+        [self discardLocalEdits];
+        _owner->submit({ccs::MainWindowCommand::DiscardDraft});
+    }
 }
 
 @end
@@ -829,6 +1813,12 @@ bool MacMainWindow::Impl::prepare_for_application_exit(
         [controller_ setLocalStatus:@"Wait for the current command to finish." error:YES];
         return false;
     }
+    if (controller_ != nil && [controller_ hasLocalEdits]) {
+        if (!show(state_, error) || ![controller_ confirmDiscardLocalEdits]) {
+            return false;
+        }
+        state_ = view_model_.snapshot();
+    }
     if (!state_->draft.dirty()) {
         return true;
     }
@@ -861,19 +1851,28 @@ bool MacMainWindow::Impl::visible() const noexcept {
 }
 
 const ProfileListItem* MacMainWindow::Impl::selected_profile() const noexcept {
-    if (!state_ || !state_->selected_profile_id) {
+    if (!state_) {
         return nullptr;
     }
-    return find_profile_list_item(*state_, *state_->selected_profile_id);
+    if (state_->selected_profile_key) {
+        if (const auto* selected = find_profile_list_item(*state_, *state_->selected_profile_key)) {
+            return selected;
+        }
+    }
+    return state_->selected_profile_id
+        ? find_profile_list_item(*state_, *state_->selected_profile_id)
+        : nullptr;
 }
 
-void MacMainWindow::Impl::submit(MainWindowCommandRequest request) {
+bool MacMainWindow::Impl::submit(MainWindowCommandRequest request) {
     if (controller_ != nil) {
         [controller_ setLocalStatus:@"" error:NO];
     }
-    if (!view_model_.submit(std::move(request)) && controller_ != nil) {
+    const bool accepted = view_model_.submit(std::move(request));
+    if (!accepted && controller_ != nil) {
         [controller_ setLocalStatus:@"Another command is already running." error:YES];
     }
+    return accepted;
 }
 
 void MacMainWindow::Impl::request_window_close(
@@ -882,6 +1881,27 @@ void MacMainWindow::Impl::request_window_close(
     if (!state_) {
         perform_close(CloseTarget::Destroy);
         return;
+    }
+    if (state_->command_pending || state_->draft.busy()) {
+        if (controller_ != nil) {
+            [controller_ setLocalStatus:@"Wait for the current command to finish." error:YES];
+        }
+        return;
+    }
+    if (controller_ != nil && [controller_ hasLocalEdits]) {
+        if (decision && *decision == UnsavedChangesDecision::Cancel) {
+            return;
+        }
+        if (decision && *decision == UnsavedChangesDecision::Apply) {
+            [controller_ setLocalStatus:@"Update the current editor before applying changes." error:YES];
+            return;
+        }
+        if (decision && *decision == UnsavedChangesDecision::Discard) {
+            [controller_ discardLocalEdits];
+        } else if (![controller_ confirmDiscardLocalEdits]) {
+            return;
+        }
+        state_ = view_model_.snapshot();
     }
     const auto action = resolve_main_window_close(
         state_->draft, state_->lightweight_mode, std::nullopt);
@@ -912,6 +1932,10 @@ bool MacMainWindow::Impl::request_close(
         if (controller_ != nil) {
             [controller_ setLocalStatus:@"Wait for the current command to finish." error:YES];
         }
+        return false;
+    }
+    if (controller_ != nil && [controller_ hasLocalEdits]
+        && ![controller_ confirmDiscardLocalEdits]) {
         return false;
     }
     if (!state_->draft.dirty()) {
@@ -1017,6 +2041,36 @@ bool MacMainWindow::Impl::run_test_command(std::string_view command, std::string
     }
     if (command == "probe:profile-rule-summary") {
         return controller_ != nil && [controller_ validateProfileRuleSummary:error];
+    }
+    if (command == "view:profiles" || command == "view:rules" || command == "view:settings") {
+        if (controller_ == nil) {
+            error = "view test command requires an existing main window";
+            return false;
+        }
+        [controller_ showView:(command == "view:profiles"
+                ? CCSMainWindowViewProfiles
+                : (command == "view:rules"
+                    ? CCSMainWindowViewRules : CCSMainWindowViewSettings))];
+        return [controller_ validateLayout:error];
+    }
+    if (command == "probe:views") {
+        if (controller_ == nil) {
+            error = "view probe requires an existing main window";
+            return false;
+        }
+        const auto original = [controller_ currentView];
+        for (const auto view : {
+                 CCSMainWindowViewProfiles,
+                 CCSMainWindowViewRules,
+                 CCSMainWindowViewSettings}) {
+            [controller_ showView:view];
+            if (![controller_ validateLayout:error]) {
+                [controller_ showView:original];
+                return false;
+            }
+        }
+        [controller_ showView:original];
+        return true;
     }
     if (command == "resize:min") {
         if (controller_ == nil) {
