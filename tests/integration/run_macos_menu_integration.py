@@ -405,6 +405,9 @@ def main():
 
         # A normal second launch opens the existing window. Repeated activation reuses it.
         before_second = event_count(host_log, "second_instance_notified")
+        before_shown = event_count(
+            host_log, "main_window_lifecycle", action="shown"
+        )
         second = subprocess.run(
             [str(executable)],
             cwd=ROOT,
@@ -416,12 +419,20 @@ def main():
         )
         require(second.returncode == 0, "second menu host did not notify and exit")
         wait_for_event(host_log, "second_instance_notified", before_second)
+        wait_for_event(
+            host_log,
+            "main_window_lifecycle",
+            before_shown,
+            action="shown",
+        )
+        send_control(executable, environment, host_log, "probe")
         for _ in range(3):
             result = send_control(executable, environment, host_log, "show")
             require(result.get("window_visible") is True, "repeated activation lost the window")
 
         for probe in (
             "probe",
+            "probe:views",
             "probe:keyboard",
             "probe:retina",
             "resize:min",
