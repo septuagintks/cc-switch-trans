@@ -1,16 +1,14 @@
 # ccs-trans
 
-`ccs-trans` is a local LLM API request transformation proxy. Version `0.6.0`
+`ccs-trans` is a local LLM API request transformation proxy. Version `0.7.0`
 is the current Windows 11 x64 and macOS 26 arm64 baseline. The Windows
-distribution is `0.6.0-Windows-x64`; the ad-hoc signed macOS distribution is
-`0.6.0-macOS-arm64`.
+distribution is `0.7.0-Windows-x64`; the ad-hoc signed macOS distribution is
+`0.7.0-macOS-arm64`.
 
-The checked-out development source is `0.7.0-dev`. Its Windows implementation
-currently includes the 512 MiB process inflight budget, SQLite Profile/Rule
+This release includes a 512 MiB process inflight budget, SQLite Profile/Rule
 storage, `ccs-trans.config/v3`, explicit v2 migration, typed field commands,
-canonical Rule text, and the accepted Windows Profiles/Rules/Settings editor.
-It is not a release build: both packaging scripts reject the `-dev` suffix.
-The matching AppKit layout and macOS validation remain separate platform work.
+canonical Rule text, and native Profiles/Rules/Settings editors on both
+Windows and macOS.
 
 One process binds one application listener. Enabled Profiles add exact local
 routes for OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages,
@@ -23,19 +21,19 @@ All platforms share one numeric base version. Distribution identifiers append
 the system and architecture with fixed casing:
 
 ```text
-0.6.0-Windows-x64
-0.6.0-macOS-arm64
+0.7.0-Windows-x64
+0.7.0-macOS-arm64
 ```
 
 Package names use the full identifier, for example
-`ccs-trans-0.6.0-Windows-x64.zip`. CMake `PROJECT_VERSION`, CLI `--version`,
+`ccs-trans-0.7.0-Windows-x64.zip`. CMake `PROJECT_VERSION`, CLI `--version`,
 Windows version resources, and macOS bundle version fields remain numeric
-`0.6.0`; the platform suffix identifies the release artifact rather than
+`0.7.0`; the platform suffix identifies the release artifact rather than
 changing the application protocol or configuration version.
 
-The signed source tag is `0.6.0`. Its implementation scope, source provenance,
+The signed source tag is `0.7.0`. Its implementation scope, source provenance,
 validation matrix, package policy, and accepted limitations are archived in
-[Release-0.6.0.md](docs/Archived/Release-0.6.0.md). External ZIP hashes are
+[Release-0.7.0.md](docs/Archived/Release-0.7.0.md). External ZIP hashes are
 recorded in the signed annotated tag and release handoff so the archives do not
 contain a self-referential checksum.
 
@@ -58,16 +56,15 @@ instance. Both native views provide service controls and basic Profile create,
 rename, remove, enable, Apply, Discard, and Reload Draft operations through the
 same shared ViewModel. Reload Draft is distinct from service Reload; a dirty
 draft requires explicit discard confirmation before disk state can replace it.
-The current Windows `0.7.0-dev` view additionally provides complete typed
-Profile and application fields plus canonical Rule text editing in stable
-Profiles, Rules, and Settings views. The AppKit implementation will follow the
-same accepted information architecture and overall layout while retaining the
-native macOS appearance. Each Profile shows enabled and total Rule counts.
+Both platforms provide complete typed Profile and application fields plus
+canonical Rule text editing in stable Profiles, Rules, and Settings views.
+AppKit follows the accepted Windows information architecture and layout ratios
+while retaining native macOS appearance and controls. Each Profile shows
+enabled and total Rule counts.
 Lightweight mode destroys a closed main window while leaving the desktop host
 and listener running; normal
-mode hides and reuses it. The published `0.6.0` package retains
-`ccs-trans.config/v2`; the current `0.7.0-dev` source uses v3 application
-settings plus SQLite Profile/Rule storage.
+mode hides and reuses it. Version `0.7.0` uses v3 application settings plus
+SQLite Profile/Rule storage; v2 input requires explicit migration.
 
 Create the fixed-whitelist Windows package from a Release build:
 
@@ -93,10 +90,10 @@ For a non-release static archive check while a tray is running, append
 `-SkipTrayIntegration`. The verifier emits a warning; that mode does not count
 as complete release verification.
 
-Windows `0.6.0-Windows-x64` clean builds, shared and GUI integration, exact SSE
-concurrency, five load profiles, Rule matrix, two-hour mixed soak, eight-hour
-idle, fixed package whitelist, version resources, and extracted-package smoke
-are summarized in [Release-0.6.0.md](docs/Archived/Release-0.6.0.md).
+Windows `0.7.0-Windows-x64` clean builds, shared and GUI integration, exact SSE
+concurrency, five load profiles, Rule matrix, fixed package whitelist, version
+resources, extracted-package smoke, and explicit test gaps are summarized in
+[Release-0.7.0.md](docs/Archived/Release-0.7.0.md).
 Historical `0.5.0` VM evidence remains in
 [WindowsValidationCheckResult.md](docs/Archived/WindowsValidationCheckResult.md);
 it is not the current package result.
@@ -138,7 +135,7 @@ Create and verify the ad-hoc signed fixed-whitelist release ZIP with:
 
 ```text
 ./tools/package_macos.sh --build-dir build-macos-release --output-dir dist
-./tools/verify_macos_package.sh dist/ccs-trans-0.6.0-macOS-arm64.zip
+./tools/verify_macos_package.sh dist/ccs-trans-0.7.0-macOS-arm64.zip
 ```
 
 The package script always signs the CLI and `.app` with `Signature=adhoc`, the
@@ -147,7 +144,7 @@ identity, submit for notarization, staple a ticket, or claim Gatekeeper trust.
 This means the archive has no verifiable publisher identity and a quarantined
 download may require explicit user approval before launch. Current evidence and
 accepted manual-test gaps are in
-[Release-0.6.0.md](docs/Archived/Release-0.6.0.md). The historical
+[Release-0.7.0.md](docs/Archived/Release-0.7.0.md). The historical
 [MacOSValidationCheckResult.md](docs/Archived/MacOSValidationCheckResult.md)
 remains the `0.5.0` platform archive.
 
@@ -170,7 +167,7 @@ state/ui.json
 Windows resolves the root from `USERPROFILE`. macOS uses an absolute `HOME`
 when present and otherwise falls back to the current account database. Relative
 log paths stay under the application root; an absolute path can place the log
-elsewhere. In `0.7.0-dev`, `config.json` uses the strict
+elsewhere. In `0.7.0`, `config.json` uses the strict
 `ccs-trans.config/v3` schema and contains application settings only. Profiles
 and ordered Rules use the fixed `profiles.db`; neither path is configurable.
 Unknown fields, duplicate JSON keys, bad types, unsupported schemas, and
@@ -521,7 +518,7 @@ src/transport/         Cross-platform interface, Windows WinHTTP, macOS libcurl
 tests/                  Unit, integration, proxy-policy, and load tests
 ```
 
-Both `0.6.0-Windows-x64` and `0.6.0-macOS-arm64` are built from the same signed
+Both `0.7.0-Windows-x64` and `0.7.0-macOS-arm64` are built from the same signed
 source tag. The macOS package is ad-hoc signed by policy and does not establish
 publisher identity, notarization, or Gatekeeper trust. Full results are
 archived under `docs/Archived`; future-version ordering and carried constraints are in

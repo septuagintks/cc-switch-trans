@@ -34,8 +34,18 @@ build_directory=$(CDPATH= cd "$build_directory" && pwd)
 mkdir -p "$output_directory"
 output_directory=$(CDPATH= cd "$output_directory" && pwd)
 
-version=0.7.0
-version_suffix=-dev
+version=$(sed -n 's/^project(ccs_trans VERSION \([0-9][0-9.]*\) LANGUAGES.*$/\1/p' \
+    "$repository_root/CMakeLists.txt")
+grep -q '^set(CCS_TRANS_VERSION_SUFFIX "[^"]*")$' "$repository_root/CMakeLists.txt" || {
+    printf 'unable to read version suffix from CMakeLists.txt\n' >&2
+    exit 1
+}
+version_suffix=$(sed -n 's/^set(CCS_TRANS_VERSION_SUFFIX "\([^"]*\)")$/\1/p' \
+    "$repository_root/CMakeLists.txt")
+[ -n "$version" ] || {
+    printf 'unable to read project version from CMakeLists.txt\n' >&2
+    exit 1
+}
 [ -z "$version_suffix" ] || {
     printf 'formal packaging is disabled for development version suffix %s\n' "$version_suffix" >&2
     exit 1
@@ -57,7 +67,8 @@ cp "$repository_root/README.md" "$stage/README.md"
 for document in Design.md DevelopmentPlan.md ProjectStructure.md; do
     cp "$repository_root/docs/$document" "$stage/docs/$document"
 done
-for document in MacOSValidationCheckResult.md Reconstruction.md Release-0.5.0.md Release-0.6.0.md; do
+for document in MacOSValidationCheckResult.md Reconstruction.md Release-0.5.0.md Release-0.6.0.md \
+    Planning-0.7.0.md Release-0.7.0.md; do
     cp "$repository_root/docs/Archived/$document" "$stage/docs/Archived/$document"
 done
 cp "$repository_root/third_party/nlohmann/LICENSE.MIT" "$stage/licenses/nlohmann-LICENSE.MIT"

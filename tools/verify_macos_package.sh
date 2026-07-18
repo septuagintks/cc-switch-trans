@@ -2,13 +2,22 @@
 
 set -eu
 
+script_directory=$(CDPATH= cd "$(dirname "$0")" && pwd)
+repository_root=$(CDPATH= cd "$script_directory/.." && pwd)
+version=$(sed -n 's/^project(ccs_trans VERSION \([0-9][0-9.]*\) LANGUAGES.*$/\1/p' \
+    "$repository_root/CMakeLists.txt")
+[ -n "$version" ] || {
+    printf 'unable to read project version from CMakeLists.txt\n' >&2
+    exit 1
+}
+
 if [ "$#" -ne 1 ]; then
-    printf 'usage: %s <ccs-trans-0.6.0-macOS-arm64.zip>\n' "$0" >&2
+    printf 'usage: %s <ccs-trans-%s-macOS-arm64.zip>\n' "$0" "$version" >&2
     exit 2
 fi
 
 archive=$1
-expected_name=ccs-trans-0.6.0-macOS-arm64.zip
+expected_name=ccs-trans-$version-macOS-arm64.zip
 archive_name=$(basename "$archive")
 [ "$archive_name" = "$expected_name" ] || {
     printf 'unexpected archive name: %s\n' "$(basename "$archive")" >&2
@@ -18,7 +27,7 @@ archive_name=$(basename "$archive")
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/ccs-trans-verify.XXXXXX")
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 ditto -x -k "$archive" "$temporary_directory"
-root="$temporary_directory/ccs-trans-0.6.0-macOS-arm64"
+root="$temporary_directory/ccs-trans-$version-macOS-arm64"
 [ -d "$root/ccs-trans.app" ] && [ -x "$root/ccs-trans" ] || {
     printf 'archive is missing the app or CLI\n' >&2
     exit 1
@@ -37,6 +46,21 @@ expected_licenses=$(printf '%s\n' nlohmann-LICENSE.MIT sqlite-NOTICE.md | LC_ALL
 [ "$actual_licenses" = "$expected_licenses" ] || {
     printf 'archive license whitelist mismatch\n' >&2
     printf '%s\n' "$actual_licenses" >&2
+    exit 1
+}
+
+actual_documents=$(find "$root/docs" -type f | sed "s|$root/docs/||" | LC_ALL=C sort)
+expected_documents=$(printf '%s\n' \
+    Archived/MacOSValidationCheckResult.md \
+    Archived/Planning-0.7.0.md \
+    Archived/Reconstruction.md \
+    Archived/Release-0.5.0.md \
+    Archived/Release-0.6.0.md \
+    Archived/Release-0.7.0.md \
+    Design.md DevelopmentPlan.md ProjectStructure.md | LC_ALL=C sort)
+[ "$actual_documents" = "$expected_documents" ] || {
+    printf 'archive document whitelist mismatch\n' >&2
+    printf '%s\n' "$actual_documents" >&2
     exit 1
 }
 

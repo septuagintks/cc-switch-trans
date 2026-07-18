@@ -21,8 +21,8 @@ void require(bool condition, std::string_view message) {
 } // namespace
 
 int main() {
-    require(std::string_view(ccs::kVersion) == "0.7.0-dev",
-            "development version is visible");
+    require(std::string_view(ccs::kVersion) == "0.7.0",
+            "release version is visible");
 
     auto document = ccs::make_default_application_config_document();
     document.application.listener.port = 16000;

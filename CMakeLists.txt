@@ -14,7 +14,7 @@ endif()
 
 project(ccs_trans VERSION 0.7.0 LANGUAGES C CXX)
 
-set(CCS_TRANS_VERSION_SUFFIX "-dev")
+set(CCS_TRANS_VERSION_SUFFIX "")
 set(CCS_TRANS_VERSION "${PROJECT_VERSION}${CCS_TRANS_VERSION_SUFFIX}")
 execute_process(
     COMMAND git rev-parse HEAD

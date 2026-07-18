@@ -55,6 +55,8 @@ try {
         "Archived/Reconstruction.md",
         "Archived/Release-0.5.0.md",
         "Archived/Release-0.6.0.md",
+        "Archived/Planning-0.7.0.md",
+        "Archived/Release-0.7.0.md",
         "Archived/WindowsValidationCheckResult.md"
     )
     $expectedDirectories = @(

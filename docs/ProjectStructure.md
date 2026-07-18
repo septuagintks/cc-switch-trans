@@ -17,13 +17,14 @@ cc-switch-trans/
   docs/
     Archived/
       MacOSValidationCheckResult.md
+      Planning-0.7.0.md
       Reconstruction.md
       Release-0.5.0.md
       Release-0.6.0.md
+      Release-0.7.0.md
       WindowsValidationCheckResult.md
     Design.md
     DevelopmentPlan.md
-    Planning-0.7.0.md
     ProjectStructure.md
 
   src/
@@ -339,9 +340,9 @@ tools/
 ICNS 都从它派生到 build/package directory，不能反向编辑或提交生成物。实际 socket
 文件拆分可在保持上述依赖边界的前提下调整，不要求为每个 adapter 建静态库。
 
-`main_window.*` 持有 AppKit `NSWindowController`、Auto Layout、Profile controls、dirty-close 和
-普通/轻量窗口生命周期。`0.7-G` 在这里按 Windows 已验收的三视图信息架构补齐布局与功能，但继续使用
-AppKit 原生主题、控件与滚动。`menu_app.mm` 继续唯一持有 `ApplicationController`、共享 control executor、
+`main_window.*` 持有 AppKit `NSWindowController`、Auto Layout、三视图、typed draft、dirty-close 和
+普通/轻量窗口生命周期；布局按 Windows 已验收的信息架构与比例对齐，同时使用 AppKit 原生主题、控件
+与滚动。`menu_app.mm` 继续唯一持有 `ApplicationController`、共享 control executor、
 ViewModel、menu/status item、distributed notification 与退出编排；窗口不创建第二套 runtime。
 `run_macos_menu_integration.py` 通过隔离 `HOME` 和仅测试启用的 scoped notification 自动验证窗口
 功能、Rule 摘要、CLI/GUI stale Apply 与显式 Reload Draft、100 次资源生命周期、pending Quit，
@@ -359,9 +360,10 @@ ViewModel、menu/status item、distributed notification 与退出编排；窗口
 | `docs/Design.md` | 当前实现、不变量和平台边界 |
 | `docs/Archived/Reconstruction.md` | 阶段 11 Profile/Protocol/Rule 通用化架构归档 |
 | `docs/DevelopmentPlan.md` | 后续版本进入顺序、性能门槛、发布纪律和延后项 |
-| `docs/Planning-0.7.0.md` | `0.7.0` 资源预算、SQLite、迁移、GUI、测试与提交的开工合同 |
+| `docs/Archived/Planning-0.7.0.md` | `0.7.0` 资源预算、SQLite、迁移、GUI、测试与提交的冻结实施记录 |
 | `docs/Archived/Release-0.5.0.md` | `0.5.0` 双平台发布、溯源、回归和接受限制归档 |
 | `docs/Archived/Release-0.6.0.md` | `0.6.0` GUI/Profile/Rule 基线、双平台候选验证和发行溯源归档 |
+| `docs/Archived/Release-0.7.0.md` | `0.7.0` SQLite/typed GUI、双平台候选验证、限制和发行溯源归档 |
 | `docs/Archived/WindowsValidationCheckResult.md` | `0.5.0-Windows-x64` 验证结果归档 |
 | `docs/Archived/MacOSValidationCheckResult.md` | `0.5.0-macOS-arm64` 验证结果归档 |
 | `docs/ProjectStructure.md` | 当前目录、依赖、target 与扩展位置 |
