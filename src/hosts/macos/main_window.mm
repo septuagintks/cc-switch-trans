@@ -505,7 +505,7 @@ private:
     [_profileDetail setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
     _profileFieldControls = [NSMutableArray array];
-    NSMutableArray<NSArray<NSView*>*>* profileFieldRows = [NSMutableArray array];
+    NSMutableArray<NSView*>* profileFieldRows = [NSMutableArray array];
     for (const auto& descriptor : ccs::profile_field_descriptors()) {
         if (descriptor.key == "id" || descriptor.key == "enabled") {
             continue;
@@ -524,13 +524,21 @@ private:
             @"required": @(descriptor.required),
             @"name": name,
         }];
-        [profileFieldRows addObject:@[label(name, name), input]];
+        NSTextField* fieldLabel = label(name, name);
+        [fieldLabel.widthAnchor constraintEqualToConstant:180.0].active = YES;
+        NSStackView* row = [NSStackView stackViewWithViews:@[fieldLabel, input]];
+        row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        row.alignment = NSLayoutAttributeCenterY;
+        row.spacing = 14.0;
+        [input.widthAnchor constraintGreaterThanOrEqualToConstant:210.0].active = YES;
+        [input setContentHuggingPriority:NSLayoutPriorityDefaultLow
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [profileFieldRows addObject:row];
     }
-    NSGridView* profileFieldsGrid = [NSGridView gridViewWithViews:profileFieldRows];
-    profileFieldsGrid.rowSpacing = 10.0;
-    profileFieldsGrid.columnSpacing = 18.0;
-    [profileFieldsGrid columnAtIndex:0].xPlacement = NSGridCellPlacementLeading;
-    [profileFieldsGrid columnAtIndex:1].xPlacement = NSGridCellPlacementFill;
+    NSStackView* profileFieldsStack = [NSStackView stackViewWithViews:profileFieldRows];
+    profileFieldsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    profileFieldsStack.alignment = NSLayoutAttributeLeading;
+    profileFieldsStack.spacing = 10.0;
     _updateProfileFieldsButton = push_button(
         @"Update Profile", self, @selector(updateProfileFields:), @"Update Profile fields");
     NSTextField* profileDetailsHeading = label(@"Profile details", @"Profile details heading");
@@ -550,12 +558,12 @@ private:
         forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView* details = [NSStackView stackViewWithViews:@[
         profileDetailsHeading, readinessRow, renameRow, _enabledCheckbox,
-        profileFieldsGrid, profileUpdateRow]];
+        profileFieldsStack, profileUpdateRow]];
     details.orientation = NSUserInterfaceLayoutOrientationVertical;
     details.alignment = NSLayoutAttributeLeading;
     details.spacing = 10.0;
     [renameRow.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
-    [profileFieldsGrid.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
+    [profileFieldsStack.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
     [profileUpdateRow.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
 
     CCSFlippedView* detailsDocument = [[CCSFlippedView alloc]
@@ -633,7 +641,7 @@ private:
     _rulesView = rulesStack;
 
     _settingsFieldControls = [NSMutableArray array];
-    NSMutableArray<NSArray<NSView*>*>* settingsFieldRows = [NSMutableArray array];
+    NSMutableArray<NSView*>* settingsFieldRows = [NSMutableArray array];
     for (const auto& descriptor : ccs::application_field_descriptors()) {
         const auto name = field_display_name(descriptor.display_name_key);
         NSControl* input = configuration_field_control(
@@ -649,23 +657,31 @@ private:
             @"required": @(descriptor.required),
             @"name": name,
         }];
-        [settingsFieldRows addObject:@[label(name, name), input]];
+        NSTextField* fieldLabel = label(name, name);
+        [fieldLabel.widthAnchor constraintEqualToConstant:280.0].active = YES;
+        NSStackView* row = [NSStackView stackViewWithViews:@[fieldLabel, input]];
+        row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        row.alignment = NSLayoutAttributeCenterY;
+        row.spacing = 14.0;
+        [input.widthAnchor constraintGreaterThanOrEqualToConstant:300.0].active = YES;
+        [input setContentHuggingPriority:NSLayoutPriorityDefaultLow
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [settingsFieldRows addObject:row];
     }
-    NSGridView* settingsGrid = [NSGridView gridViewWithViews:settingsFieldRows];
-    settingsGrid.rowSpacing = 10.0;
-    settingsGrid.columnSpacing = 18.0;
-    [settingsGrid columnAtIndex:0].xPlacement = NSGridCellPlacementLeading;
-    [settingsGrid columnAtIndex:1].xPlacement = NSGridCellPlacementFill;
+    NSStackView* settingsFieldsStack = [NSStackView stackViewWithViews:settingsFieldRows];
+    settingsFieldsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    settingsFieldsStack.alignment = NSLayoutAttributeLeading;
+    settingsFieldsStack.spacing = 10.0;
     const CGFloat settingsHeight = static_cast<CGFloat>(_settingsFieldControls.count) * 50.0;
     CCSFlippedView* settingsDocument = [[CCSFlippedView alloc]
         initWithFrame:NSMakeRect(0.0, 0.0, 720.0, settingsHeight)];
     settingsDocument.autoresizingMask = NSViewWidthSizable;
-    settingsGrid.translatesAutoresizingMaskIntoConstraints = NO;
-    [settingsDocument addSubview:settingsGrid];
+    settingsFieldsStack.translatesAutoresizingMaskIntoConstraints = NO;
+    [settingsDocument addSubview:settingsFieldsStack];
     [NSLayoutConstraint activateConstraints:@[
-        [settingsGrid.leadingAnchor constraintEqualToAnchor:settingsDocument.leadingAnchor constant:8.0],
-        [settingsGrid.trailingAnchor constraintEqualToAnchor:settingsDocument.trailingAnchor constant:-12.0],
-        [settingsGrid.topAnchor constraintEqualToAnchor:settingsDocument.topAnchor constant:8.0],
+        [settingsFieldsStack.leadingAnchor constraintEqualToAnchor:settingsDocument.leadingAnchor constant:8.0],
+        [settingsFieldsStack.trailingAnchor constraintEqualToAnchor:settingsDocument.trailingAnchor constant:-12.0],
+        [settingsFieldsStack.topAnchor constraintEqualToAnchor:settingsDocument.topAnchor constant:8.0],
     ]];
     NSScrollView* settingsScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     settingsScroll.documentView = settingsDocument;
@@ -746,6 +762,7 @@ private:
         serviceRow, headerSeparator, workspace, footerSeparator, footer]];
     root.translatesAutoresizingMaskIntoConstraints = NO;
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
+    root.distribution = NSStackViewDistributionFill;
     root.alignment = NSLayoutAttributeLeading;
     root.spacing = 10.0;
     NSView* content = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -764,6 +781,9 @@ private:
     ]];
     [workspace setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
+    [workspace setContentHuggingPriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
+    [workspace.heightAnchor constraintGreaterThanOrEqualToConstant:420.0].active = YES;
 
     _localStatus = @"";
     [self showView:CCSMainWindowViewProfiles];
