@@ -3,6 +3,7 @@
 #ifdef __APPLE__
 
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include <algorithm>
 #include <charconv>
@@ -40,6 +41,40 @@ NSString* readiness_text(ccs::ProfileReadiness readiness) {
         return @"Invalid";
     }
     return @"Unknown";
+}
+
+NSColor* service_status_text_color(ccs::ApplicationState state) {
+    switch (state) {
+    case ccs::ApplicationState::Running:
+        return NSColor.systemGreenColor;
+    case ccs::ApplicationState::Faulted:
+        return NSColor.systemRedColor;
+    case ccs::ApplicationState::Starting:
+    case ccs::ApplicationState::Reloading:
+    case ccs::ApplicationState::Stopping:
+        return NSColor.systemOrangeColor;
+    case ccs::ApplicationState::Stopped:
+    case ccs::ApplicationState::Shutdown:
+        return NSColor.secondaryLabelColor;
+    }
+    return NSColor.secondaryLabelColor;
+}
+
+NSColor* service_status_background_color(ccs::ApplicationState state) {
+    switch (state) {
+    case ccs::ApplicationState::Running:
+        return [NSColor.systemGreenColor colorWithAlphaComponent:0.16];
+    case ccs::ApplicationState::Faulted:
+        return [NSColor.systemRedColor colorWithAlphaComponent:0.16];
+    case ccs::ApplicationState::Starting:
+    case ccs::ApplicationState::Reloading:
+    case ccs::ApplicationState::Stopping:
+        return [NSColor.systemOrangeColor colorWithAlphaComponent:0.16];
+    case ccs::ApplicationState::Stopped:
+    case ccs::ApplicationState::Shutdown:
+        return NSColor.secondarySystemFillColor;
+    }
+    return NSColor.secondarySystemFillColor;
 }
 
 NSTextField* label(NSString* value, NSString* accessibility_label) {
@@ -371,6 +406,21 @@ private:
     _brandLabel.font = [NSFont systemFontOfSize:22.0 weight:NSFontWeightSemibold];
     _serviceStatus = label(@"Stopped", @"Service status");
     _serviceStatus.font = [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold];
+    _serviceStatus.alignment = NSTextAlignmentCenter;
+    _serviceStatus.drawsBackground = YES;
+    _serviceStatus.backgroundColor = service_status_background_color(ccs::ApplicationState::Stopped);
+    _serviceStatus.textColor = service_status_text_color(ccs::ApplicationState::Stopped);
+    _serviceStatus.usesSingleLineMode = YES;
+    _serviceStatus.maximumNumberOfLines = 1;
+    _serviceStatus.wantsLayer = YES;
+    [_serviceStatus.layer setCornerRadius:12.0];
+    [_serviceStatus.layer setMasksToBounds:YES];
+    [_serviceStatus.widthAnchor constraintGreaterThanOrEqualToConstant:76.0].active = YES;
+    [_serviceStatus.heightAnchor constraintEqualToConstant:24.0].active = YES;
+    [_serviceStatus setContentHuggingPriority:NSLayoutPriorityRequired
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_serviceStatus setContentCompressionResistancePriority:NSLayoutPriorityRequired
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
     _listenerStatus = label(@"Listener inactive", @"Listener address");
     _startButton = push_button(@"Start", self, @selector(startService:), @"Start service");
     _stopButton = push_button(@"Stop", self, @selector(stopService:), @"Stop service");
@@ -401,6 +451,11 @@ private:
         forOrientation:NSLayoutConstraintOrientationHorizontal];
     [serviceActions setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [serviceRow setContentHuggingPriority:NSLayoutPriorityRequired
+        forOrientation:NSLayoutConstraintOrientationVertical];
+    [serviceRow setContentCompressionResistancePriority:NSLayoutPriorityRequired
+        forOrientation:NSLayoutConstraintOrientationVertical];
+    [serviceRow.heightAnchor constraintEqualToConstant:32.0].active = YES;
 
     _profilesNavigationButton = push_button(
         @"Profiles", self, @selector(showProfiles:), @"Show Profiles editor");
@@ -431,6 +486,7 @@ private:
     _profileTable.allowsMultipleSelection = NO;
     _profileTable.allowsEmptySelection = YES;
     _profileTable.usesAlternatingRowBackgroundColors = YES;
+    _profileTable.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
     _profileTable.accessibilityLabel = @"Profiles";
     NSTableColumn* profileColumn = [[NSTableColumn alloc] initWithIdentifier:@"profile"];
     profileColumn.title = @"Profile";
@@ -449,7 +505,8 @@ private:
     NSScrollView* tableScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     tableScroll.documentView = _profileTable;
     tableScroll.hasVerticalScroller = YES;
-    tableScroll.hasHorizontalScroller = YES;
+    tableScroll.hasHorizontalScroller = NO;
+    tableScroll.autohidesScrollers = YES;
     tableScroll.borderType = NSBezelBorder;
 
     _newProfileField = [[NSTextField alloc] initWithFrame:NSZeroRect];
@@ -479,11 +536,15 @@ private:
         profilesHeading, tableScroll, addRow]];
     profilesList.orientation = NSUserInterfaceLayoutOrientationVertical;
     profilesList.alignment = NSLayoutAttributeLeading;
+    profilesList.distribution = NSStackViewDistributionFill;
     profilesList.spacing = 8.0;
     [tableScroll.widthAnchor constraintEqualToAnchor:profilesList.widthAnchor].active = YES;
     [addRow.widthAnchor constraintEqualToAnchor:profilesList.widthAnchor].active = YES;
     [tableScroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
+    [tableScroll setContentHuggingPriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
+    [tableScroll.heightAnchor constraintGreaterThanOrEqualToConstant:80.0].active = YES;
 
     _renameField = [[NSTextField alloc] initWithFrame:NSZeroRect];
     _renameField.placeholderString = @"Profile ID";
@@ -539,6 +600,9 @@ private:
     profileFieldsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
     profileFieldsStack.alignment = NSLayoutAttributeLeading;
     profileFieldsStack.spacing = 10.0;
+    for (NSView* row in profileFieldRows) {
+        [row.widthAnchor constraintEqualToAnchor:profileFieldsStack.widthAnchor].active = YES;
+    }
     _updateProfileFieldsButton = push_button(
         @"Update Profile", self, @selector(updateProfileFields:), @"Update Profile fields");
     NSTextField* profileDetailsHeading = label(@"Profile details", @"Profile details heading");
@@ -567,27 +631,42 @@ private:
     [profileUpdateRow.widthAnchor constraintEqualToAnchor:details.widthAnchor].active = YES;
 
     CCSFlippedView* detailsDocument = [[CCSFlippedView alloc]
-        initWithFrame:NSMakeRect(0.0, 0.0, 560.0, 470.0)];
-    detailsDocument.autoresizingMask = NSViewWidthSizable;
+        initWithFrame:NSZeroRect];
+    detailsDocument.translatesAutoresizingMaskIntoConstraints = NO;
     details.translatesAutoresizingMaskIntoConstraints = NO;
     [detailsDocument addSubview:details];
     [NSLayoutConstraint activateConstraints:@[
         [details.leadingAnchor constraintEqualToAnchor:detailsDocument.leadingAnchor constant:12.0],
         [details.trailingAnchor constraintEqualToAnchor:detailsDocument.trailingAnchor constant:-12.0],
         [details.topAnchor constraintEqualToAnchor:detailsDocument.topAnchor constant:8.0],
+        [detailsDocument.bottomAnchor constraintGreaterThanOrEqualToAnchor:details.bottomAnchor
+            constant:8.0],
     ]];
+    NSLayoutConstraint* detailsContentBottom =
+        [detailsDocument.bottomAnchor constraintEqualToAnchor:details.bottomAnchor constant:8.0];
+    detailsContentBottom.priority = NSLayoutPriorityDefaultLow;
+    detailsContentBottom.active = YES;
     NSScrollView* detailsScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     detailsScroll.documentView = detailsDocument;
     detailsScroll.hasVerticalScroller = YES;
+    detailsScroll.hasHorizontalScroller = NO;
+    detailsScroll.autohidesScrollers = YES;
     detailsScroll.borderType = NSNoBorder;
+    [detailsDocument.leadingAnchor constraintEqualToAnchor:detailsScroll.contentView.leadingAnchor].active = YES;
+    [detailsDocument.topAnchor constraintEqualToAnchor:detailsScroll.contentView.topAnchor].active = YES;
+    [detailsDocument.widthAnchor constraintEqualToAnchor:detailsScroll.contentView.widthAnchor].active = YES;
+    [detailsDocument.heightAnchor constraintGreaterThanOrEqualToAnchor:detailsScroll.contentView.heightAnchor].active = YES;
 
     NSSplitView* split = [[NSSplitView alloc] initWithFrame:NSZeroRect];
     split.vertical = YES;
     split.dividerStyle = NSSplitViewDividerStyleThin;
     [split addArrangedSubview:profilesList];
     [split addArrangedSubview:detailsScroll];
+    NSLayoutConstraint* profilePaneRatio =
+        [profilesList.widthAnchor constraintEqualToAnchor:split.widthAnchor multiplier:0.38];
+    profilePaneRatio.priority = NSLayoutPriorityDefaultHigh;
+    profilePaneRatio.active = YES;
     [profilesList.widthAnchor constraintGreaterThanOrEqualToConstant:275.0].active = YES;
-    [profilesList.widthAnchor constraintLessThanOrEqualToConstant:340.0].active = YES;
     [detailsScroll.widthAnchor constraintGreaterThanOrEqualToConstant:430.0].active = YES;
     _profilesView = split;
 
@@ -672,21 +751,35 @@ private:
     settingsFieldsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
     settingsFieldsStack.alignment = NSLayoutAttributeLeading;
     settingsFieldsStack.spacing = 10.0;
-    const CGFloat settingsHeight = static_cast<CGFloat>(_settingsFieldControls.count) * 50.0;
     CCSFlippedView* settingsDocument = [[CCSFlippedView alloc]
-        initWithFrame:NSMakeRect(0.0, 0.0, 720.0, settingsHeight)];
-    settingsDocument.autoresizingMask = NSViewWidthSizable;
+        initWithFrame:NSZeroRect];
+    settingsDocument.translatesAutoresizingMaskIntoConstraints = NO;
     settingsFieldsStack.translatesAutoresizingMaskIntoConstraints = NO;
     [settingsDocument addSubview:settingsFieldsStack];
     [NSLayoutConstraint activateConstraints:@[
         [settingsFieldsStack.leadingAnchor constraintEqualToAnchor:settingsDocument.leadingAnchor constant:8.0],
         [settingsFieldsStack.trailingAnchor constraintEqualToAnchor:settingsDocument.trailingAnchor constant:-12.0],
         [settingsFieldsStack.topAnchor constraintEqualToAnchor:settingsDocument.topAnchor constant:8.0],
+        [settingsDocument.bottomAnchor constraintGreaterThanOrEqualToAnchor:settingsFieldsStack.bottomAnchor
+            constant:8.0],
     ]];
+    NSLayoutConstraint* settingsContentBottom =
+        [settingsDocument.bottomAnchor constraintEqualToAnchor:settingsFieldsStack.bottomAnchor constant:8.0];
+    settingsContentBottom.priority = NSLayoutPriorityDefaultLow;
+    settingsContentBottom.active = YES;
+    for (NSView* row in settingsFieldRows) {
+        [row.widthAnchor constraintEqualToAnchor:settingsFieldsStack.widthAnchor].active = YES;
+    }
     NSScrollView* settingsScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     settingsScroll.documentView = settingsDocument;
     settingsScroll.hasVerticalScroller = YES;
+    settingsScroll.hasHorizontalScroller = NO;
+    settingsScroll.autohidesScrollers = YES;
     settingsScroll.borderType = NSNoBorder;
+    [settingsDocument.leadingAnchor constraintEqualToAnchor:settingsScroll.contentView.leadingAnchor].active = YES;
+    [settingsDocument.topAnchor constraintEqualToAnchor:settingsScroll.contentView.topAnchor].active = YES;
+    [settingsDocument.widthAnchor constraintEqualToAnchor:settingsScroll.contentView.widthAnchor].active = YES;
+    [settingsDocument.heightAnchor constraintGreaterThanOrEqualToAnchor:settingsScroll.contentView.heightAnchor].active = YES;
     _updateSettingsButton = push_button(
         @"Update Settings", self, @selector(updateSettings:), @"Update application Settings");
     NSTextField* settingsHeading = label(@"Settings", @"Settings editor heading");
@@ -702,10 +795,13 @@ private:
         settingsHeader, settingsScroll]];
     settingsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
     settingsStack.alignment = NSLayoutAttributeLeading;
+    settingsStack.distribution = NSStackViewDistributionFill;
     settingsStack.spacing = 10.0;
     [settingsHeader.widthAnchor constraintEqualToAnchor:settingsStack.widthAnchor].active = YES;
     [settingsScroll.widthAnchor constraintEqualToAnchor:settingsStack.widthAnchor].active = YES;
     [settingsScroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationVertical];
+    [settingsScroll setContentHuggingPriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
     _settingsView = settingsStack;
 
@@ -729,6 +825,8 @@ private:
     workspace.spacing = 16.0;
     [navigation.widthAnchor constraintEqualToConstant:132.0].active = YES;
     [navigationSeparator.widthAnchor constraintEqualToConstant:1.0].active = YES;
+    [navigationSeparator.heightAnchor constraintEqualToAnchor:workspace.heightAnchor].active = YES;
+    [editorHost.heightAnchor constraintEqualToAnchor:workspace.heightAnchor].active = YES;
     [editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationHorizontal];
     [editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
@@ -740,12 +838,32 @@ private:
         @"Reload draft", self, @selector(reloadDraft:), @"Reload configuration from disk");
     _discardButton = push_button(@"Discard", self, @selector(discardDraft:), @"Discard changes");
     _applyButton = push_button(@"Apply changes", self, @selector(applyDraft:), @"Apply changes");
-    NSStackView* footer = [NSStackView stackViewWithViews:@[
-        _commandStatus, _reloadDraftButton, _discardButton, _applyButton]];
-    footer.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    footer.alignment = NSLayoutAttributeCenterY;
-    footer.spacing = 8.0;
+    NSStackView* footerActions = [NSStackView stackViewWithViews:@[
+        _reloadDraftButton, _discardButton, _applyButton]];
+    footerActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    footerActions.alignment = NSLayoutAttributeCenterY;
+    footerActions.spacing = 8.0;
+    [footerActions setContentHuggingPriority:NSLayoutPriorityRequired
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [footerActions setContentCompressionResistancePriority:NSLayoutPriorityRequired
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSView* footer = [[NSView alloc] initWithFrame:NSZeroRect];
+    _commandStatus.translatesAutoresizingMaskIntoConstraints = NO;
+    footerActions.translatesAutoresizingMaskIntoConstraints = NO;
+    [footer addSubview:_commandStatus];
+    [footer addSubview:footerActions];
+    [NSLayoutConstraint activateConstraints:@[
+        [_commandStatus.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor],
+        [_commandStatus.centerYAnchor constraintEqualToAnchor:footer.centerYAnchor],
+        [_commandStatus.trailingAnchor constraintLessThanOrEqualToAnchor:footerActions.leadingAnchor
+            constant:-8.0],
+        [footerActions.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor],
+        [footerActions.topAnchor constraintEqualToAnchor:footer.topAnchor],
+        [footerActions.bottomAnchor constraintEqualToAnchor:footer.bottomAnchor],
+    ]];
     [_commandStatus setContentHuggingPriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_commandStatus setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_reloadDraftButton setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -1186,7 +1304,10 @@ private:
     }
     [self resolvePendingEditorUpdates];
     _updating = YES;
-    _serviceStatus.stringValue = ns_string(ccs::application_state_name(state->application.state));
+    const auto application_state = state->application.state;
+    _serviceStatus.stringValue = ns_string(ccs::application_state_name(application_state));
+    _serviceStatus.textColor = service_status_text_color(application_state);
+    _serviceStatus.backgroundColor = service_status_background_color(application_state);
     if (state->application.listener_host.empty() || state->application.listener_port == 0) {
         _listenerStatus.stringValue = @"Listener inactive";
     } else {
