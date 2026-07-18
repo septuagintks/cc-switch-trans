@@ -60,10 +60,11 @@ warnings-as-errors 构建。
 | 短 soak 夹具 | mixed 10 秒、CLI idle 5 秒 passed，用于确认 v3 migration 与 drain 路径 |
 | 正式 ZIP | 固定白名单、双 executable checksum/version、解压后 tray integration passed |
 
-五档候选的 added TTFB p50 分别为 `0.259`、`4.662`、`6.276`、`5.750`、`6.032 ms`。常规档与
+`b7ea0ba` 五档候选的 added TTFB p50 分别为 `0.208`、`5.108`、`7.021`、`6.959`、`7.454 ms`。
+常规档与
 `mixed-16` 无请求失败、Usage starvation、logger backpressure 或 writer failure；50 路峰值 worker 为
 32，剩余请求按设计有界排队。1 MiB/32 Rule 的 modified、unchanged、unmatched 平均值分别约为
-`4.619`、`3.379`、`3.372 ms`，空 pipeline 继续零 parse/serialize。
+`4.676`、`3.429`、`3.407 ms`，空 pipeline 继续零 parse/serialize。
 
 原始 benchmark/soak JSON 位于 ignored `benchmark-results/`，不进入 Git 或发行包。最终包 hash 与
 archive smoke 结果以 tag 和交接记录为准。
