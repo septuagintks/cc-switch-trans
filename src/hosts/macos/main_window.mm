@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
@@ -16,6 +17,25 @@ namespace {
 
 std::int64_t live_window_count = 0;
 std::int64_t live_controller_count = 0;
+
+constexpr CGFloat kMinimumWindowWidth = 800.0;
+constexpr CGFloat kMinimumWindowHeight = 520.0;
+constexpr CGFloat kNavigationEditorRatio = 16.0 / 84.0;
+constexpr CGFloat kProfileListDetailsRatio = 38.0 / 62.0;
+constexpr CGFloat kProfileColumnRatio = 0.36;
+constexpr CGFloat kEnabledColumnRatio = 0.26;
+constexpr CGFloat kReadinessColumnRatio = 0.38;
+constexpr CGFloat kHeaderBrandRatio = 0.18;
+constexpr CGFloat kHeaderStatusRatio = 0.34;
+constexpr CGFloat kHeaderActionsRatio = 0.48;
+constexpr CGFloat kNavigationButtonHeight = 50.0;
+constexpr CGFloat kNavigationButtonSpacing = 6.0;
+constexpr CGFloat kNavigationStackHeight =
+    (3.0 * kNavigationButtonHeight) + (2.0 * kNavigationButtonSpacing);
+
+bool approximately_equal(CGFloat value, CGFloat expected, CGFloat tolerance = 1.0) {
+    return std::abs(value - expected) <= tolerance;
+}
 
 NSString* ns_string(const std::string& value) {
     NSString* result = [[NSString alloc] initWithBytes:value.data()
@@ -352,18 +372,33 @@ private:
     NSButton* _stopButton;
     NSButton* _reloadButton;
     NSButton* _lightweightCheckbox;
+    NSView* _serviceRow;
+    NSView* _headerBrandRegion;
+    NSView* _headerStatusRegion;
+    NSView* _headerActionsRegion;
+    NSStackView* _serviceActions;
     NSButton* _profilesNavigationButton;
     NSButton* _rulesNavigationButton;
     NSButton* _settingsNavigationButton;
+    NSStackView* _navigation;
+    NSView* _editorHost;
+    NSStackView* _workspace;
     NSView* _profilesView;
     NSView* _rulesView;
     NSView* _settingsView;
+    NSStackView* _profilesList;
+    NSStackView* _profilesLayout;
     NSBox* _profileListFrame;
+    NSScrollView* _profileTableScroll;
     NSScrollView* _profileDetailsScroll;
     CCSFlippedView* _profileDetailsDocument;
     NSStackView* _profileDetailsContent;
     NSArray<NSView*>* _profileDetailRows;
+    NSArray<NSView*>* _profileFieldRows;
     NSTableView* _profileTable;
+    NSTableColumn* _profileColumn;
+    NSTableColumn* _enabledColumn;
+    NSTableColumn* _readinessColumn;
     NSTextField* _newProfileField;
     NSButton* _addButton;
     NSButton* _removeButton;
@@ -383,6 +418,7 @@ private:
     NSButton* _updateRulesButton;
     NSBox* _rulesEditorFrame;
     NSMutableArray<NSDictionary<NSString*, id>*>* _settingsFieldControls;
+    NSArray<NSView*>* _settingsFieldRows;
     NSButton* _updateSettingsButton;
     NSTextField* _commandStatus;
     NSButton* _reloadDraftButton;
@@ -412,6 +448,7 @@ private:
 - (void)invalidateOwner;
 - (void)render;
 - (void)prepareForDisplay:(BOOL)resetScroll;
+- (void)updateResponsiveLayout;
 - (void)showView:(CCSMainWindowView)view;
 - (CCSMainWindowView)currentView;
 - (void)configureKeyLoop;
@@ -429,6 +466,8 @@ private:
     edits:(std::vector<ccs::ConfigurationFieldEdit>&)edits
     error:(std::string&)error;
 - (BOOL)validateLayout:(std::string&)error;
+- (BOOL)validateResponsiveLayout:(std::string&)error;
+- (BOOL)validateResponsiveBehavior:(std::string&)error;
 - (BOOL)validateKeyboard:(std::string&)error;
 - (BOOL)validateRetina:(std::string&)error;
 - (BOOL)validateProfileRuleSummary:(std::string&)error;
@@ -454,7 +493,7 @@ private:
     ++live_controller_count;
     _owner = owner;
     window.title = @"ccs-trans";
-    window.minSize = NSMakeSize(920.0, 620.0);
+    window.minSize = NSMakeSize(kMinimumWindowWidth, kMinimumWindowHeight);
     window.restorable = NO;
     window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.excludedFromWindowsMenu = YES;
@@ -523,33 +562,74 @@ private:
     serviceText.alignment = NSLayoutAttributeCenterY;
     serviceText.distribution = NSStackViewDistributionFill;
     serviceText.spacing = 14.0;
-    [serviceText setContentHuggingPriority:NSLayoutPriorityRequired
+    [_listenerStatus setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [serviceText setContentCompressionResistancePriority:NSLayoutPriorityRequired
-        forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView* identity = [NSStackView stackViewWithViews:@[_brandLabel, serviceText]];
-    identity.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    identity.alignment = NSLayoutAttributeCenterY;
-    identity.distribution = NSStackViewDistributionFill;
-    identity.spacing = 24.0;
-    NSStackView* serviceActions = [NSStackView stackViewWithViews:@[
+    _serviceActions = [NSStackView stackViewWithViews:@[
         _startButton, _stopButton, _reloadButton, _lightweightCheckbox]];
-    serviceActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    serviceActions.alignment = NSLayoutAttributeCenterY;
-    serviceActions.spacing = 8.0;
-    NSStackView* serviceRow = [NSStackView stackViewWithViews:@[identity, serviceActions]];
-    serviceRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    serviceRow.alignment = NSLayoutAttributeCenterY;
-    serviceRow.distribution = NSStackViewDistributionFill;
-    [identity setContentHuggingPriority:NSLayoutPriorityDefaultLow
+    _serviceActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    _serviceActions.alignment = NSLayoutAttributeCenterY;
+    _serviceActions.spacing = 8.0;
+    [_serviceActions setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [serviceActions setContentHuggingPriority:NSLayoutPriorityRequired
+    [_serviceActions setContentCompressionResistancePriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [serviceRow setContentHuggingPriority:NSLayoutPriorityRequired
+    for (NSView* action in _serviceActions.arrangedSubviews) {
+        [action setContentHuggingPriority:NSLayoutPriorityRequired
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [action setContentCompressionResistancePriority:NSLayoutPriorityRequired
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+
+    _serviceRow = [[NSView alloc] initWithFrame:NSZeroRect];
+    _serviceRow.identifier = @"Header layout";
+    _headerBrandRegion = [[NSView alloc] initWithFrame:NSZeroRect];
+    _headerStatusRegion = [[NSView alloc] initWithFrame:NSZeroRect];
+    _headerActionsRegion = [[NSView alloc] initWithFrame:NSZeroRect];
+    for (NSView* region in @[
+             _headerBrandRegion, _headerStatusRegion, _headerActionsRegion]) {
+        region.translatesAutoresizingMaskIntoConstraints = NO;
+        [_serviceRow addSubview:region];
+    }
+    _brandLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    serviceText.translatesAutoresizingMaskIntoConstraints = NO;
+    _serviceActions.translatesAutoresizingMaskIntoConstraints = NO;
+    [_headerBrandRegion addSubview:_brandLabel];
+    [_headerStatusRegion addSubview:serviceText];
+    [_headerActionsRegion addSubview:_serviceActions];
+    [NSLayoutConstraint activateConstraints:@[
+        [_headerBrandRegion.leadingAnchor constraintEqualToAnchor:_serviceRow.leadingAnchor],
+        [_headerStatusRegion.leadingAnchor constraintEqualToAnchor:_headerBrandRegion.trailingAnchor],
+        [_headerActionsRegion.leadingAnchor constraintEqualToAnchor:_headerStatusRegion.trailingAnchor],
+        [_headerActionsRegion.trailingAnchor constraintEqualToAnchor:_serviceRow.trailingAnchor],
+        [_headerBrandRegion.topAnchor constraintEqualToAnchor:_serviceRow.topAnchor],
+        [_headerBrandRegion.bottomAnchor constraintEqualToAnchor:_serviceRow.bottomAnchor],
+        [_headerStatusRegion.topAnchor constraintEqualToAnchor:_serviceRow.topAnchor],
+        [_headerStatusRegion.bottomAnchor constraintEqualToAnchor:_serviceRow.bottomAnchor],
+        [_headerActionsRegion.topAnchor constraintEqualToAnchor:_serviceRow.topAnchor],
+        [_headerActionsRegion.bottomAnchor constraintEqualToAnchor:_serviceRow.bottomAnchor],
+        [_headerBrandRegion.widthAnchor constraintEqualToAnchor:_serviceRow.widthAnchor
+            multiplier:kHeaderBrandRatio],
+        [_headerStatusRegion.widthAnchor constraintEqualToAnchor:_serviceRow.widthAnchor
+            multiplier:kHeaderStatusRatio],
+        [_headerActionsRegion.widthAnchor constraintEqualToAnchor:_serviceRow.widthAnchor
+            multiplier:kHeaderActionsRatio],
+        [_brandLabel.leadingAnchor constraintEqualToAnchor:_headerBrandRegion.leadingAnchor],
+        [_brandLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_headerBrandRegion.trailingAnchor
+            constant:-8.0],
+        [_brandLabel.centerYAnchor constraintEqualToAnchor:_headerBrandRegion.centerYAnchor],
+        [serviceText.leadingAnchor constraintEqualToAnchor:_headerStatusRegion.leadingAnchor],
+        [serviceText.trailingAnchor constraintLessThanOrEqualToAnchor:_headerStatusRegion.trailingAnchor
+            constant:-8.0],
+        [serviceText.centerYAnchor constraintEqualToAnchor:_headerStatusRegion.centerYAnchor],
+        [_serviceActions.leadingAnchor constraintGreaterThanOrEqualToAnchor:_headerActionsRegion.leadingAnchor],
+        [_serviceActions.trailingAnchor constraintEqualToAnchor:_headerActionsRegion.trailingAnchor],
+        [_serviceActions.centerYAnchor constraintEqualToAnchor:_headerActionsRegion.centerYAnchor],
+    ]];
+    [_serviceRow setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationVertical];
-    [serviceRow setContentCompressionResistancePriority:NSLayoutPriorityRequired
+    [_serviceRow setContentCompressionResistancePriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationVertical];
-    [serviceRow.heightAnchor constraintEqualToConstant:32.0].active = YES;
+    [_serviceRow.heightAnchor constraintEqualToConstant:32.0].active = YES;
 
     _profilesNavigationButton = push_button(
         @"Profiles", self, @selector(showProfiles:), @"Show Profiles editor");
@@ -560,24 +640,28 @@ private:
     for (NSButton* button in @[
              _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton]) {
         [button setButtonType:NSButtonTypeToggle];
-        button.alignment = NSTextAlignmentLeft;
-        button.bezelStyle = NSBezelStyleTexturedRounded;
+        button.alignment = NSTextAlignmentCenter;
+        button.bezelStyle = NSBezelStyleRegularSquare;
+        button.wantsLayer = YES;
+        button.layer.cornerRadius = 8.0;
+        button.layer.masksToBounds = YES;
     }
-    NSStackView* navigation = [NSStackView stackViewWithViews:@[
+    _navigation = [NSStackView stackViewWithViews:@[
         _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton]];
-    navigation.orientation = NSUserInterfaceLayoutOrientationVertical;
-    navigation.alignment = NSLayoutAttributeLeading;
-    navigation.distribution = NSStackViewDistributionFill;
-    navigation.spacing = 8.0;
+    _navigation.identifier = @"Navigation layout";
+    _navigation.orientation = NSUserInterfaceLayoutOrientationVertical;
+    _navigation.alignment = NSLayoutAttributeLeading;
+    _navigation.distribution = NSStackViewDistributionFill;
+    _navigation.spacing = kNavigationButtonSpacing;
     for (NSButton* button in @[
              _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton]) {
-        [button.widthAnchor constraintEqualToAnchor:navigation.widthAnchor].active = YES;
-        [button.heightAnchor constraintEqualToConstant:38.0].active = YES;
+        [button.widthAnchor constraintEqualToAnchor:_navigation.widthAnchor].active = YES;
+        [button.heightAnchor constraintEqualToConstant:kNavigationButtonHeight].active = YES;
     }
-    [navigation.heightAnchor constraintEqualToConstant:130.0].active = YES;
-    [navigation setContentHuggingPriority:NSLayoutPriorityRequired
+    [_navigation.heightAnchor constraintEqualToConstant:kNavigationStackHeight].active = YES;
+    [_navigation setContentHuggingPriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationVertical];
-    [navigation setContentCompressionResistancePriority:NSLayoutPriorityRequired
+    [_navigation setContentCompressionResistancePriority:NSLayoutPriorityRequired
         forOrientation:NSLayoutConstraintOrientationVertical];
 
     _profileTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
@@ -586,29 +670,34 @@ private:
     _profileTable.allowsMultipleSelection = NO;
     _profileTable.allowsEmptySelection = YES;
     _profileTable.usesAlternatingRowBackgroundColors = YES;
-    _profileTable.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
+    _profileTable.columnAutoresizingStyle = NSTableViewNoColumnAutoresizing;
+    _profileTable.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _profileTable.accessibilityLabel = @"Profiles";
-    NSTableColumn* profileColumn = [[NSTableColumn alloc] initWithIdentifier:@"profile"];
-    profileColumn.title = @"Profile";
-    profileColumn.minWidth = 110.0;
-    NSTableColumn* enabledColumn = [[NSTableColumn alloc] initWithIdentifier:@"enabled"];
-    enabledColumn.title = @"Enabled";
-    enabledColumn.width = 68.0;
-    enabledColumn.minWidth = 62.0;
-    NSTableColumn* readinessColumn = [[NSTableColumn alloc] initWithIdentifier:@"readiness"];
-    readinessColumn.title = @"Readiness";
-    readinessColumn.width = 90.0;
-    readinessColumn.minWidth = 80.0;
-    [_profileTable addTableColumn:profileColumn];
-    [_profileTable addTableColumn:enabledColumn];
-    [_profileTable addTableColumn:readinessColumn];
-    NSScrollView* tableScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-    tableScroll.documentView = _profileTable;
-    tableScroll.hasVerticalScroller = YES;
-    tableScroll.hasHorizontalScroller = NO;
-    tableScroll.autohidesScrollers = YES;
-    tableScroll.borderType = NSNoBorder;
-    _profileListFrame = rounded_editor_box(tableScroll);
+    _profileColumn = [[NSTableColumn alloc] initWithIdentifier:@"profile"];
+    _profileColumn.title = @"Profile";
+    _profileColumn.width = 110.0;
+    _profileColumn.minWidth = 24.0;
+    _profileColumn.resizingMask = NSTableColumnNoResizing;
+    _enabledColumn = [[NSTableColumn alloc] initWithIdentifier:@"enabled"];
+    _enabledColumn.title = @"Enabled";
+    _enabledColumn.width = 68.0;
+    _enabledColumn.minWidth = 24.0;
+    _enabledColumn.resizingMask = NSTableColumnNoResizing;
+    _readinessColumn = [[NSTableColumn alloc] initWithIdentifier:@"readiness"];
+    _readinessColumn.title = @"Readiness";
+    _readinessColumn.width = 90.0;
+    _readinessColumn.minWidth = 24.0;
+    _readinessColumn.resizingMask = NSTableColumnNoResizing;
+    [_profileTable addTableColumn:_profileColumn];
+    [_profileTable addTableColumn:_enabledColumn];
+    [_profileTable addTableColumn:_readinessColumn];
+    _profileTableScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    _profileTableScroll.documentView = _profileTable;
+    _profileTableScroll.hasVerticalScroller = YES;
+    _profileTableScroll.hasHorizontalScroller = NO;
+    _profileTableScroll.autohidesScrollers = YES;
+    _profileTableScroll.borderType = NSNoBorder;
+    _profileListFrame = rounded_editor_box(_profileTableScroll);
 
     _newProfileField = [[NSTextField alloc] initWithFrame:NSZeroRect];
     _newProfileField.placeholderString = @"New Profile ID";
@@ -633,15 +722,15 @@ private:
         forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSTextField* profilesHeading = label(@"Profiles", @"Profiles list heading");
     profilesHeading.font = [NSFont systemFontOfSize:17.0 weight:NSFontWeightSemibold];
-    NSStackView* profilesList = [NSStackView stackViewWithViews:@[
+    _profilesList = [NSStackView stackViewWithViews:@[
         profilesHeading, _profileListFrame, addRow]];
-    profilesList.identifier = @"Profiles list layout";
-    profilesList.orientation = NSUserInterfaceLayoutOrientationVertical;
-    profilesList.alignment = NSLayoutAttributeLeading;
-    profilesList.distribution = NSStackViewDistributionFill;
-    profilesList.spacing = 8.0;
-    [_profileListFrame.widthAnchor constraintEqualToAnchor:profilesList.widthAnchor].active = YES;
-    [addRow.widthAnchor constraintEqualToAnchor:profilesList.widthAnchor].active = YES;
+    _profilesList.identifier = @"Profiles list layout";
+    _profilesList.orientation = NSUserInterfaceLayoutOrientationVertical;
+    _profilesList.alignment = NSLayoutAttributeLeading;
+    _profilesList.distribution = NSStackViewDistributionFill;
+    _profilesList.spacing = 8.0;
+    [_profileListFrame.widthAnchor constraintEqualToAnchor:_profilesList.widthAnchor].active = YES;
+    [addRow.widthAnchor constraintEqualToAnchor:_profilesList.widthAnchor].active = YES;
     [_profileListFrame setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
     [_profileListFrame setContentHuggingPriority:NSLayoutPriorityDefaultLow
@@ -688,16 +777,22 @@ private:
             @"name": name,
         }];
         NSTextField* fieldLabel = label(name, name);
-        [fieldLabel.widthAnchor constraintEqualToConstant:180.0].active = YES;
         NSStackView* row = [NSStackView stackViewWithViews:@[fieldLabel, input]];
         row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         row.alignment = NSLayoutAttributeCenterY;
+        row.distribution = NSStackViewDistributionFill;
         row.spacing = 14.0;
-        [input.widthAnchor constraintGreaterThanOrEqualToConstant:195.0].active = YES;
+        [fieldLabel.widthAnchor constraintEqualToAnchor:input.widthAnchor
+            multiplier:(34.0 / 66.0)].active = YES;
+        [fieldLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
         [input setContentHuggingPriority:NSLayoutPriorityDefaultLow
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [input setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
             forOrientation:NSLayoutConstraintOrientationHorizontal];
         [profileFieldRows addObject:row];
     }
+    _profileFieldRows = [profileFieldRows copy];
     _updateProfileFieldsButton = push_button(
         @"Update Profile", self, @selector(updateProfileFields:), @"Update Profile fields");
     NSTextField* profileDetailsHeading = label(@"Profile details", @"Profile details heading");
@@ -769,24 +864,23 @@ private:
     [_profileDetailsDocument.widthAnchor
         constraintEqualToAnchor:_profileDetailsScroll.contentView.widthAnchor].active = YES;
 
-    NSStackView* profilesLayout = [NSStackView stackViewWithViews:@[
-        profilesList, _profileDetailsScroll]];
-    profilesLayout.identifier = @"Profiles editor layout";
-    profilesLayout.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    profilesLayout.alignment = NSLayoutAttributeTop;
-    profilesLayout.distribution = NSStackViewDistributionFill;
-    profilesLayout.spacing = 16.0;
-    [profilesList.heightAnchor constraintEqualToAnchor:profilesLayout.heightAnchor].active = YES;
+    _profilesLayout = [NSStackView stackViewWithViews:@[
+        _profilesList, _profileDetailsScroll]];
+    _profilesLayout.identifier = @"Profiles editor layout";
+    _profilesLayout.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    _profilesLayout.alignment = NSLayoutAttributeTop;
+    _profilesLayout.distribution = NSStackViewDistributionFill;
+    _profilesLayout.spacing = 16.0;
+    [_profilesList.heightAnchor constraintEqualToAnchor:_profilesLayout.heightAnchor].active = YES;
     [_profileDetailsScroll.heightAnchor
-        constraintEqualToAnchor:profilesLayout.heightAnchor].active = YES;
-    NSLayoutConstraint* profilePaneRatio =
-        [profilesList.widthAnchor constraintEqualToAnchor:profilesLayout.widthAnchor
-            multiplier:0.38 constant:-6.08];
-    profilePaneRatio.priority = NSLayoutPriorityDefaultHigh;
-    profilePaneRatio.active = YES;
-    [profilesList.widthAnchor constraintGreaterThanOrEqualToConstant:275.0].active = YES;
-    [_profileDetailsScroll.widthAnchor constraintGreaterThanOrEqualToConstant:430.0].active = YES;
-    _profilesView = profilesLayout;
+        constraintEqualToAnchor:_profilesLayout.heightAnchor].active = YES;
+    [_profilesList.widthAnchor constraintEqualToAnchor:_profileDetailsScroll.widthAnchor
+        multiplier:kProfileListDetailsRatio].active = YES;
+    [_profilesList setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_profileDetailsScroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    _profilesView = _profilesLayout;
 
     _rulesProfilePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     _rulesProfilePopup.target = self;
@@ -802,9 +896,18 @@ private:
         _rulesProfilePopup, _formatRulesButton, _updateRulesButton]];
     rulesActions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     rulesActions.alignment = NSLayoutAttributeCenterY;
+    rulesActions.distribution = NSStackViewDistributionFill;
     rulesActions.spacing = 8.0;
-    [_rulesProfilePopup setContentHuggingPriority:NSLayoutPriorityDefaultLow
+    [_rulesProfilePopup setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1.0
         forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_rulesProfilePopup setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    for (NSButton* button in @[_formatRulesButton, _updateRulesButton]) {
+        [button setContentHuggingPriority:NSLayoutPriorityRequired
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [button setContentCompressionResistancePriority:NSLayoutPriorityRequired
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
     _rulesTextView = [[NSTextView alloc] initWithFrame:NSZeroRect];
     _rulesTextView.delegate = self;
     _rulesTextView.accessibilityLabel = @"Rules JSON";
@@ -858,16 +961,22 @@ private:
             @"name": name,
         }];
         NSTextField* fieldLabel = label(name, name);
-        [fieldLabel.widthAnchor constraintEqualToConstant:280.0].active = YES;
         NSStackView* row = [NSStackView stackViewWithViews:@[fieldLabel, input]];
         row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
         row.alignment = NSLayoutAttributeCenterY;
+        row.distribution = NSStackViewDistributionFill;
         row.spacing = 14.0;
-        [input.widthAnchor constraintGreaterThanOrEqualToConstant:300.0].active = YES;
+        [fieldLabel.widthAnchor constraintEqualToAnchor:input.widthAnchor
+            multiplier:(32.0 / 68.0)].active = YES;
+        [fieldLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
         [input setContentHuggingPriority:NSLayoutPriorityDefaultLow
+            forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [input setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
             forOrientation:NSLayoutConstraintOrientationHorizontal];
         [settingsFieldRows addObject:row];
     }
+    _settingsFieldRows = [settingsFieldRows copy];
     NSStackView* settingsFieldsStack = [NSStackView stackViewWithViews:settingsFieldRows];
     settingsFieldsStack.orientation = NSUserInterfaceLayoutOrientationVertical;
     settingsFieldsStack.alignment = NSLayoutAttributeLeading;
@@ -922,31 +1031,37 @@ private:
         forOrientation:NSLayoutConstraintOrientationVertical];
     _settingsView = settingsStack;
 
-    NSView* editorHost = [[NSView alloc] initWithFrame:NSZeroRect];
+    _editorHost = [[NSView alloc] initWithFrame:NSZeroRect];
+    _editorHost.identifier = @"Editor host layout";
     for (NSView* editor in @[_profilesView, _rulesView, _settingsView]) {
         editor.translatesAutoresizingMaskIntoConstraints = NO;
-        [editorHost addSubview:editor];
+        [_editorHost addSubview:editor];
         [NSLayoutConstraint activateConstraints:@[
-            [editor.leadingAnchor constraintEqualToAnchor:editorHost.leadingAnchor],
-            [editor.trailingAnchor constraintEqualToAnchor:editorHost.trailingAnchor],
-            [editor.topAnchor constraintEqualToAnchor:editorHost.topAnchor],
-            [editor.bottomAnchor constraintEqualToAnchor:editorHost.bottomAnchor],
+            [editor.leadingAnchor constraintEqualToAnchor:_editorHost.leadingAnchor],
+            [editor.trailingAnchor constraintEqualToAnchor:_editorHost.trailingAnchor],
+            [editor.topAnchor constraintEqualToAnchor:_editorHost.topAnchor],
+            [editor.bottomAnchor constraintEqualToAnchor:_editorHost.bottomAnchor],
         ]];
     }
     NSBox* navigationSeparator = [[NSBox alloc] initWithFrame:NSZeroRect];
     navigationSeparator.boxType = NSBoxSeparator;
-    NSStackView* workspace = [NSStackView stackViewWithViews:@[
-        navigation, navigationSeparator, editorHost]];
-    workspace.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    workspace.alignment = NSLayoutAttributeTop;
-    workspace.spacing = 16.0;
-    [navigation.widthAnchor constraintEqualToConstant:132.0].active = YES;
+    _workspace = [NSStackView stackViewWithViews:@[
+        _navigation, navigationSeparator, _editorHost]];
+    _workspace.identifier = @"Workspace layout";
+    _workspace.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    _workspace.alignment = NSLayoutAttributeTop;
+    _workspace.distribution = NSStackViewDistributionFill;
+    _workspace.spacing = 16.0;
+    [_navigation.widthAnchor constraintEqualToAnchor:_editorHost.widthAnchor
+        multiplier:kNavigationEditorRatio].active = YES;
     [navigationSeparator.widthAnchor constraintEqualToConstant:1.0].active = YES;
-    [navigationSeparator.heightAnchor constraintEqualToAnchor:workspace.heightAnchor].active = YES;
-    [editorHost.heightAnchor constraintEqualToAnchor:workspace.heightAnchor].active = YES;
-    [editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+    [navigationSeparator.heightAnchor constraintEqualToAnchor:_workspace.heightAnchor].active = YES;
+    [_editorHost.heightAnchor constraintEqualToAnchor:_workspace.heightAnchor].active = YES;
+    [_navigation setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+    [_editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_editorHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
 
     _commandStatus = label(@"", @"Command status");
@@ -994,7 +1109,7 @@ private:
     NSBox* footerSeparator = [[NSBox alloc] initWithFrame:NSZeroRect];
     footerSeparator.boxType = NSBoxSeparator;
     NSStackView* root = [NSStackView stackViewWithViews:@[
-        serviceRow, headerSeparator, workspace, footerSeparator, footer]];
+        _serviceRow, headerSeparator, _workspace, footerSeparator, footer]];
     root.identifier = @"Main window root layout";
     root.translatesAutoresizingMaskIntoConstraints = NO;
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -1002,6 +1117,7 @@ private:
     root.alignment = NSLayoutAttributeLeading;
     root.spacing = 10.0;
     NSView* content = [[NSView alloc] initWithFrame:NSZeroRect];
+    content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     window.contentView = content;
     [content addSubview:root];
     [NSLayoutConstraint activateConstraints:@[
@@ -1009,17 +1125,17 @@ private:
         [root.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16.0],
         [root.topAnchor constraintEqualToAnchor:content.topAnchor constant:16.0],
         [root.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-16.0],
-        [serviceRow.widthAnchor constraintEqualToAnchor:root.widthAnchor],
+        [_serviceRow.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [headerSeparator.widthAnchor constraintEqualToAnchor:root.widthAnchor],
-        [workspace.widthAnchor constraintEqualToAnchor:root.widthAnchor],
+        [_workspace.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [footerSeparator.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [footer.widthAnchor constraintEqualToAnchor:root.widthAnchor],
     ]];
-    [workspace setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+    [_workspace setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
-    [workspace setContentHuggingPriority:NSLayoutPriorityDefaultLow
+    [_workspace setContentHuggingPriority:NSLayoutPriorityDefaultLow
         forOrientation:NSLayoutConstraintOrientationVertical];
-    [workspace.heightAnchor constraintGreaterThanOrEqualToConstant:420.0].active = YES;
+    [_workspace.heightAnchor constraintGreaterThanOrEqualToConstant:340.0].active = YES;
 
     _localStatus = @"";
     [self showView:CCSMainWindowViewProfiles];
@@ -1032,6 +1148,34 @@ private:
     if (_resourceCounted) {
         --live_controller_count;
     }
+}
+
+- (void)updateResponsiveLayout {
+    [self.window.contentView setNeedsUpdateConstraints:YES];
+    [self.window.contentView updateConstraintsForSubtreeIfNeeded];
+    [self.window.contentView setNeedsLayout:YES];
+    [self.window.contentView layoutSubtreeIfNeeded];
+    const NSRect clipBounds = _profileTableScroll.contentView.bounds;
+    const CGFloat clipWidth = NSWidth(clipBounds);
+    if (clipWidth < 1.0) {
+        return;
+    }
+
+    NSRect tableFrame = _profileTable.frame;
+    tableFrame.size.width = clipWidth;
+    tableFrame.size.height = std::max(NSHeight(tableFrame), NSHeight(clipBounds));
+    _profileTable.frame = tableFrame;
+
+    const CGFloat spacing = _profileTable.intercellSpacing.width;
+    const CGFloat available = std::max(0.0, clipWidth - (2.0 * spacing));
+    const CGFloat profileWidth = std::floor(available * kProfileColumnRatio);
+    const CGFloat enabledWidth = std::floor(available * kEnabledColumnRatio);
+    const CGFloat readinessWidth = available - profileWidth - enabledWidth;
+    _profileColumn.width = profileWidth;
+    _enabledColumn.width = enabledWidth;
+    _readinessColumn.width = readinessWidth;
+    [_profileTable.headerView setNeedsDisplay:YES];
+    [_profileTable setNeedsDisplay:YES];
 }
 
 - (void)configureKeyLoop {
@@ -1067,6 +1211,7 @@ private:
 
 - (void)prepareForDisplay:(BOOL)resetScroll {
     [self.window.contentView layoutSubtreeIfNeeded];
+    [self updateResponsiveLayout];
     [_profileDetailsContent layoutSubtreeIfNeeded];
     [_profileDetailsDocument layoutSubtreeIfNeeded];
     if (resetScroll) {
@@ -1075,6 +1220,7 @@ private:
         [_profileDetailsScroll reflectScrolledClipView:clip];
     }
     [self.window.contentView layoutSubtreeIfNeeded];
+    [self updateResponsiveLayout];
 }
 
 - (void)showView:(CCSMainWindowView)view {
@@ -1088,7 +1234,22 @@ private:
         ? NSControlStateValueOn : NSControlStateValueOff;
     _settingsNavigationButton.state = view == CCSMainWindowViewSettings
         ? NSControlStateValueOn : NSControlStateValueOff;
+    const auto styleNavigationButton = [](NSButton* button, BOOL selected) {
+        NSMutableAttributedString* title = [[NSMutableAttributedString alloc]
+            initWithString:button.title];
+        [title addAttribute:NSForegroundColorAttributeName
+            value:(selected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor)
+            range:NSMakeRange(0, title.length)];
+        button.attributedTitle = title;
+    };
+    styleNavigationButton(
+        _profilesNavigationButton, view == CCSMainWindowViewProfiles);
+    styleNavigationButton(
+        _rulesNavigationButton, view == CCSMainWindowViewRules);
+    styleNavigationButton(
+        _settingsNavigationButton, view == CCSMainWindowViewSettings);
     [self.window.contentView layoutSubtreeIfNeeded];
+    [self updateResponsiveLayout];
     [self configureKeyLoop];
 }
 
@@ -1425,6 +1586,11 @@ private:
     return NO;
 }
 
+- (void)windowDidResize:(NSNotification*)notification {
+    (void)notification;
+    [self updateResponsiveLayout];
+}
+
 - (void)render {
     if (_owner == nullptr) {
         return;
@@ -1622,6 +1788,239 @@ private:
     _discardButton.enabled = !pending && (state->draft.dirty() || local_dirty);
 }
 
+- (BOOL)validateResponsiveLayout:(std::string&)error {
+    [self.window.contentView layoutSubtreeIfNeeded];
+    [self updateResponsiveLayout];
+
+    const NSSize minimum = self.window.minSize;
+    if (!approximately_equal(minimum.width, kMinimumWindowWidth)
+        || !approximately_equal(minimum.height, kMinimumWindowHeight)) {
+        error = "main window minimum size does not match the responsive layout contract";
+        return NO;
+    }
+
+    const CGFloat headerWidth = NSWidth(_serviceRow.bounds);
+    if (headerWidth < 1.0
+        || !approximately_equal(
+            NSWidth(_headerBrandRegion.frame), headerWidth * kHeaderBrandRatio)
+        || !approximately_equal(
+            NSWidth(_headerStatusRegion.frame), headerWidth * kHeaderStatusRatio)
+        || !approximately_equal(
+            NSWidth(_headerActionsRegion.frame), headerWidth * kHeaderActionsRatio)) {
+        error = "header regions do not follow the 18:34:48 width contract";
+        return NO;
+    }
+    if (!approximately_equal(
+            NSMaxX(_serviceActions.frame), NSMaxX(_headerActionsRegion.bounds))) {
+        error = "header actions are not aligned to the trailing edge of their region";
+        return NO;
+    }
+    for (NSView* action in _serviceActions.arrangedSubviews) {
+        const NSSize intrinsic = action.intrinsicContentSize;
+        if (intrinsic.width > 0.0
+            && !approximately_equal(NSWidth(action.frame), intrinsic.width, 2.0)) {
+            error = "a header action changed from its intrinsic width";
+            return NO;
+        }
+    }
+
+    const CGFloat navigationWidth = NSWidth(_navigation.frame);
+    const CGFloat editorWidth = NSWidth(_editorHost.frame);
+    if (navigationWidth < 1.0 || editorWidth < 1.0
+        || !approximately_equal(
+            navigationWidth, editorWidth * kNavigationEditorRatio)) {
+        error = "navigation and editor do not follow the 16:84 width contract";
+        return NO;
+    }
+    for (NSButton* button in @[
+             _profilesNavigationButton, _rulesNavigationButton, _settingsNavigationButton]) {
+        const NSRect alignmentRect = [button alignmentRectForFrame:button.frame];
+        if (!approximately_equal(NSHeight(alignmentRect), kNavigationButtonHeight)) {
+            error = "a navigation button does not have the required aligned height: "
+                + std::to_string(NSHeight(alignmentRect));
+            return NO;
+        }
+    }
+    if (!approximately_equal(_navigation.spacing, kNavigationButtonSpacing)
+        || !approximately_equal(NSHeight(_navigation.bounds), kNavigationStackHeight)) {
+        error = "navigation spacing or total height does not match its layout contract";
+        return NO;
+    }
+
+    const CGFloat profileListWidth = NSWidth(_profilesList.frame);
+    const CGFloat profileDetailsWidth = NSWidth(_profileDetailsScroll.frame);
+    if (profileListWidth < 1.0 || profileDetailsWidth < 1.0
+        || !approximately_equal(
+            profileListWidth, profileDetailsWidth * kProfileListDetailsRatio)) {
+        error = "Profiles list and details do not follow the 38:62 width contract";
+        return NO;
+    }
+
+    if (_currentView == CCSMainWindowViewProfiles) {
+        const CGFloat clipWidth = NSWidth(_profileTableScroll.contentView.bounds);
+        const CGFloat spacing = _profileTable.intercellSpacing.width;
+        const CGFloat available = clipWidth - (2.0 * spacing);
+        const CGFloat columnTotal = _profileColumn.width
+            + _enabledColumn.width + _readinessColumn.width;
+        if (available < 1.0
+            || !approximately_equal(columnTotal, available)
+            || !approximately_equal(
+                _profileColumn.width, available * kProfileColumnRatio, 1.5)
+            || !approximately_equal(
+                _enabledColumn.width, available * kEnabledColumnRatio, 1.5)
+            || !approximately_equal(
+                _readinessColumn.width, available * kReadinessColumnRatio, 1.5)) {
+            error = "Profile table columns do not cover the visible width at 36:26:38";
+            return NO;
+        }
+        for (NSTableColumn* column in @[
+                 _profileColumn, _enabledColumn, _readinessColumn]) {
+            if (column.width + 0.5 < column.headerCell.cellSize.width) {
+                error = "a Profile table header is truncated";
+                return NO;
+            }
+        }
+    }
+
+    NSArray<NSView*>* proportionalRows = _currentView == CCSMainWindowViewSettings
+        ? _settingsFieldRows : (_currentView == CCSMainWindowViewProfiles
+            ? _profileFieldRows : @[]);
+    const CGFloat rowRatio = _currentView == CCSMainWindowViewSettings
+        ? (32.0 / 68.0) : (34.0 / 66.0);
+    for (NSView* view in proportionalRows) {
+        NSStackView* row = static_cast<NSStackView*>(view);
+        if (row.arrangedSubviews.count != 2) {
+            error = "a proportional field row has an unexpected child count";
+            return NO;
+        }
+        NSView* labelView = row.arrangedSubviews[0];
+        NSView* inputView = row.arrangedSubviews[1];
+        const CGFloat labelWidth = NSWidth(
+            [labelView alignmentRectForFrame:labelView.frame]);
+        const CGFloat inputWidth = NSWidth(
+            [inputView alignmentRectForFrame:inputView.frame]);
+        if (labelWidth < 1.0 || inputWidth < 1.0
+            || !approximately_equal(labelWidth, inputWidth * rowRatio, 1.5)) {
+            error = "a field row does not distribute its label and input proportionally: "
+                + std::to_string(labelWidth) + ":" + std::to_string(inputWidth);
+            return NO;
+        }
+        const NSRect labelAlignment = [labelView alignmentRectForFrame:labelView.frame];
+        const NSRect inputAlignment = [inputView alignmentRectForFrame:inputView.frame];
+        if (!approximately_equal(NSMinX(labelAlignment), NSMinX(row.bounds), 1.5)
+            || !approximately_equal(NSMaxX(inputAlignment), NSMaxX(row.bounds), 1.5)) {
+            error = "a proportional field row does not fill its available width";
+            return NO;
+        }
+    }
+    return YES;
+}
+
+- (BOOL)validateResponsiveBehavior:(std::string&)error {
+    error.clear();
+    const NSRect originalFrame = self.window.frame;
+    const CCSMainWindowView originalView = _currentView;
+    const auto restore = [&]() {
+        [self.window setFrame:originalFrame display:YES];
+        [self showView:originalView];
+        [self updateResponsiveLayout];
+    };
+    const auto resize = [&](NSSize size) {
+        NSScreen* screen = self.window.screen == nil ? NSScreen.mainScreen : self.window.screen;
+        const NSRect visibleFrame = screen.visibleFrame;
+        size.width = std::min(size.width, NSWidth(visibleFrame));
+        size.height = std::min(size.height, NSHeight(visibleFrame));
+        NSRect frame = NSMakeRect(
+            NSMidX(visibleFrame) - (size.width / 2.0),
+            NSMaxY(visibleFrame) - size.height,
+            size.width,
+            size.height);
+        [self.window setFrame:frame display:YES];
+        [self.window.contentView layoutSubtreeIfNeeded];
+        [self updateResponsiveLayout];
+    };
+    const auto validate_views = [&]() -> BOOL {
+        for (const auto view : {
+                 CCSMainWindowViewProfiles,
+                 CCSMainWindowViewRules,
+                 CCSMainWindowViewSettings}) {
+            [self showView:view];
+            if (![self validateLayout:error]) {
+                return NO;
+            }
+        }
+        return YES;
+    };
+
+    resize(self.window.minSize);
+    if (!validate_views()) {
+        restore();
+        return NO;
+    }
+    [self showView:CCSMainWindowViewProfiles];
+    const CGFloat minimumNavigationWidth = NSWidth(_navigation.frame);
+    const CGFloat minimumEditorWidth = NSWidth(_editorHost.frame);
+    const CGFloat minimumListWidth = NSWidth(_profilesList.frame);
+    const CGFloat minimumDetailsWidth = NSWidth(_profileDetailsScroll.frame);
+    const CGFloat minimumProfileColumnWidth = _profileColumn.width;
+    const CGFloat minimumEnabledColumnWidth = _enabledColumn.width;
+    const CGFloat minimumReadinessColumnWidth = _readinessColumn.width;
+    std::vector<NSSize> minimumActionSizes;
+    for (NSView* action in _serviceActions.arrangedSubviews) {
+        minimumActionSizes.push_back(action.frame.size);
+    }
+
+    resize(NSMakeSize(1200.0, 760.0));
+    if (!validate_views()) {
+        restore();
+        return NO;
+    }
+    [self showView:CCSMainWindowViewProfiles];
+    if (NSWidth(_navigation.frame) <= minimumNavigationWidth + 20.0
+        || NSWidth(_editorHost.frame) <= minimumEditorWidth + 250.0
+        || NSWidth(_profilesList.frame) <= minimumListWidth + 100.0
+        || NSWidth(_profileDetailsScroll.frame) <= minimumDetailsWidth + 150.0
+        || _profileColumn.width <= minimumProfileColumnWidth + 40.0
+        || _enabledColumn.width <= minimumEnabledColumnWidth + 20.0
+        || _readinessColumn.width <= minimumReadinessColumnWidth + 30.0) {
+        error = "nested editor regions did not expand with the window: window/content/bounds/root/workspace/max "
+            + std::to_string(NSWidth(self.window.frame)) + "/"
+            + std::to_string(NSWidth(self.window.contentView.frame)) + "/"
+            + std::to_string(NSWidth(self.window.contentView.bounds)) + "/"
+            + std::to_string(NSWidth(_workspace.superview.frame)) + "/"
+            + std::to_string(NSWidth(_workspace.frame)) + "/"
+            + std::to_string(self.window.maxSize.width) + ", nav "
+            + std::to_string(minimumNavigationWidth) + "->"
+            + std::to_string(NSWidth(_navigation.frame)) + ", editor "
+            + std::to_string(minimumEditorWidth) + "->"
+            + std::to_string(NSWidth(_editorHost.frame)) + ", list "
+            + std::to_string(minimumListWidth) + "->"
+            + std::to_string(NSWidth(_profilesList.frame)) + ", details "
+            + std::to_string(minimumDetailsWidth) + "->"
+            + std::to_string(NSWidth(_profileDetailsScroll.frame)) + ", columns "
+            + std::to_string(minimumProfileColumnWidth) + "/"
+            + std::to_string(minimumEnabledColumnWidth) + "/"
+            + std::to_string(minimumReadinessColumnWidth) + "->"
+            + std::to_string(_profileColumn.width) + "/"
+            + std::to_string(_enabledColumn.width) + "/"
+            + std::to_string(_readinessColumn.width);
+        restore();
+        return NO;
+    }
+    NSUInteger actionIndex = 0;
+    for (NSView* action in _serviceActions.arrangedSubviews) {
+        const NSSize minimumSize = minimumActionSizes[actionIndex++];
+        if (!approximately_equal(NSWidth(action.frame), minimumSize.width)
+            || !approximately_equal(NSHeight(action.frame), minimumSize.height)) {
+            error = "a header action resized when the window widened";
+            restore();
+            return NO;
+        }
+    }
+    restore();
+    return YES;
+}
+
 - (BOOL)validateLayout:(std::string&)error {
     error.clear();
     [self.window.contentView layoutSubtreeIfNeeded];
@@ -1655,6 +2054,9 @@ private:
     }
     if (self.window.backingScaleFactor <= 0.0) {
         error = "main window has no valid backing scale";
+        return NO;
+    }
+    if (![self validateResponsiveLayout:error]) {
         return NO;
     }
     if ([_profilesView isKindOfClass:NSSplitView.class]) {
@@ -2392,6 +2794,9 @@ bool MacMainWindow::Impl::run_test_command(std::string_view command, std::string
     }
     if (command == "probe:profile-rule-summary") {
         return controller_ != nil && [controller_ validateProfileRuleSummary:error];
+    }
+    if (command == "probe:responsive-layout") {
+        return controller_ != nil && [controller_ validateResponsiveBehavior:error];
     }
     if (command == "view:profiles" || command == "view:rules" || command == "view:settings") {
         if (controller_ == nil) {

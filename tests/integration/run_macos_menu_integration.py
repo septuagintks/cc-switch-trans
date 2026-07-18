@@ -433,6 +433,7 @@ def main():
         for probe in (
             "probe",
             "probe:views",
+            "probe:responsive-layout",
             "probe:keyboard",
             "probe:retina",
             "resize:min",
