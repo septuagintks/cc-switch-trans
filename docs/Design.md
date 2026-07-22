@@ -5,6 +5,7 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | 实现基线 | 当前源码与发行基线 `0.7.0` |
+| 开发分支 | `0.8-A` Qt Quick 独立 GUI/双工具链技术基线；尚未替换生产 Win32 GUI |
 | 当前发行版 | `0.7.0-Windows-x64`；`0.7.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -18,6 +19,12 @@
 后续顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
 [ProjectStructure.md](ProjectStructure.md)，当前双平台发布结论见
 [Release-0.7.0.md](Archived/Release-0.7.0.md)。
+
+`0.8-A` 已加入不会进入当前请求路径的独立 `ccs-trans-gui.exe` 原型。它使用 Qt 6.10.3/官方 MinGW 13.1，
+与 GCC 16 runtime 位于互斥 build tree，不链接 `ccs-trans-core`。原型只验证 typed incremental model、
+stable-key selection、全局 motion policy、同步期动画隔离、D3D11/software RHI、idle frame、固定部署与
+安装卸载。生产 tray 仍持有 0.7.0 Win32 主窗口；在 `0.8-C/D` IPC 与生命周期完成前，两者没有运行时连接。
+精确开发合同和资源预算见 [Planning-0.8.0.md](Planning-0.8.0.md)。
 
 ## 项目定位
 

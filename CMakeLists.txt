@@ -71,6 +71,19 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(CCS_TRANS_WARNINGS_AS_ERRORS "Enable strict C++ warnings and treat them as errors" OFF)
+option(CCS_TRANS_BUILD_RUNTIME "Build the CLI and native tray/menu runtime" ON)
+option(CCS_TRANS_BUILD_QT_GUI "Build the independent Windows Qt Quick GUI" OFF)
+
+if(CCS_TRANS_BUILD_RUNTIME AND CCS_TRANS_BUILD_QT_GUI)
+    message(FATAL_ERROR
+        "Runtime and Qt GUI targets require independent build trees; enable exactly one")
+endif()
+if(NOT CCS_TRANS_BUILD_RUNTIME AND NOT CCS_TRANS_BUILD_QT_GUI)
+    message(FATAL_ERROR "Enable one of CCS_TRANS_BUILD_RUNTIME or CCS_TRANS_BUILD_QT_GUI")
+endif()
+if(CCS_TRANS_BUILD_QT_GUI AND NOT WIN32)
+    message(FATAL_ERROR "The Qt Quick sidecar is a Windows-only target")
+endif()
 if(CCS_TRANS_WARNINGS_AS_ERRORS)
     if(MSVC)
         add_compile_options(
@@ -101,6 +114,7 @@ configure_file(
     @ONLY
 )
 
+if(CCS_TRANS_BUILD_RUNTIME)
 add_library(ccs-trans-sqlite3 STATIC
     third_party/sqlite/sqlite3.c
 )
@@ -531,4 +545,18 @@ if(BUILD_TESTING)
         tests/benchmark/rule_pipeline_benchmark.cpp
     )
     target_link_libraries(ccs-trans-rule-pipeline-benchmark PRIVATE ccs-trans-core)
+endif()
+endif()
+
+if(CCS_TRANS_BUILD_QT_GUI)
+    add_subdirectory(src/gui/windows)
+endif()
+
+if(BUILD_TESTING)
+    add_test(
+        NAME ccs-trans-gui-structure-check
+        COMMAND "${CMAKE_COMMAND}"
+            -DCCS_TRANS_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_gui_structure.cmake"
+    )
 endif()

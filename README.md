@@ -46,6 +46,30 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
+The in-progress `0.8-A` Windows Qt Quick prototype uses a separate build tree
+and does not replace or connect to the production tray yet. Qt 6.10.3 and its
+official MinGW 13.1 toolchain default to `%USERPROFILE%/Qt`; set
+`CCS_TRANS_QT_ROOT` and `CCS_TRANS_QT_MINGW_ROOT` for another installation.
+Exact archives and hashes are recorded in
+[`dependencies/windows-qt.lock.json`](dependencies/windows-qt.lock.json).
+
+```text
+cmake --preset windows-runtime-release
+cmake --build --preset windows-runtime-release
+ctest --preset windows-runtime-release
+
+cmake --preset windows-qt-gui-release
+cmake --build --preset windows-qt-gui-release
+ctest --preset windows-qt-gui-release
+```
+
+Qt deployment, installed-tree smoke, and resource baselines are development
+probes documented in
+[`docs/Planning-0.8.0.md`](docs/Planning-0.8.0.md). This project is explicitly
+non-commercial, so Inno Setup 7's `Non-commercial use only` edition is the
+frozen installer generator. A future change in project use requires a new
+license review or a move to WiX before another setup release.
+
 Local Windows builds produce the console CLI `build/ccs-trans.exe` and the GUI
 tray host `build/ccs-trans-tray.exe`. Double-clicking the tray host starts all
 enabled Profiles without opening a console window.

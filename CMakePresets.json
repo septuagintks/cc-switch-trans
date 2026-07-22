@@ -7,6 +7,62 @@
   },
   "configurePresets": [
     {
+      "name": "windows-runtime-release",
+      "displayName": "Windows runtime Release (GCC 16)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows-runtime-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CCS_TRANS_BUILD_RUNTIME": "ON",
+        "CCS_TRANS_BUILD_QT_GUI": "OFF",
+        "CCS_TRANS_WARNINGS_AS_ERRORS": "OFF"
+      }
+    },
+    {
+      "name": "windows-runtime-warning",
+      "displayName": "Windows runtime warnings as errors (GCC 16)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows-runtime-warning",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CCS_TRANS_BUILD_RUNTIME": "ON",
+        "CCS_TRANS_BUILD_QT_GUI": "OFF",
+        "CCS_TRANS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "windows-qt-gui-release",
+      "displayName": "Windows Qt GUI Release (Qt 6.10.3 / MinGW 13.1)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows-qt-gui-release",
+      "environment": {
+        "PATH": "$penv{USERPROFILE}/Qt/Tools/mingw1310_64/bin;$penv{USERPROFILE}/Qt/6.10.3/mingw_64/bin;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/windows-qt-mingw-toolchain.cmake",
+        "CCS_TRANS_BUILD_RUNTIME": "OFF",
+        "CCS_TRANS_BUILD_QT_GUI": "ON",
+        "CCS_TRANS_WARNINGS_AS_ERRORS": "OFF"
+      }
+    },
+    {
+      "name": "windows-qt-gui-warning",
+      "displayName": "Windows Qt GUI warnings as errors (Qt 6.10.3 / MinGW 13.1)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-windows-qt-gui-warning",
+      "environment": {
+        "PATH": "$penv{USERPROFILE}/Qt/Tools/mingw1310_64/bin;$penv{USERPROFILE}/Qt/6.10.3/mingw_64/bin;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/windows-qt-mingw-toolchain.cmake",
+        "CCS_TRANS_BUILD_RUNTIME": "OFF",
+        "CCS_TRANS_BUILD_QT_GUI": "ON",
+        "CCS_TRANS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "macos-arm64-release",
       "displayName": "macOS 26 arm64 Release",
       "generator": "Ninja",
@@ -35,6 +91,22 @@
   ],
   "buildPresets": [
     {
+      "name": "windows-runtime-release",
+      "configurePreset": "windows-runtime-release"
+    },
+    {
+      "name": "windows-runtime-warning",
+      "configurePreset": "windows-runtime-warning"
+    },
+    {
+      "name": "windows-qt-gui-release",
+      "configurePreset": "windows-qt-gui-release"
+    },
+    {
+      "name": "windows-qt-gui-warning",
+      "configurePreset": "windows-qt-gui-warning"
+    },
+    {
       "name": "macos-arm64-release",
       "configurePreset": "macos-arm64-release"
     },
@@ -44,6 +116,34 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "windows-runtime-release",
+      "configurePreset": "windows-runtime-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-runtime-warning",
+      "configurePreset": "windows-runtime-warning",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-qt-gui-release",
+      "configurePreset": "windows-qt-gui-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-qt-gui-warning",
+      "configurePreset": "windows-qt-gui-warning",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
     {
       "name": "macos-arm64-release",
       "configurePreset": "macos-arm64-release",

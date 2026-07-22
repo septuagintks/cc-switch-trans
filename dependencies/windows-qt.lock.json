@@ -1,0 +1,54 @@
+{
+  "schema": "ccs-trans.windows-qt-lock/v1",
+  "captured_at": "2026-07-22",
+  "repository": "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/",
+  "installer": {
+    "name": "aqtinstall",
+    "version": "3.3.0",
+    "hash_verification": true
+  },
+  "qt": {
+    "version": "6.10.3",
+    "architecture": "win64_mingw",
+    "linkage": "dynamic",
+    "license": "LGPL-3.0-only",
+    "modules": [
+      "Core",
+      "Gui",
+      "Qml",
+      "Quick",
+      "QuickControls2",
+      "Network",
+      "Test",
+      "QuickTest"
+    ],
+    "archives": [
+      {"name": "qtbase-Windows-Windows_11_24H2-Mingw-Windows-Windows_11_24H2-X86_64.7z", "bytes": 25360372, "sha256": "5C551318297ED374AC2C40A3E9A8061FFB0414F01346F15304E0CA5C0B8DE08C"},
+      {"name": "qtdeclarative-Windows-Windows_11_24H2-Mingw-Windows-Windows_11_24H2-X86_64.7z", "bytes": 100995656, "sha256": "615A056AD6F99BC6CE0C198C3D70C6D02DE7AF74DDE87EE8A0AEDFDD7204297A"},
+      {"name": "qtsvg-Windows-Windows_11_24H2-Mingw-Windows-Windows_11_24H2-X86_64.7z", "bytes": 322289, "sha256": "7BE0CD4E4E1DFC9E98336145773C37055E664BA3CF0347119721CEACF6C97043"},
+      {"name": "qttools-Windows-Windows_11_24H2-Mingw-Windows-Windows_11_24H2-X86_64.7z", "bytes": 26567806, "sha256": "A6009054EDB9103E049D204EA7F73EFF53E0C2344BC3F586D8AB11A05447506C"},
+      {"name": "qttranslations-Windows-Windows_11_24H2-Mingw-Windows-Windows_11_24H2-X86_64.7z", "bytes": 1925516, "sha256": "757F36381622693B6B1E9D0471B46F7869084C39FF105D0564A37BC009412BB7"},
+      {"name": "MinGW-w64-x86_64-13.1.0-release-posix-seh-msvcrt-rt_v11-rev1-runtime.7z", "bytes": 644845, "sha256": "715868BD23B50FADC0A7EE160C3E24C59CB2A836F5390A4E32E0AB0491DC8325"},
+      {"name": "d3dcompiler_47-x64.7z", "bytes": 1380117, "sha256": "8D9552C4DCDD7FE6572B523A8C322AC2D78F5E19EE1102CB70C42B95ACDB36A4"},
+      {"name": "opengl32sw-64-mesa_11_2_2-signed_sha256.7z", "bytes": 5474526, "sha256": "9892B2F111FC1B8EDF663090515A821841BA232F972EB52802849FEC0465FBDC"}
+    ]
+  },
+  "compiler": {
+    "package": "qt.tools.win64_mingw1310",
+    "version": "13.1.0",
+    "archive": {"name": "mingw1310.7z", "bytes": 112089140, "sha256": "A7B502294A903B64FCCD4A41BA39F48D3F6C9A5ECE167F0CFAEAC920D15B344F"}
+  },
+  "installer_generator": {
+    "name": "Inno Setup",
+    "version": "7.0.2-x64",
+    "status": "frozen-for-non-commercial-project-use",
+    "project_use": "non-commercial",
+    "decision_date": "2026-07-22",
+    "compiler_license_banner": "Non-commercial use only",
+    "commercial_use_fallback": "WiX or a valid Inno Setup commercial license",
+    "url": "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x64.exe",
+    "sha256": "5AD54CA3DEF786F8F4212552E54CC6D8D61329E2D24A1CFEE0571D42C2684FF1",
+    "authenticode_subject": "CN=Pyrsys B.V., O=Pyrsys B.V., S=Noord-Holland, C=NL",
+    "authenticode_thumbprint": "E0AB19C8D38CBF9C44709925122A7A02F8C70CB7"
+  }
+}

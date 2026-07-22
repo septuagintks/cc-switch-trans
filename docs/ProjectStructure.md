@@ -10,6 +10,12 @@ cc-switch-trans/
   .gitattributes
   .gitignore
 
+  cmake/
+    windows-qt-mingw-toolchain.cmake
+
+  dependencies/
+    windows-qt.lock.json
+
   assets/
     icons/
       ccs-trans-512.png
@@ -29,6 +35,25 @@ cc-switch-trans/
     ProjectStructure.md
 
   src/
+    gui/
+      windows/
+        CMakeLists.txt
+        app/
+          gui_main.cpp
+        diagnostics/
+          frame_monitor.hpp/.cpp
+        interaction/
+          animation_policy.hpp/.cpp
+        prototype/
+          profile_list_model.hpp/.cpp
+          prototype_controller.hpp/.cpp
+        tests/
+          profile_list_model_tests.cpp
+          qml_test_main.cpp
+          qml/
+        ui/
+          Main.qml
+          components/
     app/
       application_control.hpp
       application_controller.hpp/.cpp
@@ -171,12 +196,17 @@ cc-switch-trans/
       rule_pipeline_benchmark.cpp
 
   tools/
+    build_windows_installer_prototype.ps1
+    check_gui_structure.cmake
     check_stage12_prerequisites.ps1
     check_stage13_prerequisites.sh
+    deploy_windows_qt_gui.ps1
     generate_icons.ps1
     generate_macos_icons.sh
     package_macos.sh
     package_windows.ps1
+    measure_windows_gui_baseline.ps1
+    test_windows_installer_prototype.ps1
     verify_macos_package.sh
     verify_windows_package.ps1
 
@@ -186,6 +216,9 @@ cc-switch-trans/
       ccs-trans.entitlements
     windows/
       ccs-trans-tray.rc.in
+      qt-runtime-manifest.txt
+      installer/
+        ccs-trans-prototype.iss
 
   third_party/
     nlohmann/
@@ -196,6 +229,9 @@ cc-switch-trans/
       sqlite3.h
       sqlite3ext.h
       NOTICE.md
+    qt/
+      LGPL-3.0-only.txt
+      NOTICE.md
 ```
 
 ## 目录职责
@@ -205,6 +241,7 @@ cc-switch-trans/
 | `src/app` | 进程无关的服务启动、停止、reload、rollback、窄控制接口与共享 control executor |
 | `src/config` | v3 application codec、Composite repository/migration、typed draft/descriptor、Rule 文本、CLI、v2 import codec 与 runtime 编译 |
 | `src/core` | HTTP 数据、取消、timeout、URL、request id 与全局资源指标 |
+| `src/gui/windows` | 独立 Qt Quick GUI、typed Qt model/controller、interaction policy、frame probe 与 Qt 测试；当前为 `0.8-A` 原型 |
 | `src/hosts` | CLI、Windows tray、macOS menu bar 与平台窗口/系统操作 |
 | `src/logging` | JSON Lines、有界队列、批写、2 GiB 日志族轮转/保留、error flush、drain 与 writer health |
 | `src/presentation` | 平台无关主窗口合同、异步 ViewModel、Profile draft 命令、`ccs-trans.ui/v1` codec 与独立原子 store |
@@ -218,6 +255,10 @@ cc-switch-trans/
 | `tests/unit` | 配置 repository/editing、路由、protocol、Rule、logger、生命周期和本地错误合约 |
 | `tests/integration` | 单端口协议、桌面宿主、SSE/Usage/reload、取消和平台 proxy 策略 |
 | `tests/benchmark` | 8/16/50 路负载、0/1/8/32 Rule 微基准与长时间 soak 采样 |
+| `cmake` | 独立 Qt GUI 工具链文件；不存个人绝对路径 |
+| `dependencies` | 可审计的外部工具/archive 版本、来源、字节数和 hash，不存二进制 |
+| `packaging/windows` | tray 资源、固定 Qt runtime manifest 与 setup 定义 |
+| `third_party/qt` | Qt 发行 notice/license；实际 Qt SBOM 在部署时从冻结 SDK staging |
 
 ## 依赖方向
 
@@ -231,6 +272,7 @@ server -> runtime + logging + UpstreamTransport
 platform transport -> transport interface + platform API
 protocols/rules/routing -> core data types
 core -> C++ standard library
+Windows Qt GUI -> Qt + GUI-owned model/controller (independent process/build tree)
 ```
 
 禁止反向依赖：
@@ -242,6 +284,10 @@ core -> C++ standard library
 - `hosts` 不复制 compiler、RouteTable、logger 或 transport 初始化；
 - `logging` 不决定请求是否改写；
 - Composite repository、ConfigurationEditor 与 legacy ConfigStore 都不得原地修改已发布 RuntimeSnapshot。
+- `src/gui/windows` 不得 include `runtime`、`server`、`storage`、`config`、WinHTTP 或旧 Win32 window；后续只
+  通过 `gui_ipc` DTO 与 tray 交换状态和命令；
+- GCC 16 runtime 与 MinGW 13.1 Qt GUI 不共享 object、静态库、STL 类型或 C++ ABI，二者只在 staging
+  合并可执行文件和运行库。
 
 ## CMake 目标
 
@@ -252,6 +298,11 @@ ccs-trans-core
 ccs-trans
 ccs-trans-tray
 ccs-trans-menu
+ccs-trans-gui
+ccs-trans-gui-prototype
+ccs-trans-gui-structure-check
+ccs-trans-gui-model-tests
+ccs-trans-gui-qml-tests
 ccs-trans-core-tests
 ccs-trans-sqlite-dependency-tests
 ccs-trans-sqlite-profile-store-tests
@@ -283,18 +334,19 @@ ccs-trans-rule-pipeline-benchmark
 创建静态库。Windows 编译 WinSock adapter 与 `transport/windows`，macOS 编译 POSIX
 adapter 与 `transport/macos/curl_transport.*`。
 
-`CMakePresets.json` 当前只提供 macOS 26 arm64 Release 与 warnings-as-errors 入口。preset
-固定 build directory、selected `macosx` SDK、architecture 和 deployment target；个人路径
-或凭据只能写入被忽略的 `CMakeUserPresets.json`，不能修改共享 preset。
+`CMakePresets.json` 提供 Windows runtime、Windows Qt GUI、macOS 26 arm64 三组独立的 Release 与
+warnings-as-errors 入口。Windows Qt preset 固定 Qt 6.10.3/官方 MinGW 13.1 toolchain；macOS preset 固定
+selected `macosx` SDK、architecture 和 deployment target。个人路径或凭据只能写入被忽略的
+`CMakeUserPresets.json`，不能修改共享 preset。
 
-Windows GUI subsystem target 为 `ccs-trans-tray`；macOS app bundle target 为
-`ccs-trans-menu`，产物名为 `ccs-trans.app`。
-两者只链接共享 core 和各自 host source，不能把 Win32/AppKit source 加入 console CLI。
+根选项 `CCS_TRANS_BUILD_RUNTIME` 与 `CCS_TRANS_BUILD_QT_GUI` 必须恰好启用一个，同一 build tree 混建会
+在 configure 阶段失败。`ccs-trans-gui-structure-check` 同时进入 runtime 和 Qt CTest，确保后续提交即使只
+构建一侧也不会绕过文件体量与依赖边界。
 
-上述 target 和目录描述只代表 `0.7.0` 当前源码。`0.8.0` 将保留轻量 Win32 tray/runtime，新增独立
-Qt Quick/QML `ccs-trans-gui` target 和进程间协议，并在功能对等验收后删除旧 Win32/GDI+ 窗口源码；
-未来目录和依赖边界以 [Planning-0.8.0.md](Planning-0.8.0.md) 为准，在源码实际创建后再并入本文件的
-“当前目录”。
+Windows 当前生产 GUI subsystem target 仍为 `ccs-trans-tray`；macOS app bundle target 为
+`ccs-trans-menu`，产物名为 `ccs-trans.app`。`0.8-A` 新增的 `ccs-trans-gui` 是独立 Qt Quick prototype，
+不链接共享 core，也尚未由 tray 启动。`0.8-C/D` 接入 IPC 和生命周期，`0.8-E` 功能对等验收后才删除旧
+Win32/GDI+ 窗口；当前 production 行为仍以 0.7.0 为准。
 
 ## 平台实现目录
 
@@ -315,6 +367,27 @@ control executor、presentation 与 HostPlatform 接口编译进共享 core，CL
 `run_tray_integration.py` 使用隔离 instance suffix 自动验证 Profile/typed Settings/Rule 文本编辑、
 CLI/GUI stale Apply 与显式 Reload Draft、dirty close、普通/轻量窗口、第二实例、两轮各 100 次资源
 生命周期，以及窗口抖动期间 `desktop-16` 完整回传。
+
+Windows Qt `0.8-A` 验证入口：
+
+```text
+cmake/windows-qt-mingw-toolchain.cmake
+dependencies/windows-qt.lock.json
+src/gui/windows/
+packaging/windows/qt-runtime-manifest.txt
+packaging/windows/installer/ccs-trans-prototype.iss
+tools/check_gui_structure.cmake
+tools/deploy_windows_qt_gui.ps1
+tools/build_windows_installer_prototype.ps1
+tools/test_windows_installer_prototype.ps1
+tools/measure_windows_gui_baseline.ps1
+```
+
+`src/gui/windows/prototype` 只验证 stable-key 增量 model、每轮最多 32 mutation/2 ms 的 UI-thread batch、
+同步期动画暂停和 deterministic end state，不是正式业务 model。`deploy_windows_qt_gui.ps1` 从
+`windeployqt` 候选输出重建 staging，再与固定 129 文件 manifest 比对并运行软件 RHI self-test；setup
+prototype 只能消费这个已验证 staging。项目已明确限定为非商业使用，安装器冻结为 Inno Setup 7.0.2；
+若项目用途变化，必须重新审计许可或切换 WiX。
 
 macOS 当前实现：
 
