@@ -11,7 +11,7 @@ Control {
     signal toggled(bool checked)
 
     implicitWidth: 186
-    implicitHeight: 38
+    implicitHeight: 36
     focusPolicy: Qt.StrongFocus
     Accessible.role: Accessible.CheckBox
     Accessible.name: text
@@ -19,7 +19,7 @@ Control {
 
     contentItem: Item {
         id: visual
-        scale: tap.pressed ? 0.975 : (hover.hovered ? 1.012 : 1.0)
+        scale: pointer.pressed ? 0.975 : (pointer.containsMouse ? 1.012 : 1)
 
         Behavior on scale {
             NumberAnimation {
@@ -31,11 +31,15 @@ Control {
         Rectangle {
             anchors.fill: parent
             radius: 7
-            color: hover.hovered ? "#e8edf0" : "#f2f5f6"
+            color: pointer.containsMouse ? "#e2e9e6" : "#e9eeec"
             border.width: root.visualFocus ? 2 : 1
-            border.color: root.visualFocus ? "#147fc4" : "#b4c0c5"
-            Behavior on color { ColorAnimation { duration: root.motion.shortDuration } }
-            Behavior on border.color { ColorAnimation { duration: root.motion.shortDuration } }
+            border.color: root.visualFocus ? "#218bd0" : "#c6d0cc"
+            Behavior on color {
+                ColorAnimation { duration: root.motion.shortDuration }
+            }
+            Behavior on border.color {
+                ColorAnimation { duration: root.motion.shortDuration }
+            }
         }
 
         Text {
@@ -43,7 +47,7 @@ Control {
             anchors.left: parent.left
             anchors.leftMargin: 12
             anchors.verticalCenter: parent.verticalCenter
-            color: "#172126"
+            color: "#18211f"
             font.pixelSize: 13
             renderType: Text.NativeRendering
         }
@@ -56,8 +60,10 @@ Control {
             anchors.right: parent.right
             anchors.rightMargin: 9
             anchors.verticalCenter: parent.verticalCenter
-            color: root.checked ? "#16875b" : "#9aa8ae"
-            Behavior on color { ColorAnimation { duration: root.motion.mediumDuration } }
+            color: root.checked ? "#147d64" : "#91a09b"
+            Behavior on color {
+                ColorAnimation { duration: root.motion.mediumDuration }
+            }
 
             Rectangle {
                 id: knob
@@ -77,16 +83,18 @@ Control {
         }
     }
 
-    HoverHandler { id: hover }
-    TapHandler {
-        id: tap
-        onTapped: {
-            root.checked = !root.checked
-            root.toggled(root.checked)
-        }
+    MouseArea {
+        id: pointer
+        anchors.fill: parent
+        z: 2
+        enabled: root.enabled
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onPressed: root.forceActiveFocus()
+        onClicked: root.toggled(!root.checked)
     }
-    Keys.onSpacePressed: {
-        root.checked = !root.checked
-        root.toggled(root.checked)
+    Keys.onSpacePressed: event => {
+        root.toggled(!root.checked)
+        event.accepted = true
     }
 }

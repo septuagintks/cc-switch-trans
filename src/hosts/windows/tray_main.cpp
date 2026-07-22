@@ -2,7 +2,6 @@
 
 #include "config/app_paths.hpp"
 #include "hosts/windows/instance_coordinator.hpp"
-#include "hosts/windows/resource_ids.hpp"
 #include "hosts/windows/tray_app.hpp"
 
 #define WIN32_LEAN_AND_MEAN
@@ -83,7 +82,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     };
     const auto mutex_name = qualified(ccs::kTrayMutexName);
     const auto tray_window_class = qualified(ccs::kTrayWindowClass);
-    const auto main_window_class = qualified(kMainWindowClass);
     const auto window_title = suffix.empty()
         ? std::wstring{L"ccs-trans"}
         : std::wstring{L"ccs-trans test "} + suffix;
@@ -115,8 +113,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         std::move(paths),
         std::move(executable),
         tray_window_class,
-        window_title,
-        main_window_class);
+        window_title);
     const int exit_code = application.run();
     if (SUCCEEDED(com_result)) {
         CoUninitialize();

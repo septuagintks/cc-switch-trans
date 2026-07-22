@@ -3,200 +3,186 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import CcsTrans.Gui
 import "components" as Components
+import "features" as Features
 
 ApplicationWindow {
     id: window
 
-    width: 960
-    height: 620
-    minimumWidth: 780
-    minimumHeight: 500
-    visible: true
-    title: "ccs-trans"
-    color: "#f4f6f7"
+    property int activeTab: 0
 
-    Rectangle {
+    width: 1020
+    height: 680
+    minimumWidth: 820
+    minimumHeight: 540
+    visible: false
+    title: "ccs-trans"
+    color: Theme.canvas
+    onClosing: close => {
+        close.accepted = false
+        windowController.requestClose()
+    }
+
+    background: Rectangle { color: Theme.canvas }
+
+    ColumnLayout {
         anchors.fill: parent
-        color: "#f4f6f7"
+        anchors.margins: 18
+        spacing: 12
 
         RowLayout {
-            anchors.fill: parent
-            anchors.margins: 18
-            spacing: 18
+            Layout.fillWidth: true
+            Layout.preferredHeight: 38
+            spacing: 10
+
+            Text {
+                text: "ccs-trans"
+                color: Theme.text
+                font.pixelSize: 22
+                font.bold: true
+                renderType: Text.NativeRendering
+            }
 
             Rectangle {
-                Layout.preferredWidth: 300
-                Layout.fillHeight: true
-                radius: 8
-                color: "#ffffff"
-                border.width: 1
-                border.color: "#c7d1d5"
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    spacing: 10
-
-                    Text {
-                        text: "Profiles"
-                        color: "#172126"
-                        font.pixelSize: 18
-                        font.bold: true
-                        renderType: Text.NativeRendering
-                    }
-
-                    ListView {
-                        id: profileList
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        reuseItems: true
-                        boundsBehavior: Flickable.StopAtBounds
-                        model: profileModel
-                        currentIndex: prototypeController.selectedIndex
-
-                        delegate: Components.ProfileDelegate {
-                            width: ListView.view.width
-                            motion: motionPolicy
-                            selected: stableKey === prototypeController.selectedKey
-                            modelSyncActive: prototypeController.stressRunning
-                            onChosen: key => prototypeController.setSelectedKey(key)
-                        }
-
-                        add: Transition {
-                            enabled: !motionPolicy.reduceMotion &&
-                                     !prototypeController.stressRunning
-                            NumberAnimation {
-                                properties: "opacity"
-                                from: 0
-                                to: 1
-                                duration: motionPolicy.mediumDuration
-                            }
-                        }
-                        moveDisplaced: Transition {
-                            enabled: !motionPolicy.reduceMotion &&
-                                     !prototypeController.stressRunning
-                            NumberAnimation {
-                                properties: "x,y"
-                                duration: motionPolicy.movementDuration
-                                easing.type: Easing.OutCubic
-                            }
-                        }
-
-                        ScrollBar.vertical: ScrollBar {
-                            id: profileScrollBar
-                            policy: ScrollBar.AsNeeded
-                            opacity: active || hovered ? 1 : 0
-                            contentItem: Rectangle {
-                                implicitWidth: 6
-                                radius: 3
-                                color: profileScrollBar.hovered ? "#65777f" : "#93a2a8"
-                                Behavior on color {
-                                    ColorAnimation { duration: motionPolicy.shortDuration }
-                                }
-                            }
-                            background: Item {}
-                            Behavior on opacity {
-                                NumberAnimation { duration: motionPolicy.mediumDuration }
-                            }
-                        }
-                    }
+                width: 8
+                height: 8
+                radius: 4
+                color: guiState.applicationState === "running"
+                       ? Theme.accent
+                       : (guiState.applicationState === "faulted"
+                          ? Theme.danger : Theme.warning)
+                Behavior on color {
+                    ColorAnimation { duration: motionPolicy.shortDuration }
                 }
             }
 
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                spacing: 14
+            Text {
+                text: guiState.applicationState
+                      + (guiState.listenerAddress.length > 1
+                         ? "  ·  " + guiState.listenerAddress : "")
+                color: Theme.textMuted
+                font.pixelSize: 12
+                renderType: Text.NativeRendering
+            }
 
-                RowLayout {
+            Item { Layout.fillWidth: true }
+
+            Components.MotionButton {
+                motion: motionPolicy
+                secondary: true
+                text: "Start"
+                enabled: guiState.canStart && !commandDispatcher.busy
+                onClicked: commandDispatcher.startService()
+            }
+            Components.MotionButton {
+                motion: motionPolicy
+                secondary: true
+                text: "Stop"
+                enabled: guiState.canStop && !commandDispatcher.busy
+                onClicked: commandDispatcher.stopService()
+            }
+            Components.MotionButton {
+                motion: motionPolicy
+                secondary: true
+                text: "Reload"
+                enabled: guiState.canReload && !commandDispatcher.busy
+                onClicked: commandDispatcher.reloadService()
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 38
+            spacing: 6
+
+            Components.NavigationTab {
+                motion: motionPolicy
+                text: "Profiles"
+                selected: window.activeTab === 0
+                onClicked: window.activeTab = 0
+            }
+            Components.NavigationTab {
+                motion: motionPolicy
+                text: "Rules"
+                selected: window.activeTab === 1
+                onClicked: window.activeTab = 1
+            }
+            Components.NavigationTab {
+                motion: motionPolicy
+                text: "Settings"
+                selected: window.activeTab === 2
+                onClicked: window.activeTab = 2
+            }
+            Item { Layout.fillWidth: true }
+            Text {
+                text: guiState.draftPhase + "  ·  r" + guiState.draftRevision
+                color: guiState.draftDirty ? Theme.warning : Theme.textMuted
+                font.pixelSize: 12
+                renderType: Text.NativeRendering
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 1
+            color: Theme.border
+        }
+
+        StackLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            currentIndex: window.activeTab
+
+            Features.ProfilesPage {}
+            Features.RulesPage {}
+            Features.SettingsPage {}
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 44
+            radius: Theme.radius
+            color: guiState.lastCommandError !== ""
+                   && guiState.lastCommandError !== "none"
+                   ? "#f7e5e7" : Theme.surfaceMuted
+            border.width: 1
+            border.color: guiState.lastCommandError !== ""
+                          && guiState.lastCommandError !== "none"
+                          ? "#dfadb3" : Theme.border
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 8
+                spacing: 8
+
+                Text {
                     Layout.fillWidth: true
-                    spacing: 10
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "ccs-trans"
-                        color: "#172126"
-                        font.pixelSize: 22
-                        font.bold: true
-                        renderType: Text.NativeRendering
-                    }
-
-                    Components.MotionSwitch {
-                        motion: motionPolicy
-                        text: "Reduce motion"
-                        checked: motionPolicy.reduceMotion
-                        onToggled: value => motionPolicy.reduceMotion = value
-                    }
-
-                    Components.MotionButton {
-                        motion: motionPolicy
-                        text: prototypeController.stressRunning ? "Updating..." : "Run model probe"
-                        enabled: !prototypeController.stressRunning
-                        onClicked: prototypeController.startStress(4096)
-                    }
+                    text: commandDispatcher.localError.length > 0
+                          ? commandDispatcher.localError
+                          : (guiState.lastCommandDetail.length > 0
+                             ? guiState.lastCommandDetail
+                             : (commandDispatcher.busy
+                                ? "Applying command" : "Ready"))
+                    color: guiState.lastCommandError !== ""
+                           && guiState.lastCommandError !== "none"
+                           ? Theme.danger : Theme.textMuted
+                    font.pixelSize: 12
+                    elide: Text.ElideRight
+                    renderType: Text.NativeRendering
                 }
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    radius: 8
-                    color: "#ffffff"
-                    border.width: 1
-                    border.color: "#c7d1d5"
-
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 24
-                        spacing: 16
-
-                        Text {
-                            text: prototypeController.selectedIndex >= 0
-                                  ? "Selected profile " + (prototypeController.selectedIndex + 1)
-                                  : "No profile selected"
-                            color: "#172126"
-                            font.pixelSize: 18
-                            font.bold: true
-                            renderType: Text.NativeRendering
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            implicitHeight: 1
-                            color: "#d8dfe2"
-                        }
-
-                        GridLayout {
-                            columns: 2
-                            columnSpacing: 22
-                            rowSpacing: 12
-
-                            Text { text: "Profiles"; color: "#607078" }
-                            Text { text: profileModel.count; color: "#172126" }
-                            Text { text: "Rules"; color: "#607078" }
-                            Text { text: profileModel.totalRuleCount(); color: "#172126" }
-                            Text { text: "Mutations"; color: "#607078" }
-                            Text {
-                                text: prototypeController.completedMutations
-                                color: "#172126"
-                            }
-                        }
-
-                        Item { Layout.fillHeight: true }
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: prototypeController.stressRunning
-                                  ? "Applying incremental model updates"
-                                  : "Model ready"
-                            color: prototypeController.stressRunning ? "#a55a00" : "#16875b"
-                            horizontalAlignment: Text.AlignRight
-                            renderType: Text.NativeRendering
-                            Behavior on color {
-                                ColorAnimation { duration: motionPolicy.shortDuration }
-                            }
-                        }
-                    }
+                Components.MotionButton {
+                    motion: motionPolicy
+                    secondary: true
+                    text: "Discard"
+                    enabled: guiState.draftDirty && !commandDispatcher.busy
+                    onClicked: commandDispatcher.discardDraft()
+                }
+                Components.MotionButton {
+                    motion: motionPolicy
+                    text: "Apply"
+                    enabled: guiState.draftDirty && !commandDispatcher.busy
+                    onClicked: commandDispatcher.applyDraft()
                 }
             }
         }

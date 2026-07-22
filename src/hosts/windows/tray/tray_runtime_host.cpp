@@ -199,7 +199,6 @@ void TrayApplication::begin_exit(const std::string& reason) {
     }
     gui_shutdown_complete_.store(true);
     view_model_.set_update_handler({});
-    if (main_window_) main_window_->destroy();
     view_model_.stop();
     KillTimer(window_, tray_messages::status_timer);
     tray_icon_.remove();

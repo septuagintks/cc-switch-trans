@@ -8,7 +8,6 @@
 #include "config/configuration_editor.hpp"
 #include "hosts/windows/gui_bridge/gui_command_router.hpp"
 #include "hosts/windows/maintenance/maintenance_ipc_server.hpp"
-#include "hosts/windows/main_window.hpp"
 #include "hosts/windows/tray/gui_session_controller.hpp"
 #include "hosts/windows/tray/tray_icon.hpp"
 #include "hosts/windows/windows_host_platform.hpp"
@@ -36,8 +35,7 @@ public:
         AppPaths paths,
         std::filesystem::path executable_path,
         std::wstring window_class,
-        std::wstring window_title,
-        std::wstring main_window_class);
+        std::wstring window_title);
     ~TrayApplication();
 
     TrayApplication(const TrayApplication&) = delete;
@@ -111,7 +109,6 @@ private:
     std::filesystem::path executable_path_;
     std::wstring window_class_;
     std::wstring window_title_;
-    std::wstring main_window_class_;
     ApplicationController controller_;
     WindowsHostPlatform platform_;
     ControlExecutor executor_;
@@ -122,7 +119,6 @@ private:
     GuiCommandRouter gui_command_router_;
     std::unique_ptr<GuiSessionController> gui_session_;
     std::unique_ptr<MaintenanceIpcServer> maintenance_server_;
-    std::unique_ptr<WindowsMainWindow> main_window_;
     MainWindowStateSnapshot view_state_;
     std::unique_ptr<Logger> logger_;
     ApplicationStatus cached_status_;
@@ -132,6 +128,8 @@ private:
     bool startup_enabled_ = false;
     bool status_pending_ = false;
     bool service_command_pending_ = false;
+    bool initial_draft_load_complete_ = false;
+    bool gui_open_pending_ = false;
     std::atomic_bool exiting_{false};
     std::atomic_bool maintenance_shutdown_requested_{false};
     std::atomic_bool gui_shutdown_complete_{false};

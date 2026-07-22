@@ -19,19 +19,46 @@ endif()
 
 qt_standard_project_setup(REQUIRES 6.10.3)
 
-add_library(ccs-trans-gui-prototype STATIC
+add_library(ccs-trans-gui-foundation STATIC
+    controllers/command_dispatcher.cpp
+    controllers/command_dispatcher.hpp
+    features/migration/migration_controller.cpp
+    features/migration/migration_controller.hpp
+    features/profiles/profiles_controller.cpp
+    features/profiles/profiles_controller.hpp
+    features/rules/rules_controller.cpp
+    features/rules/rules_controller.hpp
+    features/settings/settings_controller.cpp
+    features/settings/settings_controller.hpp
     interaction/animation_policy.cpp
     interaction/animation_policy.hpp
+    ipc/bootstrap_reader.cpp
+    ipc/bootstrap_reader.hpp
+    ipc/gui_ipc_client.cpp
+    ipc/gui_ipc_client.hpp
+    lifecycle/gui_window_controller.cpp
+    lifecycle/gui_window_controller.hpp
+    models/configuration_field_model.cpp
+    models/configuration_field_model.hpp
+    models/profile_summary_model.cpp
+    models/profile_summary_model.hpp
     prototype/profile_list_model.cpp
     prototype/profile_list_model.hpp
     prototype/prototype_controller.cpp
     prototype/prototype_controller.hpp
+    state/gui_state_store.cpp
+    state/gui_state_store.hpp
 )
-target_compile_features(ccs-trans-gui-prototype PUBLIC cxx_std_20)
-target_include_directories(ccs-trans-gui-prototype PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_definitions(ccs-trans-gui-prototype PRIVATE UNICODE _UNICODE)
-target_link_libraries(ccs-trans-gui-prototype PUBLIC Qt6::Core Qt6::Gui)
-target_link_libraries(ccs-trans-gui-prototype PUBLIC ccs-trans-gui-ipc)
+target_compile_features(ccs-trans-gui-foundation PUBLIC cxx_std_20)
+target_include_directories(ccs-trans-gui-foundation PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(ccs-trans-gui-foundation PRIVATE UNICODE _UNICODE)
+target_link_libraries(ccs-trans-gui-foundation PUBLIC
+    ccs-trans-gui-ipc
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Network
+    Qt6::Quick
+)
 
 qt_add_executable(ccs-trans-gui WIN32
     app/gui_main.cpp
@@ -45,7 +72,7 @@ target_compile_definitions(ccs-trans-gui PRIVATE
     _UNICODE
 )
 target_link_libraries(ccs-trans-gui PRIVATE
-    ccs-trans-gui-prototype
+    ccs-trans-gui-foundation
     Qt6::Core
     Qt6::Gui
     Qt6::Network
@@ -54,14 +81,24 @@ target_link_libraries(ccs-trans-gui PRIVATE
     Qt6::QuickControls2
 )
 
+set_source_files_properties(ui/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
 qt_add_qml_module(ccs-trans-gui
     URI CcsTrans.Gui
     VERSION 1.0
     QML_FILES
         ui/Main.qml
+        ui/PrototypeProbe.qml
+        ui/Theme.qml
         ui/components/MotionButton.qml
         ui/components/MotionSwitch.qml
+        ui/components/MotionTextField.qml
+        ui/components/NavigationTab.qml
         ui/components/ProfileDelegate.qml
+        ui/components/ProfileSummaryDelegate.qml
+        ui/features/ProfilesPage.qml
+        ui/features/RulesPage.qml
+        ui/features/SettingsPage.qml
 )
 
 add_custom_target(ccs-trans-gui-structure-check ALL
@@ -73,11 +110,27 @@ add_custom_target(ccs-trans-gui-structure-check ALL
 add_dependencies(ccs-trans-gui ccs-trans-gui-structure-check)
 
 if(BUILD_TESTING)
+    qt_add_executable(ccs-trans-gui-ipc-client-tests
+        tests/gui_ipc_client_tests.cpp
+    )
+    set_target_properties(
+        ccs-trans-gui-ipc-client-tests PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_link_libraries(ccs-trans-gui-ipc-client-tests PRIVATE
+        ccs-trans-gui-foundation
+        Qt6::Test
+    )
+    add_test(
+        NAME ccs-trans-gui-ipc-client-tests
+        COMMAND ccs-trans-gui-ipc-client-tests
+    )
+    set_tests_properties(
+        ccs-trans-gui-ipc-client-tests PROPERTIES TIMEOUT 15)
+
     qt_add_executable(ccs-trans-gui-model-tests
         tests/profile_list_model_tests.cpp
     )
     target_link_libraries(ccs-trans-gui-model-tests PRIVATE
-        ccs-trans-gui-prototype
+        ccs-trans-gui-foundation
         Qt6::Test
     )
     add_test(NAME ccs-trans-gui-model-tests COMMAND ccs-trans-gui-model-tests)

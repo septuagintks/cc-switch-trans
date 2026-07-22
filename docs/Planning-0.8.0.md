@@ -21,7 +21,8 @@ Inno Setup 7.0.2 均已冻结；若项目用途变化，必须重新审计安装
 | `0.8-A` 状态 | 完成；非商业项目使用 Inno Setup 7.0.2 |
 | `0.8-B` 状态 | 完成；共享编辑、迁移恢复与 Rules 文本合同已冻结 |
 | `0.8-C` 状态 | 完成；Windows tray 分层与 `ccs-trans.gui-ipc/v1` 已冻结 |
-| 当前工作包 | `0.8-D`：Qt GUI 骨架与生命周期 |
+| `0.8-D` 状态 | 完成；Qt typed GUI skeleton 与生产 sidecar 生命周期已接入 |
+| 当前工作包 | `0.8-E`：功能对等、错误交互与视觉/动画验收 |
 
 ## `0.8-A` 冻结结果
 
@@ -427,7 +428,7 @@ tooltip 和 menu 仍由独立 tray integration/人工测试覆盖。当前桌面
 | `0.8-A` | Qt/工具链/许可证/安装器取证，最小 GUI 与 deploy prototype，0.7 资源基线、源码体量检查 | 完成 |
 | `0.8-B` | Save/rename、draft 保留、newline、migration replace 与共享测试 | 完成：无 GUI 的 CLI/service 合同通过 |
 | `0.8-C` | `gui-ipc/v1`、named pipe、tray 分层、launcher/session/router | 完成：fake client 可完成全部命令与重连 |
-| `0.8-D` | Qt process、typed model/controller、QML shell、生命周期 | 三页 skeleton、activate/hide/destroy/reconnect passed |
+| `0.8-D` | Qt process、typed model/controller、QML shell、生命周期 | 完成：三页 skeleton、activate/hide/destroy/reconnect passed |
 | `0.8-E` | 0.7 功能对等、错误 dialog、migration UI、视觉/动画与资源测试 | Qt GUI 人工验收通过；删除旧 Win32 GUI |
 | `0.8-F` | descriptor-driven Rule Builder、preview、undo/redo、更多已确认 Rule | text/visual/runtime round-trip 与性能门槛通过 |
 | `0.8-G` | Qt deploy 白名单、portable ZIP、setup、upgrade/uninstall | 干净 VM 安装矩阵和数据保留通过 |
@@ -585,8 +586,8 @@ installer transaction，在 `0.8-G` 完成。
 tray 已拆出 icon、menu、runtime shutdown、GUI launcher/session、IPC host 和 maintenance server；
 `tray_app.cpp` 保持在 600 行以内。JSON codec 按 envelope、command/maintenance、state 和 state type
 拆分，结构检查已覆盖 `src/gui_ipc`、新 tray/bridge/maintenance host 和 Qt GUI 的 600 行上限，并禁止
-wire layer 反向 include owner layer。生产入口仍显示旧 Win32 窗口，不会加载 Qt DLL，也不会把 `0.8-A`
-prototype 当成正式编辑器。验证覆盖
+wire layer 反向 include owner layer。在 `0.8-C` 检查点，生产入口仍显示旧 Win32 窗口且不加载 Qt DLL；
+该临时状态已由 `0.8-D` 的生产 sidecar 切换取代。`0.8-C` 验证覆盖
 malformed/unknown/oversize/半 frame、单次输入内总量超过 16 MiB 的
 多个合法 frame、PID/token/session/source/sequence/revision、背压、snapshot/delta、command result、100 次
 连接循环，以及真实 suspended child 的 bootstrap/hello/snapshot/activate/shutdown。Windows runtime
@@ -612,6 +613,20 @@ warnings-as-errors `32/32` CTest、Qt warnings-as-errors `5/5` CTest 和真实 t
 
 **`0.8-D` 退出条件**：三页 skeleton 可由 tray 打开并完成 handshake、activate、hide、normal close、
 lightweight destroy、reconnect 和 graceful quit；GUI 不可见时不持续 repaint；结构检查无新增超限文件。
+
+**`0.8-D` 执行结果**：`ccs-trans-gui.exe` 的生产入口现从受限继承 handle 读取 bootstrap，以
+`QLocalSocket` 完成 hello/session/source 校验并消费正 revision snapshot/delta。Qt 侧按 Profiles、Rules、
+Settings、Migration 分出 state store、typed model、controller、window lifecycle 和 QML page；正常 model
+变化使用 insert/remove/move/dataChanged，本地 Profile/Rules dirty buffer 在异步状态更新时保持不变。首个有效
+snapshot 自动显示一次，之后普通 hide 不会被状态刷新重新打开；tray Activate 才重新显示。轻量 close、隐藏后
+启用轻量模式、tray Shutdown 和 post-auth 断线分别执行明确的退出路径。
+
+生产 `ccs-trans-tray` 已移除 `main_window.cpp`、`windows_theme.cpp` 及 GDI+/DWM/theme 链接，不提供运行时
+fallback；旧源码与 0.7 包只作 oracle。tray 在首次 `LoadDraft` 结束且 revision 为正之前排队 Open，加载失败
+也允许启动 GUI，为下一阶段 migration/recovery UI 留出通路。验证通过 runtime warnings-as-errors `32/32`、
+Qt warnings-as-errors `6/6` CTest；真实 staging 联调把 GCC 16 tray/runtime 与 MinGW 13.1 Qt closure 合并后，
+覆盖 handshake、普通 hide/reuse、第二实例 activate、GUI crash 后 fresh session、轻量 destroy 与 graceful
+quit。`0.8-E` 继续完成 field editor、dirty-close/dialog、功能对等和视觉人工验收，不把 skeleton 当作发行版。
 
 ## `0.8-E`：功能对等与旧 GUI 删除
 
@@ -709,9 +724,9 @@ macOS 不迁移 Qt、不改 AppKit 主题、布局、滚动或交互设计，只
 **`0.8-I` 退出条件**：所有工作包退出条件、测试结果、限制、包路径、hash 和交接信息可审计；未执行的
 Defender/SmartScreen、平台兼容性或人工项目明确列为限制，`0.8.0` 才可发布。
 
-旧 Win32 GUI 在 `0.8-D` 前只作为行为参照和回归 oracle，不接受新的视觉补丁。`0.8-E` 只有在 Qt GUI
-功能、键盘、辅助功能、资源和并发测试通过后才删除旧文件；最终源码、portable ZIP 和 setup 中均不得存在
-旧 GUI fallback 或不可达 GDI+ theme 代码。
+旧 Win32 GUI 已在 `0.8-D` 从生产 target 移出，不接受新的视觉补丁，也不存在运行时 fallback。源文件暂作
+行为参照和回归 oracle；`0.8-E` 只有在 Qt GUI 功能、键盘、辅助功能、资源和并发测试通过后才删除旧文件。
+最终源码、portable ZIP 和 setup 中均不得存在旧 GUI 或不可达 GDI+ theme 代码。
 
 ## 剩余决策与后续输入
 
@@ -728,5 +743,5 @@ signing command/interface，但没有证书时不阻塞本地 prototype。用途
 2. `0.8-I` 的 2 小时 mixed 与 8 小时 GUI idle 在 Windows/macOS 候选上的具体执行环境；
 3. 干净 Windows 11 会话中的真实 tray icon、DPI、60/120 Hz、high contrast 与辅助功能人工验收。
 
-`0.8-A` 至 `0.8-C` 已完成，当前从 `0.8-D` 开始接入 Qt GUI skeleton 与生命周期；`0.8-G` 继续按已冻结
+`0.8-A` 至 `0.8-D` 已完成，当前从 `0.8-E` 开始恢复功能对等并完成视觉/动画验收；`0.8-G` 继续按已冻结
 的非商业 Inno Setup 路径实现正式 setup，并补完 maintenance wait/退出时序。

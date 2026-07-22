@@ -46,10 +46,10 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The completed `0.8-A` Windows Qt Quick foundation uses a separate build tree.
-The completed `0.8-C` transport now gives the tray and future Qt process a
-shared wire codec and authenticated named-pipe session, but the production tray
-still opens the accepted Win32 window until `0.8-D/E`. Qt 6.10.3 and its
+The completed `0.8-D` Windows Qt Quick foundation uses a separate build tree.
+The production tray now starts the Qt GUI sidecar on demand through the shared
+wire codec and authenticated named-pipe session; it no longer compiles or falls
+back to the old Win32 window. Qt 6.10.3 and its
 official MinGW 13.1 toolchain default to `%USERPROFILE%/Qt`; set
 `CCS_TRANS_QT_ROOT` and `CCS_TRANS_QT_MINGW_ROOT` for another installation.
 Exact archives and hashes are recorded in
@@ -72,18 +72,19 @@ non-commercial, so Inno Setup 7's `Non-commercial use only` edition is the
 frozen installer generator. A future change in project use requires a new
 license review or a move to WiX before another setup release.
 
-Local Windows builds produce the console CLI `build/ccs-trans.exe` and the GUI
-tray host `build/ccs-trans-tray.exe`. Double-clicking the tray host starts all
-enabled Profiles without opening a console window.
+The runtime build produces `ccs-trans.exe` and `ccs-trans-tray.exe`; the Qt build
+produces `src/gui/windows/ccs-trans-gui.exe`. A runnable desktop tree must place
+the GUI and its fixed Qt runtime closure beside the tray. Double-clicking the
+tray host starts all enabled Profiles without opening a console window.
 
-Open the native main window from the tray/menu-bar menu,
-by double-clicking the Windows tray icon, or by launching a second desktop-host
-instance. Both native views provide service controls and basic Profile create,
-rename, remove, enable, Apply, Discard, and Reload Draft operations through the
-same shared ViewModel. Reload Draft is distinct from service Reload; a dirty
-draft requires explicit discard confirmation before disk state can replace it.
-Both platforms provide complete typed Profile and application fields plus
-canonical Rule text editing in stable Profiles, Rules, and Settings views.
+Open the main window from the tray/menu-bar menu, by double-clicking the Windows
+tray icon, or by launching a second desktop-host instance. The released macOS
+AppKit view provides the complete `0.7.0` editing surface. Current `0.8-D`
+Windows source provides the IPC-backed Profiles, Rules, and Settings skeleton,
+typed incremental models, local edit buffers, service/draft controls, and
+process lifecycle; full `0.7.0` feature parity, dialogs, and field editors are
+the next `0.8-E` work package and this development state is not a release.
+Reload Draft remains distinct from service Reload.
 AppKit follows the accepted Windows information architecture and layout ratios
 while retaining native macOS appearance and controls. Each Profile shows
 enabled and total Rule counts.
@@ -103,12 +104,17 @@ pipe, binds the session to the actual child PID, and then resumes it. A separate
 `ccs-trans.maintenance-ipc/v1` endpoint exposes only version query, orderly
 shutdown request, and release-state query for the future installer; it cannot
 submit Profile, Rule, or Settings commands.
-Lightweight mode destroys a closed main window while leaving the desktop host
-and listener running; normal
-mode hides and reuses it. Version `0.7.0` uses v3 application settings plus
+On Windows, lightweight mode exits the closed Qt GUI process while leaving the
+tray and listener running; normal mode hides and reuses the same process. A
+later Open starts a fresh authenticated GUI session after an exit or crash.
+Version `0.7.0` uses v3 application settings plus
 SQLite Profile/Rule storage; v2 input requires explicit migration.
 
-Create the fixed-whitelist Windows package from a Release build:
+The existing Windows package scripts remain the released `0.7.0` packaging
+oracle. They do not yet merge the new runtime and Qt GUI staging trees, so a
+package built from current `0.8-D` source is not a valid release candidate;
+`0.8-G` replaces this path with the final portable ZIP and setup transaction.
+From the `0.7.0` tag, create its fixed-whitelist package with:
 
 ```text
 powershell -ExecutionPolicy Bypass -File tools/package_windows.ps1
@@ -540,20 +546,19 @@ complete model context, so log files must be treated as sensitive data.
 ```text
 ctest --test-dir build --output-on-failure
 python tests/integration/run_integration.py build/ccs-trans.exe
-python tests/integration/run_tray_integration.py \
-  --tray build/ccs-trans-tray.exe --cli build/ccs-trans.exe
+powershell -ExecutionPolicy Bypass -File tools/run_windows_qt_tray_integration.ps1
 ```
 
-The Windows tray integration uses an isolated user directory and instance name.
-It covers main-window Profile commands, CLI/GUI stale-write rejection and
-explicit Reload Draft recovery, Rule summaries, dirty-close and pending-command
-exit decisions, normal and lightweight window lifetimes, service controls,
-second-instance activation, GDI/USER stability across repeated window creation,
-and 16 concurrent SSE responses while the window is repeatedly rebuilt. The
-runtime CTest suite also covers the GUI IPC wire codec, PID/token/session
-validation, bounded state delivery, command correlation, malformed and partial
-frames, 100 connect/disconnect cycles, real child bootstrap/activate/shutdown,
-and rejection of GUI traffic on the maintenance endpoint.
+The `0.8-D` Windows tray integration deploys the fixed Qt closure, combines the
+GCC 16 runtime and MinGW 13.1 GUI build trees, and uses an isolated user root and
+instance identity. It covers handshake, first snapshot, normal hide/reuse,
+second-instance activation, lightweight process destruction, crash recovery to
+a fresh token/session, and graceful tray/GUI shutdown. The runtime and Qt CTest
+suites additionally cover wire framing, PID/token/session validation, bounded
+state delivery, command correlation, incremental models, dirty local-buffer
+preservation, malformed/partial frames, and maintenance-endpoint isolation.
+`run_tray_integration.py` remains the `0.7.0` Win32 behavior oracle until its
+feature assertions are migrated to Qt automation in `0.8-E`.
 
 The opt-in Windows proxy matrix temporarily changes and then restores the
 current-user proxy:

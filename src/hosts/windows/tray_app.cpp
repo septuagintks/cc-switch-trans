@@ -64,14 +64,12 @@ TrayApplication::TrayApplication(
     AppPaths paths,
     std::filesystem::path executable_path,
     std::wstring window_class,
-    std::wstring window_title,
-    std::wstring main_window_class)
+    std::wstring window_title)
     : instance_(instance)
     , paths_(std::move(paths))
     , executable_path_(std::move(executable_path))
     , window_class_(std::move(window_class))
     , window_title_(std::move(window_title))
-    , main_window_class_(std::move(main_window_class))
     , controller_(paths_)
     , config_repository_(paths_)
     , config_editing_(config_repository_)
@@ -98,9 +96,6 @@ TrayApplication::~TrayApplication() {
         gui_session_.reset();
     }
     view_model_.set_update_handler({});
-    if (main_window_) {
-        main_window_->destroy();
-    }
     view_model_.stop();
     executor_.stop();
     if (!shutdown_complete_) {
@@ -177,17 +172,6 @@ bool TrayApplication::initialize(std::string& error) {
         log_host("info", "tray_icon_skipped_for_integration_test");
     }
 
-    main_window_ = std::make_unique<WindowsMainWindow>(
-        instance_,
-        icon_,
-        view_model_,
-        main_window_class_,
-        window_title_,
-        [this](std::string_view event) {
-            log_host("info", "main_window_lifecycle", {
-                field_string("action", std::string(event)),
-            });
-        });
     view_model_.set_update_handler([this](MainWindowStateSnapshot state) {
         handle_view_state(std::move(state));
     });
@@ -282,7 +266,7 @@ void TrayApplication::show_menu() {
     const TrayMenuState state{
         cached_status_,
         service_command_pending_,
-        static_cast<bool>(view_state_),
+        view_state_ && view_state_->revision > 0 && initial_draft_load_complete_,
         view_state_ && view_state_->command_pending,
         !view_state_ || view_state_->lightweight_mode,
         startup_known_,
@@ -300,17 +284,17 @@ void TrayApplication::show_menu() {
 }
 
 void TrayApplication::show_main_window() {
-    if (exiting_ || !main_window_) {
+    if (exiting_) return;
+    if (!view_state_ || view_state_->revision == 0
+        || !initial_draft_load_complete_) {
+        if (!gui_open_pending_) log_host("info", "gui_open_deferred");
+        gui_open_pending_ = true;
         return;
     }
-    if (gui_session_ && gui_session_->status().ipc.authenticated
-        && !gui_session_->request_activate()) {
-        log_host("error", "gui_activate_failed");
-    }
+    gui_open_pending_ = false;
     std::string error;
-    const auto state = view_state_ ? view_state_ : view_model_.snapshot();
-    if (!main_window_->show(state, error)) {
-        log_host("error", "main_window_show_failed", {field_string("error", error)});
+    if (!gui_session_ || !gui_session_->launch_or_activate(error)) {
+        log_host("error", "gui_launch_failed", {field_string("error", error)});
         show_notification(
             L"ccs-trans window failed",
             utf8_to_wide(error),
@@ -332,11 +316,8 @@ void TrayApplication::set_lightweight_mode(bool enabled) {
 }
 
 void TrayApplication::request_exit(const std::string& reason, bool force) {
+    (void)force;
     if (exiting_) {
-        return;
-    }
-    if (!force && main_window_ && !main_window_->prepare_for_application_exit(
-            [this, reason]() { begin_exit(reason); })) {
         return;
     }
     begin_exit(reason);
@@ -356,11 +337,11 @@ void TrayApplication::handle_view_state(MainWindowStateSnapshot state) {
         return;
     }
     const auto previous_status = cached_status_;
-    const bool previous_lightweight = view_state_ && view_state_->lightweight_mode;
     view_state_ = std::move(state);
     cached_status_ = view_state_->application;
-    if (main_window_) {
-        main_window_->update(view_state_);
+    if (!view_state_->command_pending && view_state_->last_command
+        && view_state_->last_command->command == MainWindowCommand::LoadDraft) {
+        initial_draft_load_complete_ = true;
     }
     if (gui_session_) {
         if (const auto completion = gui_command_router_.observe(*view_state_)) {
@@ -412,15 +393,8 @@ void TrayApplication::handle_view_state(MainWindowStateSnapshot state) {
             field_string("error", cached_status_.last_error),
         });
     }
-    if (!previous_lightweight && view_state_->lightweight_mode && main_window_
-        && resolve_cached_main_window(
-                view_state_->draft,
-                main_window_->exists(),
-                main_window_->visible(),
-                true)
-            == CachedWindowAction::Destroy) {
-        main_window_->destroy();
-    }
+    if (gui_open_pending_ && view_state_->revision > 0
+        && initial_draft_load_complete_) show_main_window();
 }
 
 void TrayApplication::show_notification(
