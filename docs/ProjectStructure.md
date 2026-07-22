@@ -25,6 +25,7 @@ cc-switch-trans/
       WindowsValidationCheckResult.md
     Design.md
     DevelopmentPlan.md
+    Planning-0.8.0.md
     ProjectStructure.md
 
   src/
@@ -290,6 +291,11 @@ Windows GUI subsystem target 为 `ccs-trans-tray`；macOS app bundle target 为
 `ccs-trans-menu`，产物名为 `ccs-trans.app`。
 两者只链接共享 core 和各自 host source，不能把 Win32/AppKit source 加入 console CLI。
 
+上述 target 和目录描述只代表 `0.7.0` 当前源码。`0.8.0` 将保留轻量 Win32 tray/runtime，新增独立
+Qt Quick/QML `ccs-trans-gui` target 和进程间协议，并在功能对等验收后删除旧 Win32/GDI+ 窗口源码；
+未来目录和依赖边界以 [Planning-0.8.0.md](Planning-0.8.0.md) 为准，在源码实际创建后再并入本文件的
+“当前目录”。
+
 ## 平台实现目录
 
 Windows tray 验证与打包入口：
@@ -360,6 +366,7 @@ ViewModel、menu/status item、distributed notification 与退出编排；窗口
 | `docs/Design.md` | 当前实现、不变量和平台边界 |
 | `docs/Archived/Reconstruction.md` | 阶段 11 Profile/Protocol/Rule 通用化架构归档 |
 | `docs/DevelopmentPlan.md` | 后续版本进入顺序、性能门槛、发布纪律和延后项 |
+| `docs/Planning-0.8.0.md` | Windows Qt Quick 独立 GUI、IPC、Rule Builder、安装器、分层与测试的当前实施计划 |
 | `docs/Archived/Planning-0.7.0.md` | `0.7.0` 资源预算、SQLite、迁移、GUI、测试与提交的冻结实施记录 |
 | `docs/Archived/Release-0.5.0.md` | `0.5.0` 双平台发布、溯源、回归和接受限制归档 |
 | `docs/Archived/Release-0.6.0.md` | `0.6.0` GUI/Profile/Rule 基线、双平台候选验证和发行溯源归档 |
