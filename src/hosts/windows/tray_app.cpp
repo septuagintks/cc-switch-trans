@@ -285,6 +285,9 @@ bool TrayApplication::add_tray_icon(std::string& error) {
     }
     notification_.uVersion = NOTIFYICON_VERSION_4;
     (void)Shell_NotifyIconW(NIM_SETVERSION, &notification_);
+    auto tooltip = notification_;
+    tooltip.uFlags = NIF_TIP | NIF_SHOWTIP;
+    (void)Shell_NotifyIconW(NIM_MODIFY, &tooltip);
     tray_icon_added_ = true;
     return true;
 }
