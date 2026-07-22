@@ -40,6 +40,9 @@ constexpr std::string_view kJournalSchema =
     "ccs-trans.repository-transaction/v1";
 constexpr std::string_view kMigrationManifestSchema =
     "ccs-trans.migration/v1";
+constexpr std::string_view kDatabaseBackupManifestSchema =
+    "ccs-trans.database-replacement-backup/v1";
+constexpr std::string_view kDatabaseBackupDirectoryPrefix = "replaced-db-";
 
 class RepositoryError final : public std::runtime_error {
 public:
@@ -57,6 +60,18 @@ private:
 
 [[noreturn]] void fail(ConfigRepositoryFailure failure, std::string message) {
     throw RepositoryError(failure, std::move(message));
+}
+
+bool valid_database_backup_directory_name(std::string_view name) {
+    return name.size() == kDatabaseBackupDirectoryPrefix.size() + 64
+        && name.starts_with(kDatabaseBackupDirectoryPrefix)
+        && std::all_of(
+            name.begin()
+                + static_cast<std::ptrdiff_t>(kDatabaseBackupDirectoryPrefix.size()),
+            name.end(),
+            [](char ch) {
+                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+            });
 }
 
 ConfigRepositoryFailure map_profile_failure(ProfileStoreFailure failure) {
@@ -259,6 +274,111 @@ void write_durable_file(const std::filesystem::path& path, std::string_view cont
 #endif
 }
 
+void mark_file_writable(const std::filesystem::path& path);
+
+void copy_durable_file(
+    const std::filesystem::path& source,
+    const std::filesystem::path& target) {
+    require_regular_file(source, "database backup source");
+#ifdef _WIN32
+    if (!CopyFileW(source.c_str(), target.c_str(), TRUE)) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to copy database backup: Windows error "
+                + std::to_string(GetLastError()));
+    }
+    mark_file_writable(target);
+    const HANDLE file = CreateFileW(
+        target.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to open database backup for flush: Windows error "
+                + std::to_string(GetLastError()));
+    }
+    const bool flushed = FlushFileBuffers(file) != FALSE;
+    const auto code = flushed ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(file);
+    if (!flushed) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to flush database backup: Windows error " + std::to_string(code));
+    }
+#else
+    const int input = open(source.c_str(), O_RDONLY);
+    if (input < 0) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to open database backup source: "
+                + std::string(std::strerror(errno)));
+    }
+    const int output = open(target.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (output < 0) {
+        const int code = errno;
+        close(input);
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to create database backup: " + std::string(std::strerror(code)));
+    }
+    std::array<char, 64 * 1024> buffer{};
+    bool ok = true;
+    int saved_errno = 0;
+    while (ok) {
+        const auto read_count = read(input, buffer.data(), buffer.size());
+        if (read_count == 0) {
+            break;
+        }
+        if (read_count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            ok = false;
+            saved_errno = errno;
+            break;
+        }
+        std::size_t offset = 0;
+        while (offset < static_cast<std::size_t>(read_count)) {
+            const auto written = write(
+                output,
+                buffer.data() + offset,
+                static_cast<std::size_t>(read_count) - offset);
+            if (written < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                ok = false;
+                saved_errno = errno;
+                break;
+            }
+            offset += static_cast<std::size_t>(written);
+        }
+    }
+    if (ok && fsync(output) != 0) {
+        ok = false;
+        saved_errno = errno;
+    }
+    if (close(input) != 0 && ok) {
+        ok = false;
+        saved_errno = errno;
+    }
+    if (close(output) != 0 && ok) {
+        ok = false;
+        saved_errno = errno;
+    }
+    if (!ok) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to copy database backup: " + std::string(std::strerror(saved_errno)));
+    }
+#endif
+}
+
 void replace_file(
     const std::filesystem::path& source,
     const std::filesystem::path& target) {
@@ -391,6 +511,26 @@ void mark_file_read_only(const std::filesystem::path& path) {
 #endif
 }
 
+void mark_file_writable(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES
+        || !SetFileAttributesW(path.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY)) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to make temporary database writable: Windows error "
+                + std::to_string(GetLastError()));
+    }
+#else
+    if (chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            "failed to make temporary database writable: "
+                + std::string(std::strerror(errno)));
+    }
+#endif
+}
+
 class RepositoryLock final {
 public:
     explicit RepositoryLock(const std::filesystem::path& path) {
@@ -457,9 +597,10 @@ private:
 struct DatabaseState {
     bool exists = false;
     ProfileStoreSnapshot snapshot;
+    std::optional<std::string> file_sha256;
 };
 
-DatabaseState read_database_state(const AppPaths& paths) {
+DatabaseState read_database_state(const AppPaths& paths, bool include_hash = false) {
     DatabaseState state;
     state.exists = path_exists(paths.profiles_database);
     if (!state.exists) {
@@ -479,6 +620,12 @@ DatabaseState read_database_state(const AppPaths& paths) {
     if (!store.load(state.snapshot, error)) {
         fail(map_profile_failure(store.last_failure()), error);
     }
+    if (include_hash) {
+        state.file_sha256.emplace();
+        if (!sha256_file_hex(paths.profiles_database, *state.file_sha256, error)) {
+            fail(ConfigRepositoryFailure::Io, error);
+        }
+    }
     return state;
 }
 
@@ -491,6 +638,9 @@ struct RepositoryJournal {
     ProfileRevision target_profile_revision = 0;
     std::optional<std::string> old_migration_hash;
     std::optional<std::string> target_migration_hash;
+    std::optional<std::string> old_database_sha256;
+    std::optional<std::string> target_database_sha256;
+    std::optional<std::string> old_database_backup_directory;
 };
 
 Json optional_json(const std::optional<std::string>& value) {
@@ -526,6 +676,10 @@ void write_journal(const AppPaths& paths, const RepositoryJournal& journal) {
             {"target_profile_revision", journal.target_profile_revision},
             {"old_migration_hash", optional_json(journal.old_migration_hash)},
             {"target_migration_hash", optional_json(journal.target_migration_hash)},
+            {"old_database_sha256", optional_json(journal.old_database_sha256)},
+            {"target_database_sha256", optional_json(journal.target_database_sha256)},
+            {"old_database_backup_directory",
+                optional_json(journal.old_database_backup_directory)},
         };
         write_durable_file(temporary / "manifest.json", manifest.dump(2) + "\n");
         sync_directory(temporary);
@@ -545,6 +699,19 @@ std::optional<std::string> read_optional_string(const Json& root, const char* ke
     }
     if (!root.at(key).is_string()) {
         fail(ConfigRepositoryFailure::RecoveryRequired, "journal field has wrong type: " + std::string(key));
+    }
+    return root.at(key).get<std::string>();
+}
+
+std::optional<std::string> read_optional_string_if_present(
+    const Json& root,
+    const char* key) {
+    if (!root.contains(key) || root.at(key).is_null()) {
+        return std::nullopt;
+    }
+    if (!root.at(key).is_string()) {
+        fail(ConfigRepositoryFailure::RecoveryRequired,
+            "journal field has wrong type: " + std::string(key));
     }
     return root.at(key).get<std::string>();
 }
@@ -585,6 +752,23 @@ RepositoryJournal read_journal(const AppPaths& paths) {
     journal.target_profile_revision = manifest.at("target_profile_revision").get<ProfileRevision>();
     journal.old_migration_hash = read_optional_string(manifest, "old_migration_hash");
     journal.target_migration_hash = read_optional_string(manifest, "target_migration_hash");
+    journal.old_database_sha256 = read_optional_string_if_present(
+        manifest, "old_database_sha256");
+    journal.target_database_sha256 = read_optional_string_if_present(
+        manifest, "target_database_sha256");
+    journal.old_database_backup_directory = read_optional_string_if_present(
+        manifest, "old_database_backup_directory");
+    if (journal.old_database_backup_directory) {
+        if (!valid_database_backup_directory_name(
+                *journal.old_database_backup_directory)
+            || journal.kind != "migration"
+            || !journal.old_database_exists
+            || !journal.old_database_sha256) {
+            fail(
+                ConfigRepositoryFailure::RecoveryRequired,
+                "journal database backup reference is invalid");
+        }
+    }
     if (journal.old_config.exists) {
         journal.old_config.bytes = read_bounded_file(
             directory / "old-config.bin", kMaxConfigDocumentBytes, "journal old config");
@@ -633,11 +817,26 @@ bool database_matches(
     const DatabaseState& actual,
     bool expected_exists,
     ProfileRevision expected_revision,
-    const std::optional<std::string>& expected_hash) {
+    const std::optional<std::string>& expected_hash,
+    const std::optional<std::string>& expected_file_hash = std::nullopt) {
     return actual.exists == expected_exists
         && (!expected_exists
             || (actual.snapshot.revision == expected_revision
-                && actual.snapshot.migrated_from_sha256 == expected_hash));
+                && actual.snapshot.migrated_from_sha256 == expected_hash
+                && (!expected_file_hash
+                    || actual.file_sha256 == expected_file_hash)));
+}
+
+bool recoverable_replacement_database_failure(ConfigRepositoryFailure failure) {
+    switch (failure) {
+    case ConfigRepositoryFailure::InvalidDocument:
+    case ConfigRepositoryFailure::Corrupt:
+    case ConfigRepositoryFailure::UnsupportedSchema:
+    case ConfigRepositoryFailure::RecoveryRequired:
+        return true;
+    default:
+        return false;
+    }
 }
 
 void restore_config(const AppPaths& paths, const ApplicationSourceToken& source) {
@@ -708,6 +907,348 @@ void write_migration_backup(
         mark_file_read_only(target / "manifest.json");
     } catch (...) {
         std::filesystem::remove_all(temporary, ec);
+        throw;
+    }
+}
+
+void require_plain_directory(const std::filesystem::path& path, std::string_view label) {
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(path, ec);
+    if (ec || !std::filesystem::is_directory(status)
+        || std::filesystem::is_symlink(status)) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            std::string(label) + " must be a non-symlink directory");
+    }
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES
+        || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        fail(
+            ConfigRepositoryFailure::Io,
+            std::string(label) + " must not be a reparse point");
+    }
+#endif
+}
+
+struct DatabaseSidecarState {
+    bool wal_exists = false;
+    std::uintmax_t wal_bytes = 0;
+    bool shm_exists = false;
+    std::uintmax_t shm_bytes = 0;
+};
+
+std::pair<bool, std::uintmax_t> inspect_sidecar(
+    const std::filesystem::path& database,
+    std::string_view suffix) {
+    auto path = database;
+    path += suffix;
+    if (!path_exists(path)) {
+        return {false, 0};
+    }
+    require_regular_file(path, "SQLite sidecar");
+    std::error_code ec;
+    const auto bytes = std::filesystem::file_size(path, ec);
+    if (ec) {
+        fail(ConfigRepositoryFailure::Io, "failed to inspect SQLite sidecar size");
+    }
+    return {true, bytes};
+}
+
+DatabaseSidecarState inspect_database_sidecars(
+    const std::filesystem::path& database) {
+    const auto wal = inspect_sidecar(database, "-wal");
+    const auto shm = inspect_sidecar(database, "-shm");
+    return {wal.first, wal.second, shm.first, shm.second};
+}
+
+Json sidecar_json(const DatabaseSidecarState& state) {
+    return {
+        {"wal", {{"exists", state.wal_exists}, {"bytes", state.wal_bytes}}},
+        {"shm", {{"exists", state.shm_exists}, {"bytes", state.shm_bytes}}},
+    };
+}
+
+bool optional_manifest_value_matches(
+    const Json& manifest,
+    std::string_view key,
+    const std::optional<std::string>& expected) {
+    if (!manifest.contains(key)) {
+        return false;
+    }
+    const auto& value = manifest.at(key);
+    return expected
+        ? value.is_string() && value.get<std::string>() == *expected
+        : value.is_null();
+}
+
+struct DatabaseReplacementBackup {
+    std::filesystem::path path;
+    std::string database_sha256;
+};
+
+ProfileStoreSnapshot verify_database_backup_bytes(
+    const AppPaths& paths,
+    const std::filesystem::path& database_path,
+    std::string_view expected_hash,
+    const ProfileStoreSnapshot* expected_snapshot,
+    ConfigRepositoryFailure failure) {
+    std::string actual_hash;
+    std::string error;
+    if (!sha256_file_hex(database_path, actual_hash, error)
+        || actual_hash != expected_hash) {
+        fail(
+            failure,
+            error.empty() ? "database backup hash mismatch" : std::move(error));
+    }
+
+    const auto verification_database = temporary_path(paths.profiles_database);
+    ProfileStoreSnapshot actual_snapshot;
+    try {
+        copy_durable_file(database_path, verification_database);
+        {
+            SqliteProfileStore store(verification_database);
+            if (!store.load(actual_snapshot, error)) {
+                fail(
+                    failure,
+                    error.empty()
+                        ? "database backup semantic verification failed"
+                        : std::move(error));
+            }
+        }
+        remove_database_family(verification_database);
+        if (expected_snapshot != nullptr && actual_snapshot != *expected_snapshot) {
+            fail(failure, "database backup semantic snapshot mismatch");
+        }
+    } catch (...) {
+        std::error_code cleanup_error;
+        for (const auto& suffix : {"", "-wal", "-shm"}) {
+            auto cleanup = verification_database;
+            cleanup += suffix;
+            std::filesystem::remove(cleanup, cleanup_error);
+            cleanup_error.clear();
+        }
+        throw;
+    }
+    return actual_snapshot;
+}
+
+ProfileStoreSnapshot validate_database_replacement_backup(
+    const AppPaths& paths,
+    std::string_view directory_name,
+    std::string_view source_hash,
+    std::string_view database_hash,
+    ProfileRevision expected_revision,
+    const std::optional<std::string>& expected_migration_hash,
+    const ProfileStoreSnapshot* expected_snapshot,
+    ConfigRepositoryFailure failure) {
+    if (!valid_database_backup_directory_name(directory_name)) {
+        fail(failure, "database backup directory name is invalid");
+    }
+    const auto target = paths.migrations_directory / std::string(directory_name);
+    require_plain_directory(target, "database backup directory");
+    const auto database_path = target / "profiles.db";
+    require_regular_file(database_path, "database backup");
+    for (const auto& suffix : {"-wal", "-shm"}) {
+        auto sidecar = database_path;
+        sidecar += suffix;
+        if (path_exists(sidecar)) {
+            fail(failure, "database backup must not contain SQLite sidecars");
+        }
+    }
+
+    const auto manifest_bytes = read_bounded_file(
+        target / "manifest.json", 1024 * 1024, "database backup manifest");
+    std::uintmax_t database_bytes = 0;
+    try {
+        const auto manifest = Json::parse(manifest_bytes);
+        if (!manifest.is_object()
+            || manifest.value("schema_version", "")
+                != kDatabaseBackupManifestSchema
+            || manifest.value("source_config_sha256", "") != source_hash
+            || manifest.value("database_sha256", "") != database_hash
+            || !manifest.contains("database_bytes")
+            || !manifest.at("database_bytes").is_number_unsigned()
+            || manifest.value("profile_revision", ProfileRevision{-1})
+                != expected_revision
+            || !optional_manifest_value_matches(
+                manifest,
+                "migrated_from_sha256",
+                expected_migration_hash)) {
+            fail(failure, "database backup manifest does not match the replacement source");
+        }
+        database_bytes = manifest.at("database_bytes").get<std::uintmax_t>();
+    } catch (const Json::exception& exception) {
+        fail(
+            failure,
+            "failed to validate database backup manifest: "
+                + std::string(exception.what()));
+    }
+
+    std::error_code size_error;
+    if (std::filesystem::file_size(database_path, size_error) != database_bytes
+        || size_error) {
+        fail(failure, "database backup size mismatch");
+    }
+    auto actual_snapshot = verify_database_backup_bytes(
+        paths, database_path, database_hash, expected_snapshot, failure);
+    if (actual_snapshot.revision != expected_revision
+        || actual_snapshot.migrated_from_sha256 != expected_migration_hash) {
+        fail(failure, "database backup metadata does not match its manifest");
+    }
+    return actual_snapshot;
+}
+
+DatabaseReplacementBackup write_database_replacement_backup(
+    const AppPaths& paths,
+    std::string_view source_hash,
+    const DatabaseState& database,
+    const DatabaseSidecarState& sidecars_before,
+    const DatabaseSidecarState& sidecars_after) {
+    std::string database_hash;
+    std::string hash_error;
+    if (!sha256_file_hex(paths.profiles_database, database_hash, hash_error)) {
+        fail(ConfigRepositoryFailure::Io, std::move(hash_error));
+    }
+    std::error_code size_error;
+    const auto database_bytes = std::filesystem::file_size(
+        paths.profiles_database, size_error);
+    if (size_error) {
+        fail(ConfigRepositoryFailure::Io, "failed to inspect profile database size");
+    }
+    std::string backup_identity(source_hash);
+    backup_identity.push_back('\0');
+    backup_identity.append(database_hash);
+    const auto directory_name = std::string(kDatabaseBackupDirectoryPrefix)
+        + sha256_hex(backup_identity);
+    const auto target = paths.migrations_directory / directory_name;
+
+    if (path_exists(target)) {
+        validate_database_replacement_backup(
+            paths,
+            directory_name,
+            source_hash,
+            database_hash,
+            database.snapshot.revision,
+            database.snapshot.migrated_from_sha256,
+            &database.snapshot,
+            ConfigRepositoryFailure::Constraint);
+        mark_file_read_only(target / "profiles.db");
+        mark_file_read_only(target / "manifest.json");
+        return {target, database_hash};
+    }
+
+    const auto temporary = temporary_path(target);
+    std::error_code ec;
+    std::filesystem::create_directory(temporary, ec);
+    if (ec) {
+        fail(ConfigRepositoryFailure::Io, "failed to create database backup: " + ec.message());
+    }
+    try {
+        copy_durable_file(paths.profiles_database, temporary / "profiles.db");
+        verify_database_backup_bytes(
+            paths,
+            temporary / "profiles.db",
+            database_hash,
+            &database.snapshot,
+            ConfigRepositoryFailure::Io);
+        const Json manifest = {
+            {"schema_version", kDatabaseBackupManifestSchema},
+            {"source_config_sha256", source_hash},
+            {"database_sha256", database_hash},
+            {"database_bytes", database_bytes},
+            {"profile_revision", database.snapshot.revision},
+            {"migrated_from_sha256", optional_json(database.snapshot.migrated_from_sha256)},
+            {"sidecars_before_checkpoint", sidecar_json(sidecars_before)},
+            {"sidecars_after_checkpoint", sidecar_json(sidecars_after)},
+            {"ccs_trans_version", kVersion},
+            {"source_commit", kSourceCommit},
+            {"source_dirty", kSourceDirty},
+        };
+        write_durable_file(temporary / "manifest.json", manifest.dump(2) + "\n");
+        sync_directory(temporary);
+        move_directory_no_replace(temporary, target);
+        validate_database_replacement_backup(
+            paths,
+            directory_name,
+            source_hash,
+            database_hash,
+            database.snapshot.revision,
+            database.snapshot.migrated_from_sha256,
+            &database.snapshot,
+            ConfigRepositoryFailure::Io);
+        mark_file_read_only(target / "profiles.db");
+        mark_file_read_only(target / "manifest.json");
+        return {target, database_hash};
+    } catch (...) {
+        std::filesystem::remove_all(temporary, ec);
+        throw;
+    }
+}
+
+void remove_database_sidecars(const std::filesystem::path& database) {
+    for (const auto& suffix : {"-wal", "-shm"}) {
+        auto path = database;
+        path += suffix;
+        if (path_exists(path)) {
+            remove_file_durable(path);
+        }
+    }
+}
+
+void restore_database_replacement_backup(
+    const AppPaths& paths,
+    const RepositoryJournal& journal) {
+    if (journal.kind != "migration"
+        || !journal.old_config.exists
+        || !journal.old_database_exists
+        || !journal.old_database_sha256
+        || !journal.old_database_backup_directory) {
+        fail(
+            ConfigRepositoryFailure::RecoveryRequired,
+            "migration journal has no usable database replacement backup");
+    }
+
+    ProfileStoreSnapshot backup_snapshot;
+    try {
+        backup_snapshot = validate_database_replacement_backup(
+            paths,
+            *journal.old_database_backup_directory,
+            sha256_hex(journal.old_config.bytes),
+            *journal.old_database_sha256,
+            journal.old_profile_revision,
+            journal.old_migration_hash,
+            nullptr,
+            ConfigRepositoryFailure::RecoveryRequired);
+    } catch (const RepositoryError& exception) {
+        fail(
+            ConfigRepositoryFailure::RecoveryRequired,
+            "database replacement backup cannot be used for recovery: "
+                + std::string(exception.what()));
+    }
+
+    const auto backup_database = paths.migrations_directory
+        / *journal.old_database_backup_directory / "profiles.db";
+    const auto temporary_database = temporary_path(paths.profiles_database);
+    try {
+        copy_durable_file(backup_database, temporary_database);
+        verify_database_backup_bytes(
+            paths,
+            temporary_database,
+            *journal.old_database_sha256,
+            &backup_snapshot,
+            ConfigRepositoryFailure::RecoveryRequired);
+        remove_database_sidecars(paths.profiles_database);
+        replace_file(temporary_database, paths.profiles_database);
+        restore_config(paths, journal.old_config);
+    } catch (...) {
+        std::error_code cleanup_error;
+        for (const auto& suffix : {"", "-wal", "-shm"}) {
+            auto cleanup = temporary_database;
+            cleanup += suffix;
+            std::filesystem::remove(cleanup, cleanup_error);
+            cleanup_error.clear();
+        }
         throw;
     }
 }
@@ -792,7 +1333,18 @@ bool CompositeConfigRepository::recover_locked(std::string& error) {
     try {
         const auto journal = read_journal(paths_);
         const auto actual_config = read_config_source(paths_);
-        const auto actual_database = read_database_state(paths_);
+        DatabaseState actual_database;
+        try {
+            actual_database = read_database_state(paths_, true);
+        } catch (const RepositoryError& exception) {
+            if (!journal.old_database_backup_directory
+                || !recoverable_replacement_database_failure(exception.failure())) {
+                throw;
+            }
+            restore_database_replacement_backup(paths_, journal);
+            clear_journal(paths_, journal.kind);
+            return true;
+        }
         const bool config_is_old = config_matches(actual_config, journal.old_config);
         const bool config_is_new = actual_config.exists
             && actual_config.bytes == journal.new_config;
@@ -800,12 +1352,14 @@ bool CompositeConfigRepository::recover_locked(std::string& error) {
             actual_database,
             journal.old_database_exists,
             journal.old_profile_revision,
-            journal.old_migration_hash);
+            journal.old_migration_hash,
+            journal.old_database_sha256);
         const bool database_is_target = database_matches(
             actual_database,
             true,
             journal.target_profile_revision,
-            journal.target_migration_hash);
+            journal.target_migration_hash,
+            journal.target_database_sha256);
 
         if (config_is_old && database_is_old) {
             clear_journal(paths_, journal.kind);
@@ -822,6 +1376,11 @@ bool CompositeConfigRepository::recover_locked(std::string& error) {
             return true;
         }
         if (config_is_new && database_is_target) {
+            clear_journal(paths_, journal.kind);
+            return true;
+        }
+        if (journal.old_database_backup_directory) {
+            restore_database_replacement_backup(paths_, journal);
             clear_journal(paths_, journal.kind);
             return true;
         }
@@ -1155,7 +1714,20 @@ bool CompositeConfigRepository::inspect_storage(
 bool CompositeConfigRepository::migrate_v2(
     MigrationOutcome& outcome,
     std::string& error) {
+    MigrationResult result;
+    if (!migrate_v2({}, result, error)) {
+        return false;
+    }
+    outcome = result.outcome;
+    return true;
+}
+
+bool CompositeConfigRepository::migrate_v2(
+    const MigrationOptions& options,
+    MigrationResult& result,
+    std::string& error) {
     error.clear();
+    result = {};
     last_failure_ = ConfigRepositoryFailure::None;
     loaded_ = false;
     try {
@@ -1186,13 +1758,14 @@ bool CompositeConfigRepository::migrate_v2(
             if (!snapshot_.migrated_from_sha256) {
                 fail(ConfigRepositoryFailure::Constraint, "v3 repository was not created by v2 migration");
             }
-            outcome = MigrationOutcome::AlreadyMigrated;
+            result.outcome = MigrationOutcome::AlreadyMigrated;
             return true;
         }
         if (schema != ConfigSchemaKind::V2) {
             fail(ConfigRepositoryFailure::UnsupportedSchema, "unsupported config schema_version");
         }
-        if (path_exists(paths_.profiles_database)) {
+        const bool replacing_database = path_exists(paths_.profiles_database);
+        if (replacing_database && !options.replace_existing_database) {
             fail(
                 ConfigRepositoryFailure::Constraint,
                 "profiles.db already exists; refusing to overwrite it during migration");
@@ -1209,6 +1782,21 @@ bool CompositeConfigRepository::migrate_v2(
         }
         const auto source_hash = sha256_hex(source.bytes);
         write_migration_backup(paths_, source.bytes, source_hash);
+
+        DatabaseState old_database;
+        std::optional<DatabaseReplacementBackup> database_backup;
+        if (replacing_database) {
+            const auto sidecars_before = inspect_database_sidecars(paths_.profiles_database);
+            old_database = read_database_state(paths_);
+            SqliteProfileStore old_store(paths_.profiles_database);
+            if (!old_store.checkpoint_for_move(error)) {
+                fail(map_profile_failure(old_store.last_failure()), error);
+            }
+            const auto sidecars_after = inspect_database_sidecars(paths_.profiles_database);
+            database_backup = write_database_replacement_backup(
+                paths_, source_hash, old_database, sidecars_before, sidecars_after);
+            result.replaced_database_backup = database_backup->path;
+        }
 
         auto temporary_database = paths_.profiles_database;
         temporary_database += ".migrating";
@@ -1232,6 +1820,12 @@ bool CompositeConfigRepository::migrate_v2(
             remove_database_family(temporary_database);
             fail(failure, error);
         }
+        std::string target_database_sha256;
+        if (!sha256_file_hex(
+                temporary_database, target_database_sha256, error)) {
+            remove_database_family(temporary_database);
+            fail(ConfigRepositoryFailure::Io, error);
+        }
 
         ApplicationConfigDocument application{legacy.application};
         std::string new_config;
@@ -1243,13 +1837,31 @@ bool CompositeConfigRepository::migrate_v2(
         journal.kind = "migration";
         journal.old_config = source;
         journal.new_config = new_config;
-        journal.old_database_exists = false;
+        journal.old_database_exists = replacing_database;
+        if (replacing_database) {
+            journal.old_profile_revision = old_database.snapshot.revision;
+            journal.old_migration_hash = old_database.snapshot.migrated_from_sha256;
+            journal.old_database_sha256 = database_backup->database_sha256;
+            journal.old_database_backup_directory
+                = database_backup->path.filename().string();
+        }
         journal.target_profile_revision = imported.revision;
         journal.target_migration_hash = source_hash;
-        write_journal(paths_, journal);
+        journal.target_database_sha256 = target_database_sha256;
+        try {
+            write_journal(paths_, journal);
+        } catch (...) {
+            remove_database_family(temporary_database);
+            throw;
+        }
         try {
             write_atomic_file(paths_.config_file, new_config);
-            move_file_no_replace(temporary_database, paths_.profiles_database);
+            if (replacing_database) {
+                remove_database_sidecars(paths_.profiles_database);
+                replace_file(temporary_database, paths_.profiles_database);
+            } else {
+                move_file_no_replace(temporary_database, paths_.profiles_database);
+            }
             clear_journal(paths_, journal.kind);
         } catch (...) {
             if (path_exists(paths_.repository_transaction_directory)) {
@@ -1271,7 +1883,7 @@ bool CompositeConfigRepository::migrate_v2(
             || before != after) {
             fail(ConfigRepositoryFailure::Corrupt, "v2 migration semantic round-trip failed");
         }
-        outcome = MigrationOutcome::Migrated;
+        result.outcome = MigrationOutcome::Migrated;
         return true;
     } catch (const RepositoryError& exception) {
         last_failure_ = exception.failure();

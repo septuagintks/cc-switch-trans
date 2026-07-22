@@ -16,5 +16,9 @@ bool configuration_snapshot_to_config_document(
     const ConfigurationSnapshot& snapshot,
     ConfigDocument& document,
     std::string& error);
+bool configuration_snapshot_to_config_document(
+    const ConfigurationSnapshot& snapshot,
+    ConfigDocument& document,
+    ConfigDocumentValidationFailure& failure);
 
 } // namespace ccs

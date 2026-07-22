@@ -39,6 +39,8 @@ struct MainWindowCommandRequest {
     std::size_t position = 0;
     std::vector<ConfigurationFieldEdit> field_edits;
     std::string text;
+    std::optional<std::uint64_t> expected_draft_revision;
+    std::optional<std::string> expected_base_revision;
 };
 
 using MainWindowStateSnapshot = std::shared_ptr<const MainWindowState>;
@@ -84,6 +86,8 @@ private:
 
     void execute(std::uint64_t sequence, MainWindowCommandRequest request);
     ExecutionResult execute_command(const MainWindowCommandRequest& request);
+    std::optional<ExecutionResult> check_draft_precondition(
+        const MainWindowCommandRequest& request) const;
     ExecutionResult load_draft(
         bool force_reload,
         std::optional<UnsavedChangesDecision> unsaved_decision);
@@ -103,7 +107,7 @@ private:
     MainWindowStateSnapshot snapshot_locked() const;
     void notify(const MainWindowStateSnapshot& state) const;
 
-    static MainWindowError classify_validation_error(const std::string& error);
+    static MainWindowError classify_editor_error(ConfigurationEditError error);
     static MainWindowError classify_repository_error(ConfigRepositoryFailure failure);
 
     ConfigurationRepository& repository_;

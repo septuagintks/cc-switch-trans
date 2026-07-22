@@ -27,6 +27,7 @@ ConfigurationEditor::ConfigurationEditor(ConfigurationRepository& repository)
 
 bool ConfigurationEditor::begin(std::string& error) {
     error.clear();
+    clear_failure();
     if (active_) {
         error = "configuration editor already has an active draft";
         return false;
@@ -61,7 +62,19 @@ bool ConfigurationEditor::require_active(std::string& error) const {
         return true;
     }
     error = "configuration editor has no active draft";
+    set_failure(ConfigurationEditError::Inactive, {}, error);
     return false;
+}
+
+void ConfigurationEditor::clear_failure() const {
+    last_failure_ = {};
+}
+
+void ConfigurationEditor::set_failure(
+    ConfigurationEditError code,
+    std::string field,
+    std::string detail) const {
+    last_failure_ = {code, std::move(field), std::move(detail)};
 }
 
 StoredProfile* ConfigurationEditor::find_profile(ProfileKey profile_key) {
@@ -100,6 +113,7 @@ bool ConfigurationEditor::apply(
     const SetConfigurationFieldCommand& command,
     std::string& error) {
     error.clear();
+    clear_failure();
     if (!require_active(error)) {
         return false;
     }
@@ -109,14 +123,20 @@ bool ConfigurationEditor::apply(
     const auto* descriptor = find_configuration_field_descriptor(scope, command.key);
     if (descriptor == nullptr) {
         error = "unknown configuration field: " + command.key;
+        set_failure(ConfigurationEditError::InvalidField, command.key, error);
         return false;
     }
     if (!command.profile_key) {
-        return apply_application_field(draft_.application, *descriptor, command.value, error);
+        if (!apply_application_field(draft_.application, *descriptor, command.value, error)) {
+            set_failure(ConfigurationEditError::InvalidField, command.key, error);
+            return false;
+        }
+        return true;
     }
     auto* profile = find_profile(*command.profile_key);
     if (profile == nullptr) {
         error = "profile key no longer exists";
+        set_failure(ConfigurationEditError::ProfileNotFound, command.key, error);
         return false;
     }
     if (descriptor->key == "id") {
@@ -124,17 +144,23 @@ bool ConfigurationEditor::apply(
             const auto* collision = find_profile_by_id(*id);
             if (collision != nullptr && collision->key != profile->key) {
                 error = "profile already exists: " + *id;
+                set_failure(ConfigurationEditError::ProfileAlreadyExists, "id", error);
                 return false;
             }
         }
     }
-    return apply_profile_field(*profile, *descriptor, command.value, error);
+    if (!apply_profile_field(*profile, *descriptor, command.value, error)) {
+        set_failure(ConfigurationEditError::InvalidField, command.key, error);
+        return false;
+    }
+    return true;
 }
 
 bool ConfigurationEditor::apply(
     const ResetConfigurationFieldCommand& command,
     std::string& error) {
     error.clear();
+    clear_failure();
     if (!require_active(error)) {
         return false;
     }
@@ -144,17 +170,27 @@ bool ConfigurationEditor::apply(
     const auto* descriptor = find_configuration_field_descriptor(scope, command.key);
     if (descriptor == nullptr) {
         error = "unknown configuration field: " + command.key;
+        set_failure(ConfigurationEditError::InvalidField, command.key, error);
         return false;
     }
     if (!command.profile_key) {
-        return reset_application_field(draft_.application, *descriptor, error);
+        if (!reset_application_field(draft_.application, *descriptor, error)) {
+            set_failure(ConfigurationEditError::InvalidField, command.key, error);
+            return false;
+        }
+        return true;
     }
     auto* profile = find_profile(*command.profile_key);
     if (profile == nullptr) {
         error = "profile key no longer exists";
+        set_failure(ConfigurationEditError::ProfileNotFound, command.key, error);
         return false;
     }
-    return reset_profile_field(*profile, *descriptor, error);
+    if (!reset_profile_field(*profile, *descriptor, error)) {
+        set_failure(ConfigurationEditError::InvalidField, command.key, error);
+        return false;
+    }
+    return true;
 }
 
 bool ConfigurationEditor::apply_batch(
@@ -456,17 +492,20 @@ bool ConfigurationEditor::replace_rules_text(
     RulesTextError& parse_error,
     std::string& error) {
     error.clear();
+    clear_failure();
     if (!require_active(error)) {
         return false;
     }
     auto* profile = find_profile(profile_key);
     if (profile == nullptr) {
         error = "profile key no longer exists";
+        set_failure(ConfigurationEditError::ProfileNotFound, "rules", error);
         return false;
     }
     std::vector<StoredRule> parsed;
     if (!parse_rules_text(content, profile->rules, parsed, parse_error)) {
         error = parse_error.message;
+        set_failure(ConfigurationEditError::RulesInvalid, "rules", error);
         return false;
     }
     for (auto& rule : parsed) {
@@ -501,14 +540,33 @@ bool ConfigurationEditor::format_rules_text(
 
 bool ConfigurationEditor::validate(std::string& error) const {
     error.clear();
+    clear_failure();
     if (!require_active(error)) {
         return false;
     }
     ConfigDocument document;
-    if (!configuration_snapshot_to_config_document(draft_, document, error)) {
+    ConfigDocumentValidationFailure document_failure;
+    if (!configuration_snapshot_to_config_document(
+            draft_, document, document_failure)) {
+        error = document_failure.detail;
+        set_failure(
+            ConfigurationEditError::ValidationFailed,
+            std::move(document_failure.field),
+            error);
         return false;
     }
-    return validate_config_candidate(document, repository_.paths().root, error);
+    ConfigValidationFailure failure;
+    if (!validate_config_candidate(document, repository_.paths().root, failure)) {
+        error = failure.detail;
+        set_failure(
+            failure.code == ConfigValidationError::RouteCollision
+                ? ConfigurationEditError::RouteCollision
+                : ConfigurationEditError::ValidationFailed,
+            std::move(failure.field),
+            error);
+        return false;
+    }
+    return true;
 }
 
 bool ConfigurationEditor::commit(
@@ -534,6 +592,10 @@ bool ConfigurationEditor::commit(
     draft_ = committed;
     active_ = false;
     return true;
+}
+
+const ConfigurationEditFailure& ConfigurationEditor::last_failure() const noexcept {
+    return last_failure_;
 }
 
 } // namespace ccs

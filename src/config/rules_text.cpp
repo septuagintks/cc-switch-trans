@@ -216,6 +216,43 @@ Json sorted_options(const nlohmann::json& options) {
 
 } // namespace
 
+std::string normalize_rules_text_newlines(std::string_view content) {
+    std::string normalized;
+    normalized.reserve(content.size());
+    bool in_string = false;
+    bool escaped = false;
+    for (std::size_t index = 0; index < content.size();) {
+        const auto byte = static_cast<unsigned char>(content[index]);
+        if (in_string) {
+            normalized.push_back(content[index++]);
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (byte == '"') {
+            in_string = true;
+            normalized.push_back(content[index++]);
+        } else if (byte == '\r') {
+            normalized.push_back('\n');
+            index += index + 1 < content.size() && content[index + 1] == '\n' ? 2 : 1;
+        } else if (byte == 0xE2 && index + 2 < content.size()
+            && static_cast<unsigned char>(content[index + 1]) == 0x80
+            && (static_cast<unsigned char>(content[index + 2]) == 0xA8
+                || static_cast<unsigned char>(content[index + 2]) == 0xA9)) {
+            normalized.push_back('\n');
+            index += 3;
+        } else {
+            normalized.push_back(content[index++]);
+        }
+    }
+    return normalized;
+}
+
 bool parse_rules_text(
     std::string_view content,
     const std::vector<StoredRule>& existing,
@@ -228,6 +265,8 @@ bool parse_rules_text(
         return false;
     }
 
+    const auto normalized = normalize_rules_text_newlines(content);
+    content = normalized;
     Json root;
     if (!parse_strict_json(content, root, error)) {
         return false;

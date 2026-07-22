@@ -63,6 +63,12 @@ struct ConfigDocument {
     std::map<std::string, ProfileDefinition> profiles;
 };
 
+struct ConfigDocumentValidationFailure {
+    std::string profile_id;
+    std::string field;
+    std::string detail;
+};
+
 ConfigDocument make_default_config_document();
 
 bool parse_config_document(
@@ -75,6 +81,9 @@ bool serialize_config_document(
     std::string& error);
 
 bool validate_config_document(const ConfigDocument& document, std::string& error);
+bool validate_config_document(
+    const ConfigDocument& document,
+    ConfigDocumentValidationFailure& failure);
 bool validate_application_settings(
     const ApplicationSettings& application,
     std::string& error);

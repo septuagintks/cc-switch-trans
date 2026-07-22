@@ -130,6 +130,9 @@ void test_parser_contract() {
         {{"rule", "move", "findcg", "remove-image", "1"}, ccs::ConfigCliCommandKind::RuleMove},
         {{"storage", "status"}, ccs::ConfigCliCommandKind::StorageStatus},
         {{"storage", "migrate"}, ccs::ConfigCliCommandKind::StorageMigrate},
+        {{"storage", "migrate", "--replace"}, ccs::ConfigCliCommandKind::StorageMigrate},
+        {{"storage", "migrate", "--replace", "--confirm", "REPLACE"},
+            ccs::ConfigCliCommandKind::StorageMigrate},
         {{"storage", "verify"}, ccs::ConfigCliCommandKind::StorageVerify},
         {{"run", "--profile", "findcg", "--log-level", "debug", "--log-path", "logs/debug.log"}, ccs::ConfigCliCommandKind::Run},
     };
@@ -156,6 +159,8 @@ void test_parser_contract() {
         {"storage"},
         {"storage", "repair"},
         {"storage", "status", "extra"},
+        {"storage", "migrate", "--confirm", "REPLACE"},
+        {"storage", "migrate", "--replace", "--confirm"},
         {"run", "--unknown", "value"},
         {"run", "--profile", "a", "--profile", "b"},
         {"run", "--log-level", "verbose"},
@@ -172,6 +177,41 @@ void test_parser_contract() {
     require(!ccs::is_config_cli_management_command("run"), "run remains a host command");
 }
 
+void test_storage_replacement_confirmation() {
+    auto parsed = parse({"storage", "migrate", "--replace"});
+    require(parsed.ok && parsed.command.storage_replace, "replace mode parsed");
+    std::string error;
+    std::istringstream noninteractive("REPLACE\n");
+    std::ostringstream prompt;
+    require(!ccs::confirm_storage_replacement(
+                parsed.command, false, noninteractive, prompt, error)
+            && error.find("--confirm REPLACE") != std::string::npos
+            && prompt.str().empty(),
+        "non-interactive replacement never reads stdin without an explicit token");
+
+    std::istringstream interactive("REPLACE\n");
+    require(ccs::confirm_storage_replacement(
+                parsed.command, true, interactive, prompt, error)
+            && prompt.str() == "Type REPLACE to continue: ",
+        "interactive replacement requires the exact prompt response");
+    std::istringstream wrong_case("replace\n");
+    std::ostringstream ignored_prompt;
+    require(!ccs::confirm_storage_replacement(
+                parsed.command, true, wrong_case, ignored_prompt, error),
+        "interactive confirmation is case-sensitive");
+
+    parsed = parse({"storage", "migrate", "--replace", "--confirm", "REPLACE"});
+    std::istringstream empty;
+    require(ccs::confirm_storage_replacement(
+                parsed.command, false, empty, ignored_prompt, error),
+        "non-interactive exact token is accepted");
+    parsed = parse({"storage", "migrate", "--replace", "--confirm", "replace"});
+    require(parsed.ok
+            && !ccs::confirm_storage_replacement(
+                parsed.command, false, empty, ignored_prompt, error),
+        "non-interactive confirmation token is case-sensitive");
+}
+
 void test_help_contract() {
     std::ostringstream help;
     ccs::print_config_cli_help(help);
@@ -182,6 +222,9 @@ void test_help_contract() {
         "rule move help");
     require(text.find("ccs-trans storage migrate") != std::string::npos,
         "storage migration help");
+    require(text.find("storage migrate --replace [--confirm REPLACE]")
+            != std::string::npos,
+        "destructive migration help documents explicit confirmation");
     require(text.find(", -h") == std::string::npos, "short help alias omitted");
     require(text.find("listener.port") != std::string::npos, "application key documented");
     require(text.find("logging.max-total-size") != std::string::npos,
@@ -407,6 +450,7 @@ void test_composite_management_workflow() {
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"parser contract", test_parser_contract},
+        {"storage replacement confirmation", test_storage_replacement_confirmation},
         {"help contract", test_help_contract},
         {"management workflow", test_management_workflow},
         {"composite management workflow", test_composite_management_workflow},

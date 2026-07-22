@@ -23,6 +23,23 @@ struct ResetConfigurationFieldCommand {
     std::string key;
 };
 
+enum class ConfigurationEditError {
+    None,
+    Inactive,
+    InvalidField,
+    ProfileNotFound,
+    ProfileAlreadyExists,
+    ValidationFailed,
+    RouteCollision,
+    RulesInvalid,
+};
+
+struct ConfigurationEditFailure {
+    ConfigurationEditError code = ConfigurationEditError::None;
+    std::string field;
+    std::string detail;
+};
+
 class ConfigurationEditor final {
 public:
     explicit ConfigurationEditor(ConfigurationRepository& repository);
@@ -91,6 +108,7 @@ public:
 
     bool validate(std::string& error) const;
     bool commit(ConfigurationSnapshot& committed, std::string& error);
+    const ConfigurationEditFailure& last_failure() const noexcept;
 
     StoredProfile* find_profile_by_id(std::string_view profile_id);
     const StoredProfile* find_profile_by_id(std::string_view profile_id) const;
@@ -99,12 +117,18 @@ private:
     StoredProfile* find_profile(ProfileKey profile_key);
     const StoredProfile* find_profile(ProfileKey profile_key) const;
     bool require_active(std::string& error) const;
+    void clear_failure() const;
+    void set_failure(
+        ConfigurationEditError code,
+        std::string field,
+        std::string detail) const;
 
     ConfigurationRepository& repository_;
     ConfigurationSnapshot draft_;
     ProfileKey next_draft_profile_key_ = -1;
     RuleKey next_draft_rule_key_ = -1;
     bool active_ = false;
+    mutable ConfigurationEditFailure last_failure_;
 };
 
 } // namespace ccs

@@ -1,5 +1,7 @@
 #include "config/configuration_conversion.hpp"
 
+#include "core/sha256.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -7,6 +9,19 @@
 #include <utility>
 
 namespace ccs {
+
+std::string repository_revision_token(const RepositoryRevision& revision) {
+    std::string source;
+    source.reserve(revision.application_source.bytes.size() + 96);
+    source.append("ccs-trans.repository-revision/v1");
+    source.push_back('\0');
+    source.push_back(revision.application_source.exists ? '1' : '0');
+    source.push_back('\0');
+    source.append(std::to_string(revision.profile_revision));
+    source.push_back('\0');
+    source.append(revision.application_source.bytes);
+    return sha256_hex(source);
+}
 
 namespace {
 
@@ -97,8 +112,8 @@ bool config_document_to_stored_profiles(
 bool configuration_snapshot_to_config_document(
     const ConfigurationSnapshot& snapshot,
     ConfigDocument& document,
-    std::string& error) {
-    error.clear();
+    ConfigDocumentValidationFailure& failure) {
+    failure = {};
     ConfigDocument converted;
     converted.application = snapshot.application;
     for (std::size_t position = 0; position < snapshot.profiles.size(); ++position) {
@@ -118,23 +133,39 @@ bool configuration_snapshot_to_config_document(
         profile.rules.reserve(stored.rules.size());
         for (const auto& stored_rule : stored.rules) {
             RuleDefinition rule;
+            std::string error;
             if (!stored_rule_to_definition(stored_rule, rule, error)) {
-                error = "profile " + stored.profile_id + ": " + error;
+                failure.profile_id = stored.profile_id;
+                failure.field = "rules";
+                failure.detail = "profile " + stored.profile_id + ": " + error;
                 return false;
             }
             profile.rules.push_back(std::move(rule));
         }
         if (!converted.profiles.emplace(stored.profile_id, std::move(profile)).second) {
-            error = "configuration snapshot contains duplicate profile id: "
+            failure.profile_id = stored.profile_id;
+            failure.field = "id";
+            failure.detail = "configuration snapshot contains duplicate profile id: "
                 + stored.profile_id;
             return false;
         }
     }
-    if (!validate_config_document(converted, error)) {
+    if (!validate_config_document(converted, failure)) {
         return false;
     }
     document = std::move(converted);
     return true;
+}
+
+bool configuration_snapshot_to_config_document(
+    const ConfigurationSnapshot& snapshot,
+    ConfigDocument& document,
+    std::string& error) {
+    ConfigDocumentValidationFailure failure;
+    const bool converted = configuration_snapshot_to_config_document(
+        snapshot, document, failure);
+    error = std::move(failure.detail);
+    return converted;
 }
 
 } // namespace ccs

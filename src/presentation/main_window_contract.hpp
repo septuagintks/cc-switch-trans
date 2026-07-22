@@ -28,6 +28,7 @@ enum class MainWindowCommand {
     RemoveProfile,
     MoveProfile,
     SetProfileEnabled,
+    SaveProfile,
     UpdateProfileFields,
     UpdateApplicationFields,
     ReplaceRulesText,
@@ -46,6 +47,7 @@ enum class MainWindowError {
     ValidationFailed,
     RouteCollision,
     RepositoryStale,
+    DraftStale,
     PersistenceFailed,
     RuntimeApplyFailed,
     ServiceUnavailable,
@@ -147,6 +149,8 @@ enum class DraftPhase {
 struct DraftState {
     DraftPhase phase = DraftPhase::Unloaded;
     bool runtime_apply_pending = false;
+    std::uint64_t revision = 0;
+    std::string base_revision;
 
     [[nodiscard]] bool loaded() const noexcept;
     [[nodiscard]] bool dirty() const noexcept;

@@ -62,6 +62,8 @@ const char* main_window_command_name(MainWindowCommand command) noexcept {
         return "move_profile";
     case MainWindowCommand::SetProfileEnabled:
         return "set_profile_enabled";
+    case MainWindowCommand::SaveProfile:
+        return "save_profile";
     case MainWindowCommand::UpdateProfileFields:
         return "update_profile_fields";
     case MainWindowCommand::UpdateApplicationFields:
@@ -98,6 +100,8 @@ const char* main_window_error_name(MainWindowError error) noexcept {
         return "route_collision";
     case MainWindowError::RepositoryStale:
         return "repository_stale";
+    case MainWindowError::DraftStale:
+        return "draft_stale";
     case MainWindowError::PersistenceFailed:
         return "persistence_failed";
     case MainWindowError::RuntimeApplyFailed:

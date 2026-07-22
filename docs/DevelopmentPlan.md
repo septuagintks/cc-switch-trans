@@ -22,7 +22,9 @@ JSON 文件、SQLite、GUI 或 descriptor。
 `0.8-A` 已完成：Qt `6.10.3`/官方 MinGW `13.1` 独立 GUI、GCC 16 runtime 双工具链、typed model/动画
 稳定性原型、固定 Qt staging、资源预算和安装/卸载技术原型均已通过。项目已明确限定为非商业使用，
 Inno Setup 7.0.2 的 `Non-commercial use only` 路径正式冻结；若未来用途变化，必须在后续 setup 发布前
-重新审计许可或切换 WiX。当前开发入口为 `0.8-B` 共享编辑与迁移合同。
+重新审计许可或切换 WiX。`0.8-B` 已完成原子 Profile Save、结构化错误字段、draft/base revision、
+Rules 换行与前向兼容边界，以及可验证恢复的 `storage migrate --replace`。当前开发入口为 `0.8-C`：
+Windows tray 分层与 `gui-ipc/v1`。
 
 ## 版本顺序
 

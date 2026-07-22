@@ -304,6 +304,9 @@ void MainWindowViewModel::execute(
 
 MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_command(
     const MainWindowCommandRequest& request) {
+    if (const auto precondition = check_draft_precondition(request)) {
+        return *precondition;
+    }
     switch (request.command) {
     case MainWindowCommand::LoadDraft:
         return load_draft(false, request.unsaved_changes_decision);
@@ -315,6 +318,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_command(
     case MainWindowCommand::MoveProfile:
     case MainWindowCommand::SetProfileEnabled:
         return mutate_draft(request);
+    case MainWindowCommand::SaveProfile:
     case MainWindowCommand::UpdateProfileFields:
     case MainWindowCommand::UpdateApplicationFields:
         return update_fields(request);
@@ -390,6 +394,38 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_command(
     };
 }
 
+std::optional<MainWindowViewModel::ExecutionResult>
+MainWindowViewModel::check_draft_precondition(
+    const MainWindowCommandRequest& request) const {
+    if (!request.expected_draft_revision && !request.expected_base_revision) {
+        return std::nullopt;
+    }
+    const auto current = snapshot();
+    if (request.expected_draft_revision
+        && *request.expected_draft_revision != current->draft.revision) {
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::DraftStale,
+            request.profile_id,
+            {},
+            "draft revision changed",
+            MainWindowCommand::ReloadDraft,
+        };
+    }
+    if (request.expected_base_revision
+        && *request.expected_base_revision != current->draft.base_revision) {
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::RepositoryStale,
+            request.profile_id,
+            {},
+            "repository base revision changed",
+            MainWindowCommand::ReloadDraft,
+        };
+    }
+    return std::nullopt;
+}
+
 MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
     bool force_reload,
     std::optional<UnsavedChangesDecision> unsaved_decision) {
@@ -454,6 +490,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
     if ((force_reload || !repository_.loaded()) && !repository_.load(error)) {
         publish_state_change([&](MainWindowState& state) {
             state.draft.phase = DraftPhase::Unloaded;
+            ++state.draft.revision;
+            state.draft.base_revision.clear();
             state.profiles.clear();
             state.application_fields.clear();
             clear_profile_selection(state);
@@ -470,6 +508,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
     if (!editing_.begin(error)) {
         publish_state_change([](MainWindowState& state) {
             state.draft.phase = DraftPhase::Unloaded;
+            ++state.draft.revision;
+            state.draft.base_revision.clear();
             state.profiles.clear();
             state.application_fields.clear();
             clear_profile_selection(state);
@@ -484,11 +524,14 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
         };
     }
 
+    const auto base_revision = repository_revision_token(editing_.draft().revision);
     publish_state_change([&](MainWindowState& state) {
         state.lightweight_mode = preference_values_.lightweight_mode;
         state.draft.phase = state.draft.runtime_apply_pending
             ? DraftPhase::SavedPendingRuntimeApply
             : DraftPhase::Clean;
+        ++state.draft.revision;
+        state.draft.base_revision = base_revision;
     });
     rebuild_editor_state();
     if (!preferences_loaded) {
@@ -523,11 +566,13 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::mutate_draft(
     std::string result_profile_id = request.profile_id;
 
     if (request.command == MainWindowCommand::CreateProfile) {
+        const bool profile_already_exists =
+            editing_.find_profile_by_id(request.profile_id) != nullptr;
         ProfileKey created_key = 0;
         if (!editing_.create_profile(request.profile_id, created_key, error)) {
             return ExecutionResult{
                 CommandOutcome::Rejected,
-                error.find("already exists") != std::string::npos
+                profile_already_exists
                     ? MainWindowError::ProfileAlreadyExists
                     : MainWindowError::InvalidArgument,
                 request.profile_id,
@@ -570,13 +615,12 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::mutate_draft(
                 request.replacement_profile_id,
             }};
             if (!editing_.apply_batch(set_commands, {}, false, error)) {
+                const auto failure = editing_.last_failure();
                 return ExecutionResult{
                     CommandOutcome::Rejected,
-                    error.find("already exists") != std::string::npos
-                        ? MainWindowError::ProfileAlreadyExists
-                        : MainWindowError::InvalidArgument,
+                    classify_editor_error(failure.code),
                     result_profile_id,
-                    "id",
+                    failure.field.empty() ? "id" : failure.field,
                     std::move(error),
                     std::nullopt,
                 };
@@ -612,11 +656,12 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::mutate_draft(
                 request.enabled,
             }};
             if (!editing_.apply_batch(set_commands, {}, true, error)) {
+                const auto failure = editing_.last_failure();
                 return ExecutionResult{
                     CommandOutcome::Rejected,
-                    classify_validation_error(error),
+                    classify_editor_error(failure.code),
                     result_profile_id,
-                    "enabled",
+                    failure.field.empty() ? "enabled" : failure.field,
                     std::move(error),
                     std::nullopt,
                 };
@@ -636,6 +681,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::mutate_draft(
     }
     publish_state_change([](MainWindowState& state) {
         state.draft.phase = DraftPhase::Dirty;
+        ++state.draft.revision;
     });
     rebuild_editor_state(preferred_key, result_profile_id);
     return ExecutionResult{
@@ -661,7 +707,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::update_fields(
         };
     }
     std::optional<ProfileKey> profile_key;
-    if (request.command == MainWindowCommand::UpdateProfileFields) {
+    if (request.command == MainWindowCommand::SaveProfile
+        || request.command == MainWindowCommand::UpdateProfileFields) {
         profile_key = request.profile_key;
         if (!profile_key) {
             const auto* profile = editing_.find_profile_by_id(request.profile_id);
@@ -695,13 +742,12 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::update_fields(
     const auto before = editing_.draft();
     std::string error;
     if (!editing_.apply_batch(set_commands, reset_commands, true, error)) {
+        const auto failure = editing_.last_failure();
         return ExecutionResult{
             CommandOutcome::Rejected,
-            error.find("already exists") != std::string::npos
-                ? MainWindowError::ProfileAlreadyExists
-                : classify_validation_error(error),
+            classify_editor_error(failure.code),
             request.profile_id,
-            {},
+            failure.field,
             std::move(error),
             std::nullopt,
         };
@@ -709,10 +755,28 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::update_fields(
     if (editing_.draft() != before) {
         publish_state_change([](MainWindowState& state) {
             state.draft.phase = DraftPhase::Dirty;
+            ++state.draft.revision;
         });
     }
-    rebuild_editor_state(profile_key, request.profile_id);
-    return {};
+    std::string result_profile_id = request.profile_id;
+    if (profile_key) {
+        const auto profile = std::find_if(
+            editing_.draft().profiles.begin(),
+            editing_.draft().profiles.end(),
+            [&](const auto& candidate) { return candidate.key == *profile_key; });
+        if (profile != editing_.draft().profiles.end()) {
+            result_profile_id = profile->profile_id;
+        }
+    }
+    rebuild_editor_state(profile_key, result_profile_id);
+    return ExecutionResult{
+        CommandOutcome::Succeeded,
+        MainWindowError::None,
+        result_profile_id,
+        {},
+        {},
+        std::nullopt,
+    };
 }
 
 MainWindowViewModel::ExecutionResult MainWindowViewModel::update_rules(
@@ -729,16 +793,19 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::update_rules(
         };
     }
     const auto before = editing_.draft();
+    const auto normalized_text = normalize_rules_text_newlines(request.text);
     RulesTextError diagnostic;
     std::string error;
-    if (!editing_.replace_rules_text(*request.profile_key, request.text, diagnostic, error)) {
+    if (!editing_.replace_rules_text(
+            *request.profile_key, normalized_text, diagnostic, error)) {
         publish_state_change([&](MainWindowState& state) {
             state.rules_editor = RulesEditorState{
                 *request.profile_key,
                 request.profile_id,
-                request.text,
+                normalized_text,
                 diagnostic,
             };
+            ++state.draft.revision;
         });
         return ExecutionResult{
             CommandOutcome::Rejected,
@@ -749,7 +816,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::update_rules(
             std::nullopt,
         };
     }
-    std::string displayed = request.text;
+    std::string displayed = normalized_text;
     if (format
         && !editing_.format_rules_text(*request.profile_key, displayed, diagnostic, error)) {
         return ExecutionResult{
@@ -772,6 +839,7 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::update_rules(
             state.rules_editor->text = std::move(displayed);
             state.rules_editor->diagnostic.reset();
         }
+        ++state.draft.revision;
     });
     return {};
 }
@@ -819,14 +887,15 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::apply_draft() {
     });
     std::string error;
     if (!editing_.validate(error)) {
+        const auto failure = editing_.last_failure();
         publish_state_change([](MainWindowState& state) {
             state.draft.phase = DraftPhase::Dirty;
         });
         return ExecutionResult{
             CommandOutcome::Rejected,
-            classify_validation_error(error),
+            classify_editor_error(failure.code),
             {},
-            {},
+            failure.field,
             std::move(error),
             std::nullopt,
         };
@@ -862,6 +931,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::apply_draft() {
                 ? DraftPhase::Unloaded
                 : DraftPhase::SavedPendingRuntimeApply;
             state.draft.runtime_apply_pending = !runtime_applied;
+            ++state.draft.revision;
+            state.draft.base_revision = repository_revision_token(committed.revision);
             state.profiles.clear();
             state.application_fields.clear();
             clear_profile_selection(state);
@@ -875,11 +946,14 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::apply_draft() {
             MainWindowCommand::ReloadDraft,
         };
     }
+    const auto base_revision = repository_revision_token(editing_.draft().revision);
     publish_state_change([&](MainWindowState& state) {
         state.draft.phase = runtime_applied
             ? DraftPhase::Clean
             : DraftPhase::SavedPendingRuntimeApply;
         state.draft.runtime_apply_pending = !runtime_applied;
+        ++state.draft.revision;
+        state.draft.base_revision = base_revision;
     });
     rebuild_editor_state({}, selected_before_commit);
     if (!runtime_applied) {
@@ -915,6 +989,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::discard_draft() {
     if (!editing_.begin(error)) {
         publish_state_change([](MainWindowState& state) {
             state.draft.phase = DraftPhase::Unloaded;
+            ++state.draft.revision;
+            state.draft.base_revision.clear();
             state.profiles.clear();
             state.application_fields.clear();
             clear_profile_selection(state);
@@ -928,10 +1004,13 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::discard_draft() {
             MainWindowCommand::ReloadDraft,
         };
     }
-    publish_state_change([](MainWindowState& state) {
+    const auto base_revision = repository_revision_token(editing_.draft().revision);
+    publish_state_change([&](MainWindowState& state) {
         state.draft.phase = state.draft.runtime_apply_pending
             ? DraftPhase::SavedPendingRuntimeApply
             : DraftPhase::Clean;
+        ++state.draft.revision;
+        state.draft.base_revision = base_revision;
     });
     rebuild_editor_state();
     return {};
@@ -1179,9 +1258,22 @@ void MainWindowViewModel::notify(const MainWindowStateSnapshot& state) const {
     }
 }
 
-MainWindowError MainWindowViewModel::classify_validation_error(const std::string& error) {
-    if (error.find("route collision") != std::string::npos) {
+MainWindowError MainWindowViewModel::classify_editor_error(
+    ConfigurationEditError error) {
+    switch (error) {
+    case ConfigurationEditError::Inactive:
+        return MainWindowError::ServiceUnavailable;
+    case ConfigurationEditError::ProfileNotFound:
+        return MainWindowError::ProfileNotFound;
+    case ConfigurationEditError::ProfileAlreadyExists:
+        return MainWindowError::ProfileAlreadyExists;
+    case ConfigurationEditError::RouteCollision:
         return MainWindowError::RouteCollision;
+    case ConfigurationEditError::None:
+    case ConfigurationEditError::InvalidField:
+    case ConfigurationEditError::ValidationFailed:
+    case ConfigurationEditError::RulesInvalid:
+        return MainWindowError::ValidationFailed;
     }
     return MainWindowError::ValidationFailed;
 }

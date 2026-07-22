@@ -7,6 +7,12 @@
 #include <iostream>
 #include <utility>
 
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace {
 
 void print_runtime_summary(
@@ -31,12 +37,20 @@ bool is_storage_command(ccs::ConfigCliCommandKind kind) {
         || kind == ccs::ConfigCliCommandKind::StorageVerify;
 }
 
+bool stdin_is_terminal() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(fileno(stdin)) != 0;
+#endif
+}
+
 bool execute_storage_command(
-    ccs::ConfigCliCommandKind kind,
+    const ccs::ConfigCliCommand& command,
     ccs::CompositeConfigRepository& repository,
     std::string& output,
     std::string& error) {
-    if (kind == ccs::ConfigCliCommandKind::StorageStatus) {
+    if (command.kind == ccs::ConfigCliCommandKind::StorageStatus) {
         ccs::StorageStatus status;
         if (!repository.inspect_storage(status, error)) {
             return false;
@@ -52,14 +66,23 @@ bool execute_storage_command(
         }
         return true;
     }
-    if (kind == ccs::ConfigCliCommandKind::StorageMigrate) {
-        ccs::MigrationOutcome outcome;
-        if (!repository.migrate_v2(outcome, error)) {
+    if (command.kind == ccs::ConfigCliCommandKind::StorageMigrate) {
+        if (!ccs::confirm_storage_replacement(
+                command, stdin_is_terminal(), std::cin, std::cerr, error)) {
             return false;
         }
-        output = outcome == ccs::MigrationOutcome::Migrated
+        ccs::MigrationResult result;
+        if (!repository.migrate_v2(
+                {command.storage_replace}, result, error)) {
+            return false;
+        }
+        output = result.outcome == ccs::MigrationOutcome::Migrated
             ? "storage migrated\n"
             : "storage already migrated\n";
+        if (result.replaced_database_backup) {
+            output += "replaced database backup: "
+                + result.replaced_database_backup->string() + "\n";
+        }
         return true;
     }
     if (!repository.verify_storage(error)) {
@@ -97,7 +120,7 @@ int main(int argc, char** argv) {
         ccs::CompositeConfigRepository repository(paths);
         std::string output;
         const bool succeeded = is_storage_command(parsed.command.kind)
-            ? execute_storage_command(parsed.command.kind, repository, output, error)
+            ? execute_storage_command(parsed.command, repository, output, error)
             : repository.load(error)
                 && ccs::execute_config_cli(parsed.command, repository, output, error);
         if (!succeeded) {

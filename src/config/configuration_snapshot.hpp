@@ -22,6 +22,8 @@ struct RepositoryRevision {
     bool operator==(const RepositoryRevision&) const = default;
 };
 
+std::string repository_revision_token(const RepositoryRevision& revision);
+
 struct ConfigurationSnapshot {
     ApplicationSettings application;
     std::vector<StoredProfile> profiles;

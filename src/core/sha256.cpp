@@ -1,10 +1,12 @@
 #include "core/sha256.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
-#include <vector>
 
 namespace ccs {
 
@@ -33,37 +35,69 @@ std::uint32_t rotate_right(std::uint32_t value, unsigned int count) {
     return (value >> count) | (value << (32U - count));
 }
 
-} // namespace
-
-std::string sha256_hex(std::string_view content) {
-    std::vector<std::uint8_t> padded(content.begin(), content.end());
-    const auto bit_length = static_cast<std::uint64_t>(padded.size()) * 8U;
-    padded.push_back(0x80);
-    while ((padded.size() % 64) != 56) {
-        padded.push_back(0);
+class Sha256 final {
+public:
+    bool update(std::string_view content) {
+        if (content.size() > std::numeric_limits<std::uint64_t>::max() - total_bytes_) {
+            return false;
+        }
+        total_bytes_ += static_cast<std::uint64_t>(content.size());
+        std::size_t offset = 0;
+        if (buffer_size_ != 0) {
+            const auto copied = std::min(content.size(), buffer_.size() - buffer_size_);
+            std::copy_n(content.data(), copied, buffer_.data() + buffer_size_);
+            buffer_size_ += copied;
+            offset += copied;
+            if (buffer_size_ == buffer_.size()) {
+                transform(buffer_.data());
+                buffer_size_ = 0;
+            }
+        }
+        while (content.size() - offset >= buffer_.size()) {
+            transform(reinterpret_cast<const std::uint8_t*>(content.data() + offset));
+            offset += buffer_.size();
+        }
+        if (offset < content.size()) {
+            buffer_size_ = content.size() - offset;
+            std::copy_n(content.data() + offset, buffer_size_, buffer_.data());
+        }
+        return true;
     }
-    for (int shift = 56; shift >= 0; shift -= 8) {
-        padded.push_back(static_cast<std::uint8_t>(bit_length >> shift));
+
+    std::string finish() {
+        const auto bit_length = total_bytes_ * 8U;
+        buffer_[buffer_size_++] = 0x80;
+        if (buffer_size_ > 56) {
+            std::fill(buffer_.begin() + static_cast<std::ptrdiff_t>(buffer_size_),
+                buffer_.end(), 0);
+            transform(buffer_.data());
+            buffer_size_ = 0;
+        }
+        std::fill(buffer_.begin() + static_cast<std::ptrdiff_t>(buffer_size_),
+            buffer_.begin() + 56, 0);
+        for (std::size_t index = 0; index < 8; ++index) {
+            buffer_[56 + index] = static_cast<std::uint8_t>(
+                bit_length >> ((7U - index) * 8U));
+        }
+        transform(buffer_.data());
+
+        std::ostringstream result;
+        result << std::hex << std::setfill('0');
+        for (const auto value : hash_) {
+            result << std::setw(8) << value;
+        }
+        return result.str();
     }
 
-    std::array<std::uint32_t, 8> hash = {
-        0x6a09e667,
-        0xbb67ae85,
-        0x3c6ef372,
-        0xa54ff53a,
-        0x510e527f,
-        0x9b05688c,
-        0x1f83d9ab,
-        0x5be0cd19,
-    };
-    std::array<std::uint32_t, 64> words{};
-    for (std::size_t offset = 0; offset < padded.size(); offset += 64) {
+private:
+    void transform(const std::uint8_t* block) {
+        std::array<std::uint32_t, 64> words{};
         for (std::size_t index = 0; index < 16; ++index) {
-            const auto position = offset + index * 4;
-            words[index] = (static_cast<std::uint32_t>(padded[position]) << 24)
-                | (static_cast<std::uint32_t>(padded[position + 1]) << 16)
-                | (static_cast<std::uint32_t>(padded[position + 2]) << 8)
-                | static_cast<std::uint32_t>(padded[position + 3]);
+            const auto position = index * 4;
+            words[index] = (static_cast<std::uint32_t>(block[position]) << 24)
+                | (static_cast<std::uint32_t>(block[position + 1]) << 16)
+                | (static_cast<std::uint32_t>(block[position + 2]) << 8)
+                | static_cast<std::uint32_t>(block[position + 3]);
         }
         for (std::size_t index = 16; index < words.size(); ++index) {
             const auto sigma0 = rotate_right(words[index - 15], 7)
@@ -72,23 +106,25 @@ std::string sha256_hex(std::string_view content) {
             const auto sigma1 = rotate_right(words[index - 2], 17)
                 ^ rotate_right(words[index - 2], 19)
                 ^ (words[index - 2] >> 10);
-            words[index] = words[index - 16] + sigma0
-                + words[index - 7] + sigma1;
+            words[index] = words[index - 16] + sigma0 + words[index - 7] + sigma1;
         }
 
-        auto a = hash[0];
-        auto b = hash[1];
-        auto c = hash[2];
-        auto d = hash[3];
-        auto e = hash[4];
-        auto f = hash[5];
-        auto g = hash[6];
-        auto h = hash[7];
+        auto a = hash_[0];
+        auto b = hash_[1];
+        auto c = hash_[2];
+        auto d = hash_[3];
+        auto e = hash_[4];
+        auto f = hash_[5];
+        auto g = hash_[6];
+        auto h = hash_[7];
         for (std::size_t index = 0; index < words.size(); ++index) {
-            const auto sum1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25);
+            const auto sum1 = rotate_right(e, 6) ^ rotate_right(e, 11)
+                ^ rotate_right(e, 25);
             const auto choice = (e & f) ^ (~e & g);
-            const auto temporary1 = h + sum1 + choice + kRoundConstants[index] + words[index];
-            const auto sum0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22);
+            const auto temporary1 = h + sum1 + choice + kRoundConstants[index]
+                + words[index];
+            const auto sum0 = rotate_right(a, 2) ^ rotate_right(a, 13)
+                ^ rotate_right(a, 22);
             const auto majority = (a & b) ^ (a & c) ^ (b & c);
             const auto temporary2 = sum0 + majority;
             h = g;
@@ -100,22 +136,67 @@ std::string sha256_hex(std::string_view content) {
             b = a;
             a = temporary1 + temporary2;
         }
-        hash[0] += a;
-        hash[1] += b;
-        hash[2] += c;
-        hash[3] += d;
-        hash[4] += e;
-        hash[5] += f;
-        hash[6] += g;
-        hash[7] += h;
+        hash_[0] += a;
+        hash_[1] += b;
+        hash_[2] += c;
+        hash_[3] += d;
+        hash_[4] += e;
+        hash_[5] += f;
+        hash_[6] += g;
+        hash_[7] += h;
     }
 
-    std::ostringstream result;
-    result << std::hex << std::setfill('0');
-    for (const auto value : hash) {
-        result << std::setw(8) << value;
+    std::array<std::uint32_t, 8> hash_ = {
+        0x6a09e667,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    };
+    std::array<std::uint8_t, 64> buffer_{};
+    std::size_t buffer_size_ = 0;
+    std::uint64_t total_bytes_ = 0;
+};
+
+} // namespace
+
+std::string sha256_hex(std::string_view content) {
+    Sha256 state;
+    (void)state.update(content);
+    return state.finish();
+}
+
+bool sha256_file_hex(
+    const std::filesystem::path& path,
+    std::string& digest,
+    std::string& error) {
+    digest.clear();
+    error.clear();
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        error = "failed to open file for SHA-256: " + path.string();
+        return false;
     }
-    return result.str();
+    Sha256 state;
+    std::array<char, 64 * 1024> buffer{};
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto count = input.gcount();
+        if (count > 0
+            && !state.update(std::string_view(buffer.data(), static_cast<std::size_t>(count)))) {
+            error = "file is too large for SHA-256 length accounting: " + path.string();
+            return false;
+        }
+    }
+    if (!input.eof()) {
+        error = "failed to read file for SHA-256: " + path.string();
+        return false;
+    }
+    digest = state.finish();
+    return true;
 }
 
 } // namespace ccs

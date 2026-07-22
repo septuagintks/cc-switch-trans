@@ -58,6 +58,18 @@ int main() {
     configuration.profiles = profiles;
     configuration.revision.application_source = {true, "v3 bytes"};
     configuration.revision.profile_revision = 4;
+    const auto revision_token = ccs::repository_revision_token(configuration.revision);
+    require(revision_token.size() == 64
+            && revision_token.find("v3 bytes") == std::string::npos,
+        "repository revision token is opaque");
+    auto changed_revision = configuration.revision;
+    ++changed_revision.profile_revision;
+    require(ccs::repository_revision_token(changed_revision) != revision_token,
+        "profile revision participates in the composite token");
+    changed_revision = configuration.revision;
+    changed_revision.application_source.bytes.push_back('!');
+    require(ccs::repository_revision_token(changed_revision) != revision_token,
+        "application source participates in the composite token");
 
     ccs::ConfigDocument round_trip;
     require(

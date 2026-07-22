@@ -46,7 +46,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The in-progress `0.8-A` Windows Qt Quick prototype uses a separate build tree
+The completed `0.8-A` Windows Qt Quick foundation uses a separate build tree
 and does not replace or connect to the production tray yet. Qt 6.10.3 and its
 official MinGW 13.1 toolchain default to `%USERPROFILE%/Qt`; set
 `CCS_TRANS_QT_ROOT` and `CCS_TRANS_QT_MINGW_ROOT` for another installation.
@@ -85,6 +85,12 @@ canonical Rule text editing in stable Profiles, Rules, and Settings views.
 AppKit follows the accepted Windows information architecture and layout ratios
 while retaining native macOS appearance and controls. Each Profile shows
 enabled and total Rule counts.
+The completed `0.8-B` shared contract adds one atomic Profile `Save` command
+that includes rename and all field changes, stable draft/base revisions, typed
+error codes and field keys, and rollback that leaves the caller's local draft
+and selection intact after validation or stale-state failures. The legacy
+in-process rename command remains only as a temporary AppKit adapter until the
+macOS `0.8-H` update; it is not part of the future GUI IPC command surface.
 Lightweight mode destroys a closed main window while leaving the desktop host
 and listener running; normal
 mode hides and reuses it. Version `0.7.0` uses v3 application settings plus
@@ -184,7 +190,10 @@ logs/ccs-trans.log
 logs/ccs-trans-host.log   (tray/menu host only)
 state/repository.lock
 state/repository-transaction/   (only while commit/recovery is pending)
-state/migrations/               (retained v2 backup and manifest)
+state/migrations/<v2-source-sha256>/
+                                (retained v2 config and manifest)
+state/migrations/replaced-db-<sha256>/
+                                (verified replaced database and manifest)
 state/ui.json
 ```
 
@@ -210,6 +219,38 @@ Migration retains the exact v2 source and a SHA-256 manifest under
 `state/migrations/`, imports Profiles/Rules transactionally, and refuses to
 replace an existing `profiles.db`. A fresh empty root may initialize v3 and
 schema v1 automatically.
+
+To replace an existing `profiles.db`, use the destructive mode explicitly. An
+interactive terminal requires the exact, case-sensitive response shown here:
+
+```text
+ccs-trans storage migrate --replace
+Type REPLACE to continue: REPLACE
+```
+
+Automation and every non-terminal stdin invocation must carry the confirmation
+token in the command itself:
+
+```text
+ccs-trans storage migrate --replace --confirm REPLACE
+```
+
+Without that token, non-interactive replacement is rejected without reading
+stdin. Lowercase or misspelled tokens are rejected. Before replacement, the
+repository checkpoints the existing WAL, records the before/after WAL and SHM
+state, and stores exact `profiles.db` bytes plus a manifest under
+`state/migrations/replaced-db-<sha256>/`. It verifies the backup with streaming
+SHA-256 and by opening a writable temporary copy, then marks the retained
+database and manifest read-only; no WAL or SHM sidecar is retained beside the
+backup. A successful CLI replacement prints that backup directory.
+
+The durable migration journal records old and target config state, repository
+revision, migration provenance, and physical database hashes. Startup recovery
+completes or rolls back all old/new config/database crash combinations. A
+corrupt or unexpected live database is restored only from the matching verified
+managed backup. Busy or ordinary I/O failures do not trigger speculative
+rollback, and an invalid managed backup causes replacement to fail while the
+old config and database remain unchanged.
 
 `logging.max_total_size` bounds one runtime log family, including the active
 file and all ccs-trans-managed rotation segments. It defaults to
@@ -383,8 +424,13 @@ two-space indentation, a 4 MiB per-Profile limit, and this envelope:
 
 Rule order is significant. Internal Rule keys are not exposed; editing the
 same `id` preserves its key, while a new `id` receives a new one. Disabled
-unknown Rule types can round-trip for forward-compatible drafts, but an enabled
-unknown type cannot be committed to a runtime snapshot.
+unknown Rule types can round-trip arbitrary JSON inside `options` for
+forward-compatible drafts, but an enabled unknown type cannot be committed to a
+runtime snapshot. The root envelope and each Rule wrapper remain strict, and a
+known Rule type rejects options absent from its descriptor. CRLF, CR, Unicode
+line separator, and Unicode paragraph separator normalize to LF only outside
+JSON strings; escaped newlines and Unicode separators inside strings remain
+data.
 
 ## Runtime Behavior
 

@@ -22,6 +22,8 @@ struct RulesTextError {
     bool operator==(const RulesTextError&) const = default;
 };
 
+std::string normalize_rules_text_newlines(std::string_view content);
+
 bool parse_rules_text(
     std::string_view content,
     const std::vector<StoredRule>& existing,

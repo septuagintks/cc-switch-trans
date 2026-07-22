@@ -312,17 +312,31 @@ bool parse_run_command(int argc, char** argv, ConfigCliParseResult& result) {
 }
 
 bool parse_storage_command(int argc, char** argv, ConfigCliParseResult& result) {
-    if (argc != 3) {
-        result.error = "storage requires exactly one subcommand";
+    if (argc < 3) {
+        result.error = "storage requires a subcommand";
         return false;
     }
     const std::string subcommand = argv[2];
-    if (subcommand == "status") {
+    if (subcommand == "status" && argc == 3) {
         result.command.kind = ConfigCliCommandKind::StorageStatus;
-    } else if (subcommand == "migrate") {
+    } else if (subcommand == "migrate" && argc == 3) {
         result.command.kind = ConfigCliCommandKind::StorageMigrate;
-    } else if (subcommand == "verify") {
+    } else if (subcommand == "migrate" && argc == 4
+        && std::string_view(argv[3]) == "--replace") {
+        result.command.kind = ConfigCliCommandKind::StorageMigrate;
+        result.command.storage_replace = true;
+    } else if (subcommand == "migrate" && argc == 6
+        && std::string_view(argv[3]) == "--replace"
+        && std::string_view(argv[4]) == "--confirm") {
+        result.command.kind = ConfigCliCommandKind::StorageMigrate;
+        result.command.storage_replace = true;
+        result.command.storage_confirmation_token = argv[5];
+    } else if (subcommand == "verify" && argc == 3) {
         result.command.kind = ConfigCliCommandKind::StorageVerify;
+    } else if (subcommand == "status" || subcommand == "migrate"
+        || subcommand == "verify") {
+        result.error = "invalid storage command or argument count";
+        return false;
     } else {
         result.error = "unknown storage subcommand: " + subcommand;
         return false;
@@ -872,6 +886,41 @@ bool is_config_cli_management_command(const std::string& command) {
         || command == "storage";
 }
 
+bool confirm_storage_replacement(
+    const ConfigCliCommand& command,
+    bool input_is_terminal,
+    std::istream& input,
+    std::ostream& prompt,
+    std::string& error) {
+    error.clear();
+    if (command.kind != ConfigCliCommandKind::StorageMigrate
+        || !command.storage_replace) {
+        return true;
+    }
+    if (command.storage_confirmation_token) {
+        if (*command.storage_confirmation_token == "REPLACE") {
+            return true;
+        }
+        error = "storage replacement confirmation token must be exactly REPLACE";
+        return false;
+    }
+    if (!input_is_terminal) {
+        error = "non-interactive storage replacement requires --confirm REPLACE";
+        return false;
+    }
+    prompt << "Type REPLACE to continue: " << std::flush;
+    std::string confirmation;
+    if (!std::getline(input, confirmation)) {
+        error = "failed to read storage replacement confirmation";
+        return false;
+    }
+    if (confirmation != "REPLACE") {
+        error = "storage replacement was not confirmed";
+        return false;
+    }
+    return true;
+}
+
 bool execute_config_cli(
     const ConfigCliCommand& command,
     ConfigRepository& repository,
@@ -1257,6 +1306,7 @@ void print_config_cli_help(std::ostream& output) {
         << "  ccs-trans rule move <profile> <rule> <1-based-position>\n"
         << "  ccs-trans storage status\n"
         << "  ccs-trans storage migrate\n"
+        << "  ccs-trans storage migrate --replace [--confirm REPLACE]\n"
         << "  ccs-trans storage verify\n"
         << "  ccs-trans run [--profile <profile>] [--log-level <level>] [--log-path <path>]\n"
         << "  ccs-trans --help\n"

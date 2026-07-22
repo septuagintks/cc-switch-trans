@@ -5,6 +5,7 @@
 #include "config/configuration_repository.hpp"
 #include "config/configuration_snapshot.hpp"
 
+#include <filesystem>
 #include <string>
 
 namespace ccs {
@@ -29,6 +30,15 @@ enum class MigrationOutcome {
     AlreadyMigrated,
 };
 
+struct MigrationOptions {
+    bool replace_existing_database = false;
+};
+
+struct MigrationResult {
+    MigrationOutcome outcome = MigrationOutcome::AlreadyMigrated;
+    std::optional<std::filesystem::path> replaced_database_backup;
+};
+
 class CompositeConfigRepository final
     : public ConfigRepository
     , public ConfigurationRepository {
@@ -44,6 +54,10 @@ public:
         std::string& error) override;
     bool inspect_storage(StorageStatus& status, std::string& error);
     bool migrate_v2(MigrationOutcome& outcome, std::string& error);
+    bool migrate_v2(
+        const MigrationOptions& options,
+        MigrationResult& result,
+        std::string& error);
     bool verify_storage(std::string& error);
 
     bool loaded() const override;

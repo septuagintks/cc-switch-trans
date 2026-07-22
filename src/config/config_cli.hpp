@@ -3,6 +3,8 @@
 #include "config/config_repository.hpp"
 
 #include <cstddef>
+#include <istream>
+#include <optional>
 #include <ostream>
 #include <string>
 
@@ -52,6 +54,8 @@ struct ConfigCliCommand {
     std::string run_profile;
     std::string run_log_level;
     std::string run_log_path;
+    bool storage_replace = false;
+    std::optional<std::string> storage_confirmation_token;
 };
 
 struct ConfigCliParseResult {
@@ -62,6 +66,12 @@ struct ConfigCliParseResult {
 
 ConfigCliParseResult parse_config_cli(int argc, char** argv);
 bool is_config_cli_management_command(const std::string& command);
+bool confirm_storage_replacement(
+    const ConfigCliCommand& command,
+    bool input_is_terminal,
+    std::istream& input,
+    std::ostream& prompt,
+    std::string& error);
 bool execute_config_cli(
     const ConfigCliCommand& command,
     ConfigRepository& repository,

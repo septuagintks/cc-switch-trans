@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -99,6 +100,129 @@ void test_diagnostics_and_limits() {
         "rules text size limit enforced");
 }
 
+void test_forward_compatibility_boundary() {
+    const std::string future_rule = R"({
+  "schema_version": "ccs-trans.rules/v1",
+  "rules": [
+    {
+      "id": "future",
+      "enabled": false,
+      "type": "future_rule",
+      "options": {
+        "nested": {"array": [1, true, null, {"text": "\u4fdd\u7559"}]},
+        "number": 1.25
+      }
+    }
+  ]
+})";
+    ccs::RulesTextError error;
+    std::vector<ccs::StoredRule> parsed;
+    require(ccs::parse_rules_text(future_rule, {}, parsed, error), error.message);
+    const auto expected_options = nlohmann::json::parse(parsed.front().options_json);
+    std::string formatted;
+    require(ccs::format_rules_text(parsed, formatted, error), error.message);
+    std::vector<ccs::StoredRule> reparsed;
+    require(ccs::parse_rules_text(formatted, parsed, reparsed, error), error.message);
+    require(reparsed.size() == 1
+            && reparsed.front().type == "future_rule"
+            && nlohmann::json::parse(reparsed.front().options_json) == expected_options,
+        "unknown Rule types preserve arbitrary options through canonical round-trip");
+
+    const std::string unknown_root = R"({
+  "schema_version": "ccs-trans.rules/v1",
+  "rules": [],
+  "future": true
+})";
+    require(!ccs::parse_rules_text(unknown_root, {}, parsed, error)
+            && error.message.find("unknown field: future") != std::string::npos,
+        "unknown Rules root fields remain rejected");
+
+    const std::string unknown_wrapper = R"({
+  "schema_version": "ccs-trans.rules/v1",
+  "rules": [
+    {
+      "id": "future",
+      "enabled": false,
+      "type": "future_rule",
+      "options": {},
+      "label": "not part of the wrapper"
+    }
+  ]
+})";
+    require(!ccs::parse_rules_text(unknown_wrapper, {}, parsed, error)
+            && error.message.find("unknown field: label") != std::string::npos,
+        "unknown Rule wrapper fields remain rejected");
+
+    const std::string unknown_known_option = R"({
+  "schema_version": "ccs-trans.rules/v1",
+  "rules": [
+    {
+      "id": "remove",
+      "enabled": true,
+      "type": "remove_tool",
+      "options": {"tool": "image_gen", "future": true}
+    }
+  ]
+})";
+    require(!ccs::parse_rules_text(unknown_known_option, {}, parsed, error)
+            && error.rule_id == "remove"
+            && error.rule_type == "remove_tool"
+            && error.option == "future",
+        "known Rule types reject options absent from their descriptor");
+}
+
+void test_clipboard_newline_normalization() {
+    const std::string source =
+        "{\r\n"
+        "\t\"schema_version\": \"ccs-trans.rules/v1\",\xE2\x80\xA8"
+        "\t\"rules\": [\xE2\x80\xA9"
+        "{\"id\":\"first\",\"enabled\":false,\"type\":\"future_rule\","
+        "\"options\":{\"note\":\"escaped\\nline \xE2\x80\xA8 kept\"}},\r"
+        "{\"id\":\"second\",\"enabled\":false,\"type\":\"future_rule\","
+        "\"options\":{\"tab\":\"a\\tb\"}}\n"
+        "]\r\n}\r\n";
+    const auto normalized = ccs::normalize_rules_text_newlines(source);
+    require(normalized.find('\r') == std::string::npos,
+        "CRLF and CR clipboard boundaries normalize to LF");
+    require(normalized.find("escaped\\nline") != std::string::npos,
+        "escaped JSON newline remains two source characters");
+    require(normalized.find("line \xE2\x80\xA8 kept") != std::string::npos,
+        "Unicode line separator inside a JSON string remains data");
+
+    std::vector<ccs::StoredRule> parsed;
+    ccs::RulesTextError error;
+    require(ccs::parse_rules_text(source, {}, parsed, error), error.message);
+    require(parsed.size() == 2
+            && parsed[0].rule_id == "first"
+            && parsed[1].rule_id == "second",
+        "mixed clipboard newlines preserve Rule order");
+    const auto first_options = nlohmann::json::parse(parsed[0].options_json);
+    require(first_options.at("note").get<std::string>()
+            == "escaped\nline \xE2\x80\xA8 kept",
+        "normalization preserves escaped newline and Unicode string semantics");
+
+    std::string formatted;
+    require(ccs::format_rules_text(parsed, formatted, error), error.message);
+    std::vector<ccs::StoredRule> reparsed;
+    require(ccs::parse_rules_text(formatted, parsed, reparsed, error), error.message);
+    require(reparsed == parsed, "clipboard fixture survives canonical round-trip");
+
+    std::string large_note(256 * 1024, 'x');
+    nlohmann::json large = {
+        {"schema_version", "ccs-trans.rules/v1"},
+        {"rules", nlohmann::json::array({{
+            {"id", "large"},
+            {"enabled", false},
+            {"type", "future_rule"},
+            {"options", {{"note", large_note}}},
+        }})},
+    };
+    require(ccs::parse_rules_text(large.dump(), {}, parsed, error)
+            && nlohmann::json::parse(parsed.front().options_json)
+                    .at("note").get<std::string>() == large_note,
+        "large clipboard-style Rule text is not truncated");
+}
+
 void test_enabled_unknown_rule_is_rejected_at_commit() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = ccs::test::canonical_temp_directory()
@@ -145,6 +269,8 @@ void test_enabled_unknown_rule_is_rejected_at_commit() {
 int main() {
     test_canonical_round_trip_and_stable_keys();
     test_diagnostics_and_limits();
+    test_forward_compatibility_boundary();
+    test_clipboard_newline_normalization();
     test_enabled_unknown_rule_is_rejected_at_commit();
     std::cout << "rules text tests passed\n";
     return 0;

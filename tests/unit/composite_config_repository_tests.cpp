@@ -78,6 +78,45 @@ void write_file(const std::filesystem::path& path, std::string_view content) {
     require(static_cast<bool>(output), "write test file");
 }
 
+void make_file_writable(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const auto attributes = GetFileAttributesW(path.c_str());
+    require(attributes != INVALID_FILE_ATTRIBUTES, "inspect test file attributes");
+    require(SetFileAttributesW(path.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY) != 0,
+        "make test file writable");
+#else
+    std::error_code ec;
+    std::filesystem::permissions(
+        path,
+        std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::add,
+        ec);
+    require(!ec, "make test file writable");
+#endif
+}
+
+void remove_database_family(const std::filesystem::path& database) {
+    for (const auto& suffix : {"", "-wal", "-shm"}) {
+        auto path = database;
+        path += suffix;
+        std::error_code exists_error;
+        if (std::filesystem::exists(path, exists_error)) {
+            require(!exists_error, "inspect test database family");
+            make_file_writable(path);
+        }
+        std::error_code remove_error;
+        std::filesystem::remove(path, remove_error);
+        require(!remove_error, "remove test database family");
+    }
+}
+
+void write_database_file(
+    const std::filesystem::path& database,
+    std::string_view bytes) {
+    remove_database_family(database);
+    write_file(database, bytes);
+}
+
 std::string read_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     require(static_cast<bool>(input), "open test file for reading");
@@ -272,6 +311,140 @@ ccs::ConfigDocument make_legacy_document() {
     return document;
 }
 
+Json optional_json(const std::optional<std::string>& value) {
+    return value ? Json(*value) : Json(nullptr);
+}
+
+struct ReplacementRecoveryState {
+    ccs::AppPaths paths;
+    std::string old_config;
+    std::string new_config;
+    std::string old_database_bytes;
+    std::string target_database_bytes;
+    std::string old_database_hash;
+    std::string target_database_hash;
+    ccs::ProfileStoreSnapshot old_snapshot;
+    ccs::ProfileStoreSnapshot target_snapshot;
+    std::filesystem::path backup_directory;
+};
+
+ReplacementRecoveryState prepare_replacement_recovery(Fixture& fixture) {
+    ReplacementRecoveryState state;
+    state.paths = ccs::make_app_paths(fixture.root);
+    const auto legacy = make_legacy_document();
+    std::string error;
+    require(ccs::serialize_config_document(legacy, state.old_config, error), error);
+    write_file(state.paths.config_file, state.old_config);
+
+    ccs::SqliteProfileStore old_store(state.paths.profiles_database);
+    ccs::ProfileStoreSnapshot empty;
+    require(old_store.open_or_create(empty, error), error);
+    auto desired = empty;
+    desired.profiles.push_back(complete_profile("old", "old"));
+    require(old_store.save(desired, state.old_snapshot, error), error);
+    require(old_store.checkpoint_for_move(error), error);
+    state.old_database_bytes = read_file(state.paths.profiles_database);
+    require(ccs::sha256_file_hex(
+                state.paths.profiles_database, state.old_database_hash, error),
+        error);
+
+    ccs::CompositeConfigRepository repository(state.paths);
+    ccs::MigrationResult result;
+    require(repository.migrate_v2({true}, result, error), error);
+    require(result.replaced_database_backup.has_value(),
+        "replacement fixture creates a managed database backup");
+    state.backup_directory = *result.replaced_database_backup;
+    state.new_config = read_file(state.paths.config_file);
+
+    ccs::SqliteProfileStore target_store(state.paths.profiles_database);
+    require(target_store.checkpoint_for_move(error), error);
+    require(target_store.load(state.target_snapshot, error), error);
+    require(target_store.checkpoint_for_move(error), error);
+    state.target_database_bytes = read_file(state.paths.profiles_database);
+    require(ccs::sha256_file_hex(
+                state.paths.profiles_database, state.target_database_hash, error),
+        error);
+    return state;
+}
+
+void write_replacement_recovery_journal(const ReplacementRecoveryState& state) {
+    std::error_code ec;
+    std::filesystem::create_directories(
+        state.paths.repository_transaction_directory, ec);
+    require(!ec, "create replacement recovery journal");
+    write_file(
+        state.paths.repository_transaction_directory / "old-config.bin",
+        state.old_config);
+    write_file(
+        state.paths.repository_transaction_directory / "new-config.json",
+        state.new_config);
+    const Json manifest = {
+        {"schema_version", "ccs-trans.repository-transaction/v1"},
+        {"kind", "migration"},
+        {"old_config_exists", true},
+        {"old_config_sha256", ccs::sha256_hex(state.old_config)},
+        {"new_config_sha256", ccs::sha256_hex(state.new_config)},
+        {"old_database_exists", true},
+        {"old_profile_revision", state.old_snapshot.revision},
+        {"target_profile_revision", state.target_snapshot.revision},
+        {"old_migration_hash", optional_json(state.old_snapshot.migrated_from_sha256)},
+        {"target_migration_hash", optional_json(state.target_snapshot.migrated_from_sha256)},
+        {"old_database_sha256", state.old_database_hash},
+        {"target_database_sha256", state.target_database_hash},
+        {"old_database_backup_directory",
+            state.backup_directory.filename().string()},
+    };
+    write_file(
+        state.paths.repository_transaction_directory / "manifest.json",
+        manifest.dump(2) + "\n");
+}
+
+void publish_replacement_recovery_state(
+    const ReplacementRecoveryState& state,
+    bool config_target,
+    std::string_view database_bytes) {
+    write_file(
+        state.paths.config_file,
+        config_target ? state.new_config : state.old_config);
+    write_database_file(state.paths.profiles_database, database_bytes);
+    write_replacement_recovery_journal(state);
+}
+
+void require_recovered_replacement_state(
+    const ReplacementRecoveryState& state,
+    bool target_expected) {
+    ccs::CompositeConfigRepository repository(state.paths);
+    ccs::StorageStatus status;
+    std::string error;
+    require(repository.inspect_storage(status, error), error);
+    require(status.state == (target_expected
+                ? ccs::StorageState::Ready
+                : ccs::StorageState::MigrationRequired),
+        "replacement recovery reports the expected storage state");
+    require(!std::filesystem::exists(
+                state.paths.repository_transaction_directory),
+        "replacement recovery clears its journal");
+    require(read_file(state.paths.config_file)
+            == (target_expected ? state.new_config : state.old_config),
+        "replacement recovery publishes matching config bytes");
+
+    std::string database_hash;
+    require(ccs::sha256_file_hex(
+                state.paths.profiles_database, database_hash, error),
+        error);
+    require(database_hash == (target_expected
+                ? state.target_database_hash
+                : state.old_database_hash),
+        "replacement recovery preserves exact database bytes");
+    ccs::SqliteProfileStore store(state.paths.profiles_database);
+    ccs::ProfileStoreSnapshot snapshot;
+    require(store.load(snapshot, error), error);
+    require(snapshot == (target_expected
+                ? state.target_snapshot
+                : state.old_snapshot),
+        "replacement recovery preserves the expected semantic snapshot");
+}
+
 void test_explicit_v2_migration_and_provenance() {
     Fixture fixture("migration");
     const auto paths = ccs::make_app_paths(fixture.root);
@@ -462,6 +635,172 @@ void test_migration_refuses_existing_database() {
         "migration conflict does not publish a journal");
 }
 
+void test_migration_replaces_existing_database_after_verified_backup() {
+    Fixture fixture("migration-replace");
+    const auto paths = ccs::make_app_paths(fixture.root);
+    const auto legacy = make_legacy_document();
+    std::string source;
+    std::string error;
+    require(ccs::serialize_config_document(legacy, source, error), error);
+    write_file(paths.config_file, source);
+
+    ccs::SqliteProfileStore old_store(paths.profiles_database);
+    ccs::ProfileStoreSnapshot old_empty;
+    require(old_store.open_or_create(old_empty, error), error);
+    auto old_desired = old_empty;
+    old_desired.profiles.push_back(complete_profile("old", "old"));
+    ccs::ProfileStoreSnapshot old_snapshot;
+    require(old_store.save(old_desired, old_snapshot, error), error);
+    require(old_store.checkpoint_for_move(error), error);
+    std::string old_hash;
+    require(ccs::sha256_file_hex(paths.profiles_database, old_hash, error), error);
+
+    ccs::CompositeConfigRepository repository(paths);
+    ccs::MigrationResult result;
+    const bool migrated = repository.migrate_v2({true}, result, error);
+    require(migrated,
+        "replace migration failed ("
+            + std::to_string(static_cast<int>(repository.last_failure())) + "): " + error);
+    require(result.outcome == ccs::MigrationOutcome::Migrated
+            && result.replaced_database_backup
+            && std::filesystem::is_directory(*result.replaced_database_backup),
+        "replace migration returns its managed backup location");
+    const auto backup_database = *result.replaced_database_backup / "profiles.db";
+    std::string backup_hash;
+    require(ccs::sha256_file_hex(backup_database, backup_hash, error)
+            && backup_hash == old_hash,
+        "replacement backup preserves exact checkpointed database bytes");
+    const auto verification_database = fixture.root / "backup-verification.db";
+    write_file(verification_database, read_file(backup_database));
+    ccs::SqliteProfileStore backup_store(verification_database);
+    ccs::ProfileStoreSnapshot backup_snapshot;
+    require(backup_store.load(backup_snapshot, error)
+            && backup_snapshot == old_snapshot,
+        "replacement backup opens and preserves the old semantic snapshot");
+    require(is_read_only(backup_database)
+            && is_read_only(*result.replaced_database_backup / "manifest.json")
+            && !std::filesystem::exists(backup_database.string() + "-wal")
+            && !std::filesystem::exists(backup_database.string() + "-shm"),
+        "managed database backup stays read-only and sidecar-free");
+    const auto manifest = Json::parse(read_file(
+        *result.replaced_database_backup / "manifest.json"));
+    require(manifest["schema_version"]
+                == "ccs-trans.database-replacement-backup/v1"
+            && manifest["database_sha256"] == old_hash
+            && manifest["profile_revision"] == old_snapshot.revision,
+        "replacement manifest records hash and repository revision");
+    require(repository.snapshot().profiles.size() == 1
+            && repository.snapshot().profiles.front().profile_id == "findcg"
+            && repository.snapshot().migrated_from_sha256 == ccs::sha256_hex(source),
+        "replacement publishes the migrated v2 repository instead of the old database");
+    require(repository.verify_storage(error), error);
+}
+
+void test_replacement_migration_recovery_matrix() {
+    for (int state_index = 0; state_index < 4; ++state_index) {
+        Fixture fixture("replace-recovery-" + std::to_string(state_index));
+        const auto state = prepare_replacement_recovery(fixture);
+        const bool config_target = (state_index & 1) != 0;
+        const bool database_target = (state_index & 2) != 0;
+        publish_replacement_recovery_state(
+            state,
+            config_target,
+            database_target ? state.target_database_bytes : state.old_database_bytes);
+        require_recovered_replacement_state(state, database_target);
+    }
+}
+
+void test_replacement_recovery_uses_physical_hash_and_backup() {
+    Fixture fixture("replace-recovery-hash");
+    const auto state = prepare_replacement_recovery(fixture);
+    const auto altered_database = fixture.root / "altered-old.db";
+    write_file(altered_database, state.old_database_bytes);
+
+    sqlite3* database = nullptr;
+    const auto encoded = path_to_utf8(altered_database);
+    require(sqlite3_open_v2(
+                encoded.c_str(),
+                &database,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW,
+                nullptr)
+            == SQLITE_OK,
+        "open old database copy for physical-only mutation");
+    require(sqlite3_exec(
+                database, "PRAGMA application_id=1129534285", nullptr, nullptr, nullptr)
+            == SQLITE_OK,
+        "mutate an ignored SQLite header field");
+    require(sqlite3_close(database) == SQLITE_OK,
+        "close physically altered old database");
+    const auto altered_bytes = read_file(altered_database);
+    require(ccs::sha256_hex(altered_bytes) != state.old_database_hash,
+        "physical-only mutation changes the database hash");
+
+    write_database_file(state.paths.profiles_database, altered_bytes);
+    ccs::SqliteProfileStore altered_store(state.paths.profiles_database);
+    ccs::ProfileStoreSnapshot altered_snapshot;
+    std::string error;
+    require(altered_store.load(altered_snapshot, error)
+            && altered_snapshot == state.old_snapshot,
+        "physical-only mutation preserves repository metadata and contents");
+    require(altered_store.checkpoint_for_move(error), error);
+    const auto checkpointed_altered_bytes = read_file(state.paths.profiles_database);
+    require(ccs::sha256_hex(checkpointed_altered_bytes) != state.old_database_hash,
+        "checkpoint does not collapse the physical-only difference");
+
+    publish_replacement_recovery_state(
+        state, false, checkpointed_altered_bytes);
+    require_recovered_replacement_state(state, false);
+}
+
+void test_replacement_recovery_restores_corrupt_database() {
+    Fixture fixture("replace-recovery-corrupt");
+    const auto state = prepare_replacement_recovery(fixture);
+    publish_replacement_recovery_state(
+        state, true, "this is not a SQLite profile database");
+    require_recovered_replacement_state(state, false);
+}
+
+void test_replacement_migration_rejects_corrupt_managed_backup() {
+    Fixture fixture("replace-corrupt-backup");
+    const auto paths = ccs::make_app_paths(fixture.root);
+    const auto legacy = make_legacy_document();
+    std::string source;
+    std::string error;
+    require(ccs::serialize_config_document(legacy, source, error), error);
+    write_file(paths.config_file, source);
+
+    ccs::SqliteProfileStore old_store(paths.profiles_database);
+    ccs::ProfileStoreSnapshot empty;
+    require(old_store.open_or_create(empty, error), error);
+    auto desired = empty;
+    desired.profiles.push_back(complete_profile("old", "old"));
+    ccs::ProfileStoreSnapshot old_snapshot;
+    require(old_store.save(desired, old_snapshot, error), error);
+    require(old_store.checkpoint_for_move(error), error);
+    const auto old_database_bytes = read_file(paths.profiles_database);
+    const auto old_database_hash = ccs::sha256_hex(old_database_bytes);
+
+    std::string identity = ccs::sha256_hex(source);
+    identity.push_back('\0');
+    identity.append(old_database_hash);
+    const auto corrupt_backup = paths.migrations_directory
+        / ("replaced-db-" + ccs::sha256_hex(identity));
+    std::error_code ec;
+    std::filesystem::create_directories(corrupt_backup, ec);
+    require(!ec, "create corrupt managed backup fixture");
+    write_file(corrupt_backup / "profiles.db", "not the old database");
+    write_file(corrupt_backup / "manifest.json", "{}\n");
+
+    ccs::CompositeConfigRepository repository(paths);
+    ccs::MigrationResult result;
+    require(!repository.migrate_v2({true}, result, error),
+        "replacement refuses a corrupt pre-existing managed backup");
+    require(read_file(paths.config_file) == source
+            && read_file(paths.profiles_database) == old_database_bytes
+            && !std::filesystem::exists(paths.repository_transaction_directory),
+        "backup validation failure leaves source config and database untouched");
+}
+
 void test_legacy_gui_adapter_preserves_profile_identity_only() {
     Fixture fixture("legacy-adapter");
     const auto paths = ccs::make_app_paths(fixture.root);
@@ -509,6 +848,11 @@ int main() {
     test_ambiguous_recovery_is_rejected();
     test_combined_save_rolls_back_config_when_database_is_busy();
     test_migration_refuses_existing_database();
+    test_migration_replaces_existing_database_after_verified_backup();
+    test_replacement_migration_recovery_matrix();
+    test_replacement_recovery_uses_physical_hash_and_backup();
+    test_replacement_recovery_restores_corrupt_database();
+    test_replacement_migration_rejects_corrupt_managed_backup();
     test_legacy_gui_adapter_preserves_profile_identity_only();
     std::cout << "composite config repository tests passed\n";
     return 0;

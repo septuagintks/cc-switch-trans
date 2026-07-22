@@ -6,10 +6,32 @@
 
 namespace ccs {
 
+enum class ConfigValidationError {
+    None,
+    InvalidDocument,
+    UnknownProtocol,
+    InvalidProfile,
+    InvalidRules,
+    InvalidLogPath,
+    RouteCollision,
+    RuntimeCompileFailed,
+};
+
+struct ConfigValidationFailure {
+    ConfigValidationError code = ConfigValidationError::None;
+    std::string profile_id;
+    std::string field;
+    std::string detail;
+};
+
 bool validate_config_candidate(
     const ConfigDocument& document,
     const std::filesystem::path& application_root,
     std::string& error);
+bool validate_config_candidate(
+    const ConfigDocument& document,
+    const std::filesystem::path& application_root,
+    ConfigValidationFailure& failure);
 
 class ConfigEditingService {
 public:

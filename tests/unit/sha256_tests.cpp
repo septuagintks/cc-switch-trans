@@ -1,6 +1,8 @@
 #include "core/sha256.hpp"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -38,6 +40,21 @@ int main() {
             == "cdc76e5c9914fb9281a1c7e284d73e67"
                "f1809a48a497200e046d39ccc7112cd0",
         "million-a SHA-256 vector");
+    const auto file = std::filesystem::temp_directory_path()
+        / "ccs-trans-sha256-streaming-test.bin";
+    const std::string file_content = std::string(70'000, 'a') + "stream tail";
+    {
+        std::ofstream output(file, std::ios::binary | std::ios::trunc);
+        require(static_cast<bool>(output), "open streaming SHA-256 fixture");
+        output.write(file_content.data(), static_cast<std::streamsize>(file_content.size()));
+    }
+    std::string file_digest;
+    std::string error;
+    require(ccs::sha256_file_hex(file, file_digest, error), error);
+    require(file_digest == ccs::sha256_hex(file_content),
+        "streaming file SHA-256 matches in-memory implementation across chunks");
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
     std::cout << "SHA-256 tests passed\n";
     return 0;
 }

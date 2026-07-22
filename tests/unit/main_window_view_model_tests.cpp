@@ -812,6 +812,185 @@ void test_typed_fields_and_rules_text_workflow() {
         "Apply persists Profile fields, Settings, and Rule text together");
 }
 
+void test_atomic_profile_save_and_revision_contract() {
+    Fixture fixture;
+    fixture.repository.mutable_document().profiles.emplace(
+        "first", complete_profile("/first"));
+    fixture.repository.mutable_document().profiles.emplace(
+        "second", complete_profile("/second"));
+    auto state = submit_and_wait(
+        fixture.view_model, {ccs::MainWindowCommand::LoadDraft});
+    require(state->draft.revision > 0
+            && state->draft.base_revision.size() == 64
+            && state->selected_profile_key,
+        "loaded draft publishes opaque base and monotonic draft revisions");
+    const auto first_key = *state->selected_profile_key;
+    const auto original_revision = state->draft.revision;
+    const auto original_base = state->draft.base_revision;
+
+    ccs::MainWindowCommandRequest save;
+    save.command = ccs::MainWindowCommand::SaveProfile;
+    save.profile_id = "first";
+    save.profile_key = first_key;
+    save.expected_draft_revision = original_revision;
+    save.expected_base_revision = original_base;
+    save.field_edits = {
+        {"id", ccs::ConfigurationFieldValue{std::string{"renamed"}}},
+        {"upstream.base-url",
+            ccs::ConfigurationFieldValue{std::string{"https://saved.example.test/v1"}}},
+    };
+    state = submit_and_wait(fixture.view_model, std::move(save));
+    const auto* saved_url = find_field(
+        state->profile_editor->fields, "upstream.base-url");
+    require(state->last_command->succeeded()
+            && state->last_command->profile_id == "renamed"
+            && state->selected_profile_key == first_key
+            && state->selected_profile_id == "renamed"
+            && state->draft.revision == original_revision + 1
+            && state->draft.base_revision == original_base
+            && saved_url && saved_url->value
+            && std::get<std::string>(*saved_url->value)
+                == "https://saved.example.test/v1",
+        "Save atomically updates Profile id and fields while preserving stable identity");
+
+    ccs::MainWindowCommandRequest stale_save;
+    stale_save.command = ccs::MainWindowCommand::SaveProfile;
+    stale_save.profile_id = "renamed";
+    stale_save.profile_key = first_key;
+    stale_save.expected_draft_revision = original_revision;
+    stale_save.expected_base_revision = original_base;
+    stale_save.field_edits = {{
+        "id", ccs::ConfigurationFieldValue{std::string{"stale-overwrite"}},
+    }};
+    state = submit_and_wait(fixture.view_model, std::move(stale_save));
+    require(state->last_command->error == ccs::MainWindowError::DraftStale
+            && state->last_command->recovery_command
+                == ccs::MainWindowCommand::ReloadDraft
+            && state->selected_profile_id == "renamed"
+            && state->draft.revision == original_revision + 1,
+        "stale GUI Save cannot overwrite a newer tray draft");
+
+    const auto before_failed_save = *state;
+    ccs::MainWindowCommandRequest duplicate_save;
+    duplicate_save.command = ccs::MainWindowCommand::SaveProfile;
+    duplicate_save.profile_id = "renamed";
+    duplicate_save.profile_key = first_key;
+    duplicate_save.expected_draft_revision = state->draft.revision;
+    duplicate_save.expected_base_revision = state->draft.base_revision;
+    duplicate_save.field_edits = {
+        {"id", ccs::ConfigurationFieldValue{std::string{"second"}}},
+        {"upstream.base-url",
+            ccs::ConfigurationFieldValue{std::string{"https://must-not-stick.test/v1"}}},
+    };
+    state = submit_and_wait(fixture.view_model, std::move(duplicate_save));
+    saved_url = find_field(state->profile_editor->fields, "upstream.base-url");
+    require(state->last_command->error == ccs::MainWindowError::ProfileAlreadyExists
+            && state->last_command->field == "id"
+            && state->selected_profile_id == "renamed"
+            && state->draft.revision == before_failed_save.draft.revision
+            && saved_url && saved_url->value
+            && std::get<std::string>(*saved_url->value)
+                == "https://saved.example.test/v1",
+        "failed Save rolls back every field and preserves selection and revision");
+
+    ccs::MainWindowCommandRequest wrong_base;
+    wrong_base.command = ccs::MainWindowCommand::SetProfileEnabled;
+    wrong_base.profile_id = "renamed";
+    wrong_base.profile_key = first_key;
+    wrong_base.enabled = false;
+    wrong_base.expected_draft_revision = state->draft.revision;
+    wrong_base.expected_base_revision = std::string(64, '0');
+    state = submit_and_wait(fixture.view_model, std::move(wrong_base));
+    require(state->last_command->error == ccs::MainWindowError::RepositoryStale
+            && ccs::find_profile_list_item(*state, first_key)->enabled,
+        "base revision mismatch rejects mutation without changing the draft");
+}
+
+void test_field_specific_save_validation_and_rollback() {
+    Fixture fixture;
+    fixture.repository.mutable_document().profiles.emplace(
+        "primary", complete_profile("/primary"));
+    auto state = submit_and_wait(
+        fixture.view_model, {ccs::MainWindowCommand::LoadDraft});
+    require(state->selected_profile_key && state->profile_editor,
+        "validation fixture has a selected Profile editor");
+    const auto profile_key = *state->selected_profile_key;
+    const auto baseline_draft_revision = state->draft.revision;
+    const auto baseline_base_revision = state->draft.base_revision;
+
+    const auto failed_profile_save = [&](
+                                         std::string field,
+                                         ccs::ConfigurationFieldValue value,
+                                         std::string expected_field) {
+        const auto edited_field = field;
+        const auto* before_field = find_field(state->profile_editor->fields, field);
+        require(before_field != nullptr, "Profile field exists before failed Save");
+        const auto before_value = before_field->value;
+
+        ccs::MainWindowCommandRequest request;
+        request.command = ccs::MainWindowCommand::SaveProfile;
+        request.profile_id = "primary";
+        request.profile_key = profile_key;
+        request.expected_draft_revision = baseline_draft_revision;
+        request.expected_base_revision = baseline_base_revision;
+        request.field_edits = {{std::move(field), std::move(value)}};
+        state = submit_and_wait(fixture.view_model, std::move(request));
+
+        require(state->last_command->outcome == ccs::CommandOutcome::Rejected
+                && state->last_command->error == ccs::MainWindowError::ValidationFailed
+                && state->last_command->field == expected_field
+                && state->draft.revision == baseline_draft_revision
+                && state->draft.base_revision == baseline_base_revision
+                && state->selected_profile_key == profile_key
+                && state->selected_profile_id == "primary",
+            "failed Profile Save reports its exact field without changing draft identity");
+        const auto* rolled_back = find_field(
+            state->profile_editor->fields, edited_field);
+        require(rolled_back != nullptr && rolled_back->value == before_value,
+            "failed Profile Save preserves the previously published field value");
+    };
+
+    failed_profile_save(
+        "local.request-path",
+        std::string{"relative/responses"},
+        "local.request-path");
+    failed_profile_save(
+        "upstream.base-url",
+        std::string{"ftp://example.test/v1"},
+        "upstream.base-url");
+    failed_profile_save(
+        "upstream.request-path",
+        std::string{"relative/responses"},
+        "upstream.request-path");
+    failed_profile_save(
+        "upstream.usage-path",
+        std::string{"relative/usage"},
+        "upstream.usage-path");
+    failed_profile_save(
+        "local.usage-path",
+        std::string{"/primary/v1/usage"},
+        "upstream.usage-path");
+
+    ccs::MainWindowCommandRequest settings;
+    settings.command = ccs::MainWindowCommand::UpdateApplicationFields;
+    settings.expected_draft_revision = baseline_draft_revision;
+    settings.expected_base_revision = baseline_base_revision;
+    settings.field_edits = {{
+        "runtime.max-connections",
+        ccs::ConfigurationFieldValue{static_cast<std::uint64_t>(16)},
+    }};
+    state = submit_and_wait(fixture.view_model, std::move(settings));
+    const auto* max_connections = find_field(
+        state->application_fields, "runtime.max-connections");
+    require(state->last_command->outcome == ccs::CommandOutcome::Rejected
+            && state->last_command->error == ccs::MainWindowError::ValidationFailed
+            && state->last_command->field == "runtime.max-connections"
+            && state->draft.revision == baseline_draft_revision
+            && max_connections && max_connections->value
+            && std::get<std::uint64_t>(*max_connections->value) == 64,
+        "cross-field Settings validation reports max-connections and rolls back");
+}
+
 } // namespace
 
 int main() {
@@ -824,6 +1003,8 @@ int main() {
         test_route_collision_is_classified_without_mutating_draft();
         test_noop_profile_mutations_preserve_clean_draft();
         test_typed_fields_and_rules_text_workflow();
+        test_atomic_profile_save_and_revision_contract();
+        test_field_specific_save_validation_and_rollback();
         std::cout << "main window view model tests ok\n";
         return 0;
     } catch (const std::exception& ex) {

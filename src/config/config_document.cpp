@@ -3,6 +3,7 @@
 #include "core/url.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -590,112 +591,352 @@ bool validate_base_url(const std::string& value, const std::string& label, std::
     return true;
 }
 
+bool reject_field(
+    std::string key,
+    std::string detail,
+    std::string& field,
+    std::string& error) {
+    field = std::move(key);
+    error = std::move(detail);
+    return false;
+}
+
 bool validate_application_settings_impl(
     const ApplicationSettings& application,
+    std::string& field,
     std::string& error) {
+    field.clear();
     if (application.listener.host.empty()
         || application.listener.host.size() > 255
         || contains_control(application.listener.host)
         || std::any_of(application.listener.host.begin(), application.listener.host.end(), [](unsigned char ch) {
                return std::isspace(ch) != 0;
            })) {
-        error = "listener.host must be a non-empty host without whitespace";
-        return false;
+        return reject_field(
+            "listener.host",
+            "listener.host must be a non-empty host without whitespace",
+            field,
+            error);
     }
     if (application.listener.port == 0) {
-        error = "listener.port must be between 1 and 65535";
-        return false;
+        return reject_field(
+            "listener.port",
+            "listener.port must be between 1 and 65535",
+            field,
+            error);
     }
     if (application.runtime.worker_threads == 0
         || application.runtime.worker_threads > kMaxWorkerThreads) {
-        error = "runtime.worker_threads must be between 1 and " + std::to_string(kMaxWorkerThreads);
-        return false;
+        return reject_field(
+            "runtime.worker-threads",
+            "runtime.worker_threads must be between 1 and "
+                + std::to_string(kMaxWorkerThreads),
+            field,
+            error);
     }
     if (application.runtime.max_connections < application.runtime.worker_threads
         || application.runtime.max_connections > kMaxConnections) {
-        error = "runtime.max_connections must be between worker_threads and "
-            + std::to_string(kMaxConnections);
-        return false;
+        return reject_field(
+            "runtime.max-connections",
+            "runtime.max_connections must be between worker_threads and "
+                + std::to_string(kMaxConnections),
+            field,
+            error);
     }
     if (application.runtime.max_request_body_size == 0
-        || application.runtime.max_request_body_size > kMaxBufferedBodySize
-        || application.runtime.max_response_body_size == 0
+        || application.runtime.max_request_body_size > kMaxBufferedBodySize) {
+        return reject_field(
+            "runtime.max-request-body-size",
+            "runtime body size limits must be between 1 byte and 1 GiB",
+            field,
+            error);
+    }
+    if (application.runtime.max_response_body_size == 0
         || application.runtime.max_response_body_size > kMaxBufferedBodySize) {
-        error = "runtime body size limits must be between 1 byte and 1 GiB";
-        return false;
+        return reject_field(
+            "runtime.max-response-body-size",
+            "runtime body size limits must be between 1 byte and 1 GiB",
+            field,
+            error);
+    }
+    if (application.runtime.max_inflight_bytes < kMinInflightMemoryBudget
+        || application.runtime.max_inflight_bytes > kMaxInflightMemoryBudget) {
+        return reject_field(
+            "runtime.max-inflight-bytes",
+            "runtime.max_inflight_bytes must be between 1 MiB and 64 GiB",
+            field,
+            error);
     }
     if (application.runtime.metrics_interval_ms
         > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
-        error = "runtime.metrics_interval_ms exceeds the supported integer range";
-        return false;
+        return reject_field(
+            "runtime.metrics-interval-ms",
+            "runtime.metrics_interval_ms exceeds the supported integer range",
+            field,
+            error);
     }
-    if (application.timeouts.resolve_ms <= 0
-        || application.timeouts.connect_ms <= 0
-        || application.timeouts.send_ms <= 0
-        || application.timeouts.response_header_ms <= 0
-        || application.timeouts.stream_idle_ms <= 0
-        || application.timeouts.total_ms < 0) {
-        error = "stage timeouts must be positive; total_ms may be 0";
-        return false;
+    const std::array timeout_fields = {
+        std::pair{"timeouts.resolve-ms", application.timeouts.resolve_ms},
+        std::pair{"timeouts.connect-ms", application.timeouts.connect_ms},
+        std::pair{"timeouts.send-ms", application.timeouts.send_ms},
+        std::pair{"timeouts.response-header-ms",
+            application.timeouts.response_header_ms},
+        std::pair{"timeouts.stream-idle-ms", application.timeouts.stream_idle_ms},
+    };
+    for (const auto& [key, value] : timeout_fields) {
+        if (value <= 0) {
+            return reject_field(
+                key,
+                "stage timeouts must be positive; total_ms may be 0",
+                field,
+                error);
+        }
+    }
+    if (application.timeouts.total_ms < 0) {
+        return reject_field(
+            "timeouts.total-ms",
+            "stage timeouts must be positive; total_ms may be 0",
+            field,
+            error);
     }
     static const std::set<std::string> levels = {"trace", "debug", "info", "warn", "error"};
     if (levels.count(application.logging.level) == 0) {
-        error = "logging.level must be one of trace, debug, info, warn, error";
-        return false;
+        return reject_field(
+            "logging.level",
+            "logging.level must be one of trace, debug, info, warn, error",
+            field,
+            error);
     }
     if (application.logging.path.empty()
         || application.logging.path.size() > 32768
         || contains_control(application.logging.path)) {
-        error = "logging.path must name a log file";
-        return false;
+        return reject_field(
+            "logging.path", "logging.path must name a log file", field, error);
     }
     try {
         std::filesystem::path parsed_path;
-        if (!path_from_utf8(application.logging.path, parsed_path, error)) {
-            return false;
+        std::string path_error;
+        if (!path_from_utf8(application.logging.path, parsed_path, path_error)) {
+            return reject_field(
+                "logging.path", std::move(path_error), field, error);
         }
         const auto path = parsed_path.lexically_normal();
         const auto filename = path.filename();
         if (filename.empty() || filename == "." || filename == "..") {
-            error = "logging.path must name a log file";
-            return false;
+            return reject_field(
+                "logging.path", "logging.path must name a log file", field, error);
         }
         if (!path.is_absolute()) {
             if (path.has_root_path()
                 || (!path.empty() && *path.begin() == "..")) {
-                error = "relative logging.path must stay within the application root";
-                return false;
+                return reject_field(
+                    "logging.path",
+                    "relative logging.path must stay within the application root",
+                    field,
+                    error);
             }
         }
     } catch (const std::exception& ex) {
-        error = "logging.path is invalid: " + std::string(ex.what());
-        return false;
+        return reject_field(
+            "logging.path",
+            "logging.path is invalid: " + std::string(ex.what()),
+            field,
+            error);
     }
     if (application.logging.body_limit == 0
-        || application.logging.body_limit > kMaxLogBufferSize
-        || application.logging.queue_capacity == 0
-        || application.logging.queue_capacity > kMaxLogBufferSize
-        || application.logging.flush_interval_ms == 0
-        || application.logging.flush_interval_ms > kMaxFlushIntervalMs) {
-        error = "logging size fields must be 1 byte to 1 GiB and flush_interval_ms must be 1 to 60000";
-        return false;
+        || application.logging.body_limit > kMaxLogBufferSize) {
+        return reject_field(
+            "logging.body-limit",
+            "logging size fields must be 1 byte to 1 GiB and flush_interval_ms must be 1 to 60000",
+            field,
+            error);
     }
-    if (application.runtime.max_inflight_bytes < kMinInflightMemoryBudget
-        || application.runtime.max_inflight_bytes > kMaxInflightMemoryBudget) {
-        error = "runtime.max_inflight_bytes must be between 1 MiB and 64 GiB";
-        return false;
+    if (application.logging.queue_capacity == 0
+        || application.logging.queue_capacity > kMaxLogBufferSize) {
+        return reject_field(
+            "logging.queue-capacity",
+            "logging size fields must be 1 byte to 1 GiB and flush_interval_ms must be 1 to 60000",
+            field,
+            error);
+    }
+    if (application.logging.flush_interval_ms == 0
+        || application.logging.flush_interval_ms > kMaxFlushIntervalMs) {
+        return reject_field(
+            "logging.flush-interval-ms",
+            "logging size fields must be 1 byte to 1 GiB and flush_interval_ms must be 1 to 60000",
+            field,
+            error);
     }
     if (application.logging.max_total_size == 0
         || application.logging.max_total_size > kMaxLogTotalSize) {
-        error = "logging.max_total_size must be between 1 byte and 1 TiB";
-        return false;
+        return reject_field(
+            "logging.max-total-size",
+            "logging.max_total_size must be between 1 byte and 1 TiB",
+            field,
+            error);
     }
     const auto minimum_total_size = std::max(
         application.logging.queue_capacity,
         application.logging.body_limit * kJsonEscapeExpansion + kLogRecordHeadroom);
     if (application.logging.max_total_size < minimum_total_size) {
-        error = "logging.max_total_size is too small for body_limit and queue_capacity";
+        return reject_field(
+            "logging.max-total-size",
+            "logging.max_total_size is too small for body_limit and queue_capacity",
+            field,
+            error);
+    }
+    return true;
+}
+
+bool validate_profile_definition_impl(
+    const std::string& profile_id,
+    const ProfileDefinition& profile,
+    bool require_complete,
+    std::string& field,
+    std::string& error) {
+    field.clear();
+    error.clear();
+    const auto label = "profile " + profile_id;
+    if (!is_valid_profile_id(profile_id)) {
+        return reject_field(
+            "id", "invalid profile id: " + profile_id, field, error);
+    }
+    if (profile.protocol && !is_valid_protocol_id(profile.protocol->value)) {
+        return reject_field(
+            "protocol", label + " has an invalid protocol id", field, error);
+    }
+    if (profile.local.request_path
+        && !validate_route_path(
+            *profile.local.request_path, true, label + " local.request_path", error)) {
+        field = "local.request-path";
         return false;
+    }
+    if (profile.local.usage_path
+        && !validate_route_path(
+            *profile.local.usage_path, true, label + " local.usage_path", error)) {
+        field = "local.usage-path";
+        return false;
+    }
+    if (profile.upstream.base_url
+        && !validate_base_url(
+            *profile.upstream.base_url, label + " upstream.base_url", error)) {
+        field = "upstream.base-url";
+        return false;
+    }
+    if (profile.upstream.request_path
+        && !validate_route_path(
+            *profile.upstream.request_path,
+            false,
+            label + " upstream.request_path",
+            error)) {
+        field = "upstream.request-path";
+        return false;
+    }
+    if (profile.upstream.usage_path
+        && !validate_route_path(
+            *profile.upstream.usage_path,
+            false,
+            label + " upstream.usage_path",
+            error)) {
+        field = "upstream.usage-path";
+        return false;
+    }
+    if (profile.rules.size() > kMaxRulesPerProfile) {
+        return reject_field(
+            "rules", label + " exceeds the maximum rule count", field, error);
+    }
+    std::unordered_set<std::string> rule_ids;
+    for (const auto& rule : profile.rules) {
+        if (!is_valid_rule_id(rule.id.value)) {
+            return reject_field(
+                "rules",
+                label + " has an invalid rule id: " + rule.id.value,
+                field,
+                error);
+        }
+        if (!rule_ids.emplace(rule.id.value).second) {
+            return reject_field(
+                "rules",
+                label + " has duplicate rule id: " + rule.id.value,
+                field,
+                error);
+        }
+        if (!is_valid_rule_type(rule.type)) {
+            return reject_field(
+                "rules",
+                label + " rule " + rule.id.value + " has an invalid type",
+                field,
+                error);
+        }
+        for (const auto& [key, value] : rule.options) {
+            if (!is_valid_rule_option_name(key)) {
+                return reject_field(
+                    "rules",
+                    label + " rule " + rule.id.value
+                        + " has an invalid option name: " + key,
+                    field,
+                    error);
+            }
+            std::size_t nodes = 0;
+            std::string option_error;
+            if (!validate_rule_json(value, 0, nodes, option_error)) {
+                return reject_field(
+                    "rules",
+                    label + " rule " + rule.id.value + " option " + key
+                        + ": " + option_error,
+                    field,
+                    error);
+            }
+        }
+    }
+    if (!require_complete) {
+        return true;
+    }
+    if (!profile.protocol) {
+        return reject_field(
+            "protocol",
+            label + " is enabled but missing protocol, local.request_path, "
+                "upstream.base_url, or upstream.request_path",
+            field,
+            error);
+    }
+    if (!profile.local.request_path) {
+        return reject_field(
+            "local.request-path",
+            label + " is enabled but missing protocol, local.request_path, "
+                "upstream.base_url, or upstream.request_path",
+            field,
+            error);
+    }
+    if (!profile.upstream.base_url) {
+        return reject_field(
+            "upstream.base-url",
+            label + " is enabled but missing protocol, local.request_path, "
+                "upstream.base_url, or upstream.request_path",
+            field,
+            error);
+    }
+    if (!profile.upstream.request_path) {
+        return reject_field(
+            "upstream.request-path",
+            label + " is enabled but missing protocol, local.request_path, "
+                "upstream.base_url, or upstream.request_path",
+            field,
+            error);
+    }
+    if (profile.local.usage_path && !profile.upstream.usage_path) {
+        return reject_field(
+            "upstream.usage-path",
+            label + " must configure both local.usage_path and upstream.usage_path",
+            field,
+            error);
+    }
+    if (!profile.local.usage_path && profile.upstream.usage_path) {
+        return reject_field(
+            "local.usage-path",
+            label + " must configure both local.usage_path and upstream.usage_path",
+            field,
+            error);
     }
     return true;
 }
@@ -784,7 +1025,8 @@ bool validate_application_settings(
     const ApplicationSettings& application,
     std::string& error) {
     error.clear();
-    return validate_application_settings_impl(application, error);
+    std::string field;
+    return validate_application_settings_impl(application, field, error);
 }
 
 ConfigDocument make_default_config_document() {
@@ -851,107 +1093,51 @@ bool validate_profile_definition(
     const ProfileDefinition& profile,
     bool require_complete,
     std::string& error) {
-    error.clear();
-    const auto label = "profile " + profile_id;
-    if (!is_valid_profile_id(profile_id)) {
-        error = "invalid profile id: " + profile_id;
-        return false;
-    }
-    if (profile.protocol && !is_valid_protocol_id(profile.protocol->value)) {
-        error = label + " has an invalid protocol id";
-        return false;
-    }
-    if (profile.local.request_path
-        && !validate_route_path(*profile.local.request_path, true, label + " local.request_path", error)) {
-        return false;
-    }
-    if (profile.local.usage_path
-        && !validate_route_path(*profile.local.usage_path, true, label + " local.usage_path", error)) {
-        return false;
-    }
-    if (profile.upstream.base_url
-        && !validate_base_url(*profile.upstream.base_url, label + " upstream.base_url", error)) {
-        return false;
-    }
-    if (profile.upstream.request_path
-        && !validate_route_path(*profile.upstream.request_path, false, label + " upstream.request_path", error)) {
-        return false;
-    }
-    if (profile.upstream.usage_path
-        && !validate_route_path(*profile.upstream.usage_path, false, label + " upstream.usage_path", error)) {
-        return false;
-    }
-    if (profile.rules.size() > kMaxRulesPerProfile) {
-        error = label + " exceeds the maximum rule count";
-        return false;
-    }
-    std::unordered_set<std::string> rule_ids;
-    for (const auto& rule : profile.rules) {
-        if (!is_valid_rule_id(rule.id.value)) {
-            error = label + " has an invalid rule id: " + rule.id.value;
-            return false;
-        }
-        if (!rule_ids.emplace(rule.id.value).second) {
-            error = label + " has duplicate rule id: " + rule.id.value;
-            return false;
-        }
-        if (!is_valid_rule_type(rule.type)) {
-            error = label + " rule " + rule.id.value + " has an invalid type";
-            return false;
-        }
-        for (const auto& [key, value] : rule.options) {
-            if (!is_valid_rule_option_name(key)) {
-                error = label + " rule " + rule.id.value + " has an invalid option name: " + key;
-                return false;
-            }
-            std::size_t nodes = 0;
-            if (!validate_rule_json(value, 0, nodes, error)) {
-                error = label + " rule " + rule.id.value + " option " + key + ": " + error;
-                return false;
-            }
-        }
-    }
-    if (!require_complete) {
-        return true;
-    }
-    if (!profile.protocol
-        || !profile.local.request_path
-        || !profile.upstream.base_url
-        || !profile.upstream.request_path) {
-        error = label + " is enabled but missing protocol, local.request_path, upstream.base_url, or upstream.request_path";
-        return false;
-    }
-    const bool has_local_usage = profile.local.usage_path.has_value();
-    const bool has_upstream_usage = profile.upstream.usage_path.has_value();
-    if (has_local_usage != has_upstream_usage) {
-        error = label + " must configure both local.usage_path and upstream.usage_path";
-        return false;
-    }
-    return true;
+    std::string field;
+    return validate_profile_definition_impl(
+        profile_id, profile, require_complete, field, error);
 }
 
-bool validate_config_document(const ConfigDocument& document, std::string& error) {
-    error.clear();
-    if (!validate_application_settings(document.application, error)) {
+bool validate_config_document(
+    const ConfigDocument& document,
+    ConfigDocumentValidationFailure& failure) {
+    failure = {};
+    if (!validate_application_settings_impl(
+            document.application, failure.field, failure.detail)) {
         return false;
     }
     if (document.profiles.size() > kMaxConfigProfiles) {
-        error = "config exceeds the maximum of " + std::to_string(kMaxConfigProfiles) + " profiles";
+        failure.detail = "config exceeds the maximum of "
+            + std::to_string(kMaxConfigProfiles) + " profiles";
         return false;
     }
     std::size_t route_count = 0;
     for (const auto& [profile_id, profile] : document.profiles) {
-        if (!validate_profile_definition(profile_id, profile, profile.enabled, error)) {
+        if (!validate_profile_definition_impl(
+                profile_id,
+                profile,
+                profile.enabled,
+                failure.field,
+                failure.detail)) {
+            failure.profile_id = profile_id;
             return false;
         }
         route_count += profile.local.request_path ? 1 : 0;
         route_count += profile.local.usage_path ? 1 : 0;
     }
     if (route_count > kMaxConfigRoutes) {
-        error = "config exceeds the maximum of " + std::to_string(kMaxConfigRoutes) + " routes";
+        failure.detail = "config exceeds the maximum of "
+            + std::to_string(kMaxConfigRoutes) + " routes";
         return false;
     }
     return true;
+}
+
+bool validate_config_document(const ConfigDocument& document, std::string& error) {
+    ConfigDocumentValidationFailure failure;
+    const bool valid = validate_config_document(document, failure);
+    error = std::move(failure.detail);
+    return valid;
 }
 
 bool parse_config_document(
