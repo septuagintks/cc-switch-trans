@@ -114,6 +114,29 @@ configure_file(
     @ONLY
 )
 
+add_library(ccs-trans-gui-ipc STATIC
+    src/gui_ipc/frame_codec.cpp
+    src/gui_ipc/json_codec.cpp
+    src/gui_ipc/json_command_codec.cpp
+    src/gui_ipc/json_state_codec.cpp
+    src/gui_ipc/json_state_types.cpp
+    src/gui_ipc/protocol_types.cpp
+    src/gui_ipc/session.cpp
+)
+target_compile_features(ccs-trans-gui-ipc PUBLIC cxx_std_20)
+target_include_directories(ccs-trans-gui-ipc PUBLIC
+    src
+    third_party
+)
+
+if(BUILD_TESTING)
+    add_executable(ccs-trans-gui-ipc-tests
+        tests/unit/gui_ipc_tests.cpp
+    )
+    target_link_libraries(ccs-trans-gui-ipc-tests PRIVATE ccs-trans-gui-ipc)
+    add_test(NAME ccs-trans-gui-ipc-tests COMMAND ccs-trans-gui-ipc-tests)
+endif()
+
 if(CCS_TRANS_BUILD_RUNTIME)
 add_library(ccs-trans-sqlite3 STATIC
     third_party/sqlite/sqlite3.c
@@ -138,6 +161,17 @@ set(CCS_TRANS_PLATFORM_SOURCES)
 if(WIN32)
     enable_language(RC)
     list(APPEND CCS_TRANS_PLATFORM_SOURCES
+        src/hosts/windows/gui_bridge/gui_command_router.cpp
+        src/hosts/windows/gui_bridge/gui_ipc_connection.cpp
+        src/hosts/windows/gui_bridge/gui_ipc_server.cpp
+        src/hosts/windows/gui_bridge/gui_outbound_channel.cpp
+        src/hosts/windows/gui_bridge/gui_snapshot_builder.cpp
+        src/hosts/windows/maintenance/maintenance_ipc_server.cpp
+        src/hosts/windows/platform/gui_pipe_security.cpp
+        src/hosts/windows/tray/gui_process_launcher.cpp
+        src/hosts/windows/tray/gui_session_controller.cpp
+        src/hosts/windows/tray/tray_icon.cpp
+        src/hosts/windows/tray/tray_menu.cpp
         src/hosts/windows/instance_coordinator.cpp
         src/hosts/windows/startup_registration.cpp
         src/hosts/windows/windows_error.cpp
@@ -259,12 +293,14 @@ target_include_directories(ccs-trans-core PUBLIC
 
 if(WIN32)
     target_link_libraries(ccs-trans-core PRIVATE
+        ccs-trans-gui-ipc
         ccs-trans-sqlite3
         ws2_32
         winhttp
         shell32
         ole32
         advapi32
+        bcrypt
     )
 elseif(APPLE)
     find_library(
@@ -317,6 +353,8 @@ if(WIN32)
     add_executable(ccs-trans-tray WIN32
         src/hosts/windows/main_window.cpp
         src/hosts/windows/tray_app.cpp
+        src/hosts/windows/tray/tray_ipc_host.cpp
+        src/hosts/windows/tray/tray_runtime_host.cpp
         src/hosts/windows/tray_main.cpp
         src/hosts/windows/windows_theme.cpp
         "${CCS_TRANS_GENERATED_DIR}/ccs-trans-tray.rc"
@@ -524,6 +562,62 @@ if(BUILD_TESTING)
     add_test(NAME ccs-trans-host-platform-tests COMMAND ccs-trans-host-platform-tests)
 
     if(WIN32)
+        add_executable(ccs-trans-gui-bridge-tests
+            tests/unit/gui_bridge_tests.cpp
+        )
+        target_link_libraries(ccs-trans-gui-bridge-tests PRIVATE ccs-trans-core)
+        add_test(NAME ccs-trans-gui-bridge-tests COMMAND ccs-trans-gui-bridge-tests)
+
+        add_executable(ccs-trans-gui-ipc-server-tests
+            tests/unit/gui_ipc_server_tests.cpp
+        )
+        target_link_libraries(ccs-trans-gui-ipc-server-tests PRIVATE ccs-trans-core)
+        add_test(
+            NAME ccs-trans-gui-ipc-server-tests
+            COMMAND ccs-trans-gui-ipc-server-tests
+        )
+        set_tests_properties(ccs-trans-gui-ipc-server-tests PROPERTIES TIMEOUT 30)
+
+        add_executable(ccs-trans-gui-process-launcher-tests
+            tests/unit/gui_process_launcher_tests.cpp
+        )
+        target_link_libraries(ccs-trans-gui-process-launcher-tests PRIVATE ccs-trans-core)
+        add_test(
+            NAME ccs-trans-gui-process-launcher-tests
+            COMMAND ccs-trans-gui-process-launcher-tests
+        )
+        set_tests_properties(
+            ccs-trans-gui-process-launcher-tests PROPERTIES TIMEOUT 15
+        )
+
+        add_executable(ccs-trans-gui-session-controller-tests
+            tests/unit/gui_session_controller_tests.cpp
+        )
+        target_link_libraries(
+            ccs-trans-gui-session-controller-tests PRIVATE ccs-trans-core
+        )
+        add_test(
+            NAME ccs-trans-gui-session-controller-tests
+            COMMAND ccs-trans-gui-session-controller-tests
+        )
+        set_tests_properties(
+            ccs-trans-gui-session-controller-tests PROPERTIES TIMEOUT 15
+        )
+
+        add_executable(ccs-trans-maintenance-ipc-server-tests
+            tests/unit/maintenance_ipc_server_tests.cpp
+        )
+        target_link_libraries(
+            ccs-trans-maintenance-ipc-server-tests PRIVATE ccs-trans-core
+        )
+        add_test(
+            NAME ccs-trans-maintenance-ipc-server-tests
+            COMMAND ccs-trans-maintenance-ipc-server-tests
+        )
+        set_tests_properties(
+            ccs-trans-maintenance-ipc-server-tests PROPERTIES TIMEOUT 15
+        )
+
         add_executable(ccs-trans-instance-coordinator-tests
             tests/unit/instance_coordinator_tests.cpp
         )

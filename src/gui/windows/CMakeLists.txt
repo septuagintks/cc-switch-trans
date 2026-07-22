@@ -31,6 +31,7 @@ target_compile_features(ccs-trans-gui-prototype PUBLIC cxx_std_20)
 target_include_directories(ccs-trans-gui-prototype PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(ccs-trans-gui-prototype PRIVATE UNICODE _UNICODE)
 target_link_libraries(ccs-trans-gui-prototype PUBLIC Qt6::Core Qt6::Gui)
+target_link_libraries(ccs-trans-gui-prototype PUBLIC ccs-trans-gui-ipc)
 
 qt_add_executable(ccs-trans-gui WIN32
     app/gui_main.cpp

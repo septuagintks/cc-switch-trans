@@ -46,8 +46,10 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The completed `0.8-A` Windows Qt Quick foundation uses a separate build tree
-and does not replace or connect to the production tray yet. Qt 6.10.3 and its
+The completed `0.8-A` Windows Qt Quick foundation uses a separate build tree.
+The completed `0.8-C` transport now gives the tray and future Qt process a
+shared wire codec and authenticated named-pipe session, but the production tray
+still opens the accepted Win32 window until `0.8-D/E`. Qt 6.10.3 and its
 official MinGW 13.1 toolchain default to `%USERPROFILE%/Qt`; set
 `CCS_TRANS_QT_ROOT` and `CCS_TRANS_QT_MINGW_ROOT` for another installation.
 Exact archives and hashes are recorded in
@@ -91,6 +93,16 @@ error codes and field keys, and rollback that leaves the caller's local draft
 and selection intact after validation or stale-state failures. The legacy
 in-process rename command remains only as a temporary AppKit adapter until the
 macOS `0.8-H` update; it is not part of the future GUI IPC command surface.
+The completed `0.8-C` Windows layer splits tray icon/menu/runtime shutdown from
+GUI process and IPC ownership. `ccs-trans.gui-ipc/v1` uses strict UTF-8 JSON in
+4-byte little-endian length-prefixed frames with a 16 MiB per-frame limit,
+monotonic session sequences, revisioned snapshots/deltas, and bounded outbound
+queues. The tray creates a current-user-only named pipe, starts the GUI
+suspended, sends a one-time token through a restricted inherited bootstrap
+pipe, binds the session to the actual child PID, and then resumes it. A separate
+`ccs-trans.maintenance-ipc/v1` endpoint exposes only version query, orderly
+shutdown request, and release-state query for the future installer; it cannot
+submit Profile, Rule, or Settings commands.
 Lightweight mode destroys a closed main window while leaving the desktop host
 and listener running; normal
 mode hides and reuses it. Version `0.7.0` uses v3 application settings plus
@@ -537,7 +549,11 @@ It covers main-window Profile commands, CLI/GUI stale-write rejection and
 explicit Reload Draft recovery, Rule summaries, dirty-close and pending-command
 exit decisions, normal and lightweight window lifetimes, service controls,
 second-instance activation, GDI/USER stability across repeated window creation,
-and 16 concurrent SSE responses while the window is repeatedly rebuilt.
+and 16 concurrent SSE responses while the window is repeatedly rebuilt. The
+runtime CTest suite also covers the GUI IPC wire codec, PID/token/session
+validation, bounded state delivery, command correlation, malformed and partial
+frames, 100 connect/disconnect cycles, real child bootstrap/activate/shutdown,
+and rejection of GUI traffic on the maintenance endpoint.
 
 The opt-in Windows proxy matrix temporarily changes and then restores the
 current-user proxy:
@@ -576,6 +592,8 @@ docs/                  Design and development documentation
 src/app/               Shared service lifecycle and reload rollback
 src/config/            v3/composite repository, migration, typed editing, runtime compiler
 src/core/              HTTP data, cancellation, URL, timeout, and global metrics
+src/gui_ipc/           Shared GUI wire DTO, strict JSON/frame codec, session/revision tracking
+src/gui/windows/       Independent Qt Quick GUI process and tests
 src/hosts/             CLI, tray/menu hosts, and native platform windows
 src/logging/           Structured asynchronous logging
 src/presentation/      Shared main-window state, commands, and UI preferences

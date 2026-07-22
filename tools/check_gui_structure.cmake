@@ -9,13 +9,40 @@ elseif(NOT IS_ABSOLUTE "${CCS_TRANS_SOURCE_ROOT}")
 endif()
 
 set(gui_root "${CCS_TRANS_SOURCE_ROOT}/src/gui/windows")
+set(gui_ipc_root "${CCS_TRANS_SOURCE_ROOT}/src/gui_ipc")
 if(NOT EXISTS "${gui_root}/CMakeLists.txt")
     message(FATAL_ERROR "Windows GUI source root is missing: ${gui_root}")
 endif()
+if(NOT EXISTS "${gui_ipc_root}/json_codec.hpp")
+    message(FATAL_ERROR "GUI IPC source root is missing: ${gui_ipc_root}")
+endif()
 
-file(GLOB_RECURSE cpp_files
+file(GLOB_RECURSE gui_cpp_files
     "${gui_root}/*.cpp"
     "${gui_root}/*.hpp"
+)
+file(GLOB_RECURSE gui_ipc_cpp_files
+    "${gui_ipc_root}/*.cpp"
+    "${gui_ipc_root}/*.hpp"
+)
+file(GLOB_RECURSE gui_host_cpp_files
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/gui_bridge/*.cpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/gui_bridge/*.hpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/maintenance/*.cpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/maintenance/*.hpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/platform/*.cpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/platform/*.hpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/tray/*.cpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/tray/*.hpp"
+)
+list(APPEND gui_host_cpp_files
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/tray_app.cpp"
+    "${CCS_TRANS_SOURCE_ROOT}/src/hosts/windows/tray_app.hpp"
+)
+set(cpp_files
+    ${gui_cpp_files}
+    ${gui_ipc_cpp_files}
+    ${gui_host_cpp_files}
 )
 file(GLOB_RECURSE qml_files "${gui_root}/*.qml")
 
@@ -26,10 +53,21 @@ foreach(source IN LISTS cpp_files)
         file(RELATIVE_PATH relative "${CCS_TRANS_SOURCE_ROOT}" "${source}")
         message(FATAL_ERROR "Hand-written C++ file exceeds 600 lines: ${relative} (${line_count})")
     endif()
+endforeach()
+
+foreach(source IN LISTS gui_cpp_files)
     file(READ "${source}" contents)
     if(contents MATCHES "#[ \t]*include[ \t]*[<\"](app|config|core|hosts|logging|presentation|protocols|routing|rules|runtime|server|storage|transport)/")
         file(RELATIVE_PATH relative "${CCS_TRANS_SOURCE_ROOT}" "${source}")
         message(FATAL_ERROR "Qt GUI layer includes a forbidden runtime layer: ${relative}")
+    endif()
+endforeach()
+
+foreach(source IN LISTS gui_ipc_cpp_files)
+    file(READ "${source}" contents)
+    if(contents MATCHES "#[ \t]*include[ \t]*[<\"](app|config|core|gui/windows|hosts|logging|presentation|protocols|routing|rules|runtime|server|storage|transport)/")
+        file(RELATIVE_PATH relative "${CCS_TRANS_SOURCE_ROOT}" "${source}")
+        message(FATAL_ERROR "GUI IPC wire layer includes a forbidden owner layer: ${relative}")
     endif()
 endforeach()
 

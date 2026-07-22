@@ -5,7 +5,7 @@
 | 项目 | 当前状态 |
 | --- | --- |
 | 实现基线 | 当前源码与发行基线 `0.7.0` |
-| 开发分支 | `0.8-A` Qt Quick 独立 GUI/双工具链技术基线；尚未替换生产 Win32 GUI |
+| 开发分支 | `0.8-C` 已完成 tray 分层与 GUI IPC；尚未替换生产 Win32 GUI |
 | 当前发行版 | `0.7.0-Windows-x64`；`0.7.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -20,11 +20,13 @@
 [ProjectStructure.md](ProjectStructure.md)，当前双平台发布结论见
 [Release-0.7.0.md](Archived/Release-0.7.0.md)。
 
-`0.8-A` 已加入不会进入当前请求路径的独立 `ccs-trans-gui.exe` 原型。它使用 Qt 6.10.3/官方 MinGW 13.1，
-与 GCC 16 runtime 位于互斥 build tree，不链接 `ccs-trans-core`。原型只验证 typed incremental model、
+`0.8-A` 已加入不会进入请求热路径的独立 `ccs-trans-gui.exe` 原型。它使用 Qt 6.10.3/官方 MinGW 13.1，
+与 GCC 16 runtime 位于互斥 build tree，不链接 `ccs-trans-core`。原型验证 typed incremental model、
 stable-key selection、全局 motion policy、同步期动画隔离、D3D11/software RHI、idle frame、固定部署与
-安装卸载。生产 tray 仍持有 0.7.0 Win32 主窗口；在 `0.8-C/D` IPC 与生命周期完成前，两者没有运行时连接。
-精确开发合同和资源预算见 [Planning-0.8.0.md](Planning-0.8.0.md)。
+安装卸载。`0.8-C` 已建立由两套工具链各自从源码编译的 `ccs-trans.gui-ipc/v1` wire layer，并把 transport、
+launcher、snapshot/delta bridge 和窄 maintenance endpoint 接入 tray。生产 tray 仍显示 0.7.0 Win32 主
+窗口；Qt client 与正式页面生命周期在 `0.8-D/E` 接入。精确开发合同和资源预算见
+[Planning-0.8.0.md](Planning-0.8.0.md)。
 
 ## 项目定位
 
@@ -77,6 +79,7 @@ CLI management -> ConfigStore
 CLI run -> shared runtime loader -> AppService
 Windows tray/main window / macOS menu host -> ApplicationController -> AppService
 Native main window -> shared presentation contract -> editing/controller services
+Windows Qt GUI -> ccs-trans.gui-ipc/v1 -> Windows tray -> shared presentation contract
 AppService -> Server
 Server -> RouteTable + ProtocolHandler + CompiledPipeline + Logger + UpstreamTransport
 UpstreamTransport -> HTTP types + cancellation + platform implementation
@@ -94,9 +97,23 @@ UpstreamTransport -> HTTP types + cancellation + platform implementation
 | `src/transport` | upstream 接口、headers、WinHTTP/libcurl、SSE、取消、timeout | 修改 JSON 请求 |
 | `src/logging` | JSON Lines、批写、flush、背压 | 决定业务规则 |
 | `src/presentation` | 主窗口值状态、命令结果、关闭决策、UI preference schema | 平台窗口、文件 I/O、JSON DOM 或 runtime 所有权 |
+| `src/gui_ipc` | GUI wire DTO、严格 JSON/frame codec、session/revision tracker | Qt、Win32、repository、SQLite 或 runtime 所有权 |
 
 `ccs-trans-core` 是 CLI、Windows tray 和 macOS menu bar 宿主的共享服务核心。
 新增宿主必须复用 `AppService`，不能复制初始化和停止顺序。
+
+`0.8-C` 的 Windows 进程边界固定为：tray 独占 repository、ViewModel、ApplicationController 和代理
+runtime；Qt GUI 只消费 typed snapshot/delta 并提交 typed command。wire 使用严格 UTF-8 JSON 和 4-byte
+little-endian 长度前缀，单 frame 上限 16 MiB。pipe DACL 只允许当前用户，公开 pipe 名只包含 SID、规范化
+配置根目录和 instance identity 的 SHA-256 派生值；原始 SID/path 不进入名称。tray 通过受限继承的匿名
+bootstrap pipe 向 suspended child 发送一次性 256-bit token/session，校验 named-pipe 实际 PID、版本、
+source commit 和 instance 后才接受会话。可靠 command/result/activate/shutdown 使用有界队列；普通状态
+可合并为最新 revision，不能为日志或 UI 状态形成无界积压。
+
+安装器不复用 GUI pipe。`ccs-trans.maintenance-ipc/v1` 是独立 current-user endpoint，只允许查询版本、
+请求有序退出和查询 runtime/GUI release 状态，任何 GUI command envelope 都会被拒绝。当前
+`wait_for_release` 是可重试瞬时查询；`timeout_ms` 长轮询以及 release response 写完后再终止 tray 的时序
+在 `0.8-G` 与正式安装事务一起完成。
 
 ## 已冻结的宿主扩展边界
 
@@ -126,7 +143,8 @@ RuntimeCompiler 与 AppService。它不包含 Win32、AppKit、注册表、SMApp
 UI 线程不等待配置编译、listener bind、stop/join 或 logger drain。服务异常退出必须被
 非阻塞回收，不能因为遗留 joinable thread 阻止再次启动。
 
-阶段 12 不提供 CLI 到 tray 的 IPC 管理面。Windows tray 只保证本交互用户 session 单实例；
+阶段 12 不提供 CLI 到 tray 的通用 IPC 管理面，`0.8-C` 新增的 GUI/maintenance pipe 也不接受 CLI
+配置命令。Windows tray 只保证本交互用户 session 单实例；
 CLI `run` 与 tray 的服务所有权冲突由 listener 独占绑定报告。这个约束避免在没有真实需求
 时引入认证、版本和并发语义未定义的本地控制协议。
 
@@ -519,6 +537,10 @@ benchmark 输出或临时目录。
     close、普通/轻量生命周期、第二实例激活、Retina/主题/键盘/accessibility probe、100 次资源
     生命周期、pending Quit、Start/Stop/Reload，以及窗口循环期间 `desktop-16` 的内容、顺序、
     长度、结束标记和零上游断连。
+15. Windows `ccs-trans.gui-ipc/v1` 的 frame/JSON/session/revision、PID/token/source 绑定、有界 state
+    coalescing、command result、半 frame/超限/背压、100 次 connect/disconnect、真实 suspended child
+    bootstrap/activate/shutdown，以及独立 maintenance endpoint 的命令白名单；runtime warnings-as-errors
+    `32/32`、Qt warnings-as-errors `5/5` 和 tray integration 通过。
 
 `0.7.0` 发行边界：
 
