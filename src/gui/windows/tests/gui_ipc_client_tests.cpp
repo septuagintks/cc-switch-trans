@@ -98,7 +98,12 @@ ccs::gui_ipc::Snapshot initialSnapshot() {
         {22, "beta", false, std::string{"chat-completions"}, "ready", {}, 1, 0},
     };
     snapshot.selection = {std::string{"alpha"}, 11};
-    snapshot.profile_editor = ccs::gui_ipc::ProfileEditor{11, "alpha", {}};
+    snapshot.profile_editor = ccs::gui_ipc::ProfileEditor{11, "alpha", {
+        {"id", "profile", "text", true, {}, {}, {},
+            "field.profile.id", "runtime_reload", std::string{"alpha"}},
+        {"enabled", "profile", "boolean", true, {}, {}, {},
+            "field.profile.enabled", "runtime_reload", true},
+    }};
     snapshot.rules_editor = ccs::gui_ipc::RulesEditor{11, "alpha", "[]\n", {}};
     snapshot.draft = {"clean", false, 3, "base-revision"};
     snapshot.lightweight_mode = false;

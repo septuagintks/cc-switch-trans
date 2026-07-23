@@ -4,8 +4,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 实现基线 | 发行基线 `0.7.0`；当前开发源码完成 `0.8-D` |
-| 开发分支 | Windows 生产 tray 已切换到独立 Qt sidecar；当前进入 `0.8-E` 功能对等 |
+| 实现基线 | 发行基线 `0.7.0`；当前开发源码完成 `0.8-E` |
+| 开发分支 | Windows Qt sidecar 已完成功能与视觉验收；当前进入 `0.8-F` Rule Builder |
 | 当前发行版 | `0.7.0-Windows-x64`；`0.7.0-macOS-arm64`（ad-hoc 签名） |
 | 语言基线 | ISO C++20，禁用编译器语言扩展 |
 | 支持平台 | Windows 11 21H2+ x64；macOS 26 arm64 |
@@ -14,7 +14,7 @@
 | 业务模型 | 多 Profile、ProtocolRegistry、RuleRegistry、精确 RouteTable |
 | 上游网络 | Windows WinHTTP/system proxy；macOS SDK system libcurl/process environment |
 
-本文描述 `0.7.0` 的发行合同与当前 `0.8-D` 开发路径。历史重构目标与扩展约束见
+本文描述 `0.7.0` 的发行合同与当前 `0.8-E` 开发路径。历史重构目标与扩展约束见
 [Reconstruction.md](Archived/Reconstruction.md)，
 后续顺序见 [DevelopmentPlan.md](DevelopmentPlan.md)，文件归属见
 [ProjectStructure.md](ProjectStructure.md)，当前双平台发布结论见
@@ -25,8 +25,8 @@
 stable-key selection、全局 motion policy、同步期动画隔离、D3D11/software RHI、idle frame、固定部署与
 安装卸载。`0.8-C` 已建立由两套工具链各自从源码编译的 `ccs-trans.gui-ipc/v1` wire layer，并把 transport、
 launcher、snapshot/delta bridge 和窄 maintenance endpoint 接入 tray。`0.8-D` 已接入 Qt typed client、
-state/model/controller、三页 QML skeleton 与生产进程生命周期；旧 Win32 主窗口不再进入 tray target，
-但完整功能对等和视觉验收留给 `0.8-E`。精确开发合同和资源预算见
+state/model/controller、三页 QML skeleton 与生产进程生命周期；`0.8-E` 已完成 0.7 功能对等、应用内
+错误与 migration 交互、视觉/动画验收，并删除旧 Win32 主窗口源码与 HWND 自动化。精确开发合同和资源预算见
 [Planning-0.8.0.md](Planning-0.8.0.md)。
 
 ## 项目定位
@@ -226,9 +226,10 @@ Windows 主窗口由独立 Qt Quick 进程持有，不拥有 runtime、repositor
 退出 GUI 后按下一次 Open 的最新 snapshot 重建。typed model 以 stable key 维护 selection，正常 delta
 使用 row insert/remove/move/dataChanged，不做整页 reset；Profile/Rules controller 保存本地 dirty buffer，
 异步 snapshot 只能更新未编辑状态。根 QML 只组织顶栏、三页 navigation 与 draft actions，不解析 wire JSON。
-当前 `0.8-D` 只保证 clean-close/process lifecycle 和 skeleton command surface；dirty-close dialog、完整 typed
-field editor、错误 owner dialog、0.7 功能对等及视觉/辅助功能验收属于 `0.8-E`，因此当前源码不是发行候选。
-旧 `main_window.*`/`windows_theme.*` 只作 0.7 oracle，不编译进生产 tray，最终在功能对等后删除。
+`0.8-E` 已完成 dirty-close、完整 typed field editor、应用内错误 dialog、storage migration、服务控制和 0.7
+功能对等。视觉状态区分持久 selection 与实时 hover，Reduce Motion 保留确定终态；GUI 生命周期不影响
+8/16 路 SSE。旧 `main_window.*`/`windows_theme.*`、Win32 control id 与 HWND 自动化已删除，不提供 fallback。
+当前源码仍需完成 `0.8-F` Rule Builder 和 `0.8-G` 正式打包后才能成为发行候选。
 
 macOS 主窗口由一个 `NSWindowController` 管理，不拥有 runtime。menu 的唯一 Open 命令和第二实例
 distributed notification 只显示、恢复并激活窗口；关闭窗口不停止 listener。普通模式 order-out 并
@@ -524,9 +525,9 @@ benchmark 输出或临时目录。
    microbenchmark；
 7. ApplicationController 启停/reload/端口冲突/shutdown，以及 HostPlatform 默认配置和
    fake startup registry 单测；
-8. Windows tray control executor/单实例单测，以及真实 GUI 子进程的自动启动、主窗口/Profile
-   draft、Rule 摘要、CLI/GUI stale Apply 与 Reload Draft、普通/轻量生命周期、Start/Stop/Reload、
-   第二实例、通知区图标、日志 drain 和退出集成测试；
+8. Windows tray control executor/单实例单测，以及真实 Qt GUI 子进程的自动启动、Profile/Rules/Settings
+   draft、Save/rebase/stale、应用内错误、migration、普通/轻量生命周期、Start/Stop/Reload、第二实例、
+   crash relaunch、日志 drain 和退出集成测试；
 9. Windows 候选 ZIP 的固定白名单、双 executable hash、CLI/资源版本与解压后 tray
    生命周期验证；
 10. Windows 11 24H2 VM 的 startup/system proxy、四档 DPI、主题、睡眠唤醒、Explorer
@@ -544,7 +545,9 @@ benchmark 输出或临时目录。
 15. Windows `ccs-trans.gui-ipc/v1` 的 frame/JSON/session/revision、PID/token/source 绑定、有界 state
     coalescing、command result、半 frame/超限/背压、100 次 connect/disconnect、真实 suspended child
     bootstrap/activate/shutdown，以及独立 maintenance endpoint 的命令白名单；runtime warnings-as-errors
-    `32/32`、Qt warnings-as-errors `5/5` 和 tray integration 通过。
+    `32/32`、Qt warnings-as-errors `8/8` 和 tray integration 通过。联调在 GUI hide/activate 期间精确验证
+    8/16 路 SSE 的 Content-Type、字节、chunk 顺序、长度、`[DONE]` 和零上游断连，并拒绝 GUI runtime
+    diagnostic。
 
 `0.7.0` 发行边界：
 

@@ -7,12 +7,14 @@ Control {
     required property var motion
     property alias text: label.text
     property bool checked: false
+    property bool invalid: false
     readonly property real visualKnobX: knob.x
     signal toggled(bool checked)
 
     implicitWidth: 186
     implicitHeight: 36
     focusPolicy: Qt.StrongFocus
+    opacity: enabled ? 1 : 0.48
     Accessible.role: Accessible.CheckBox
     Accessible.name: text
     Accessible.checked: checked
@@ -32,8 +34,9 @@ Control {
             anchors.fill: parent
             radius: 7
             color: pointer.containsMouse ? "#e2e9e6" : "#e9eeec"
-            border.width: root.visualFocus ? 2 : 1
-            border.color: root.visualFocus ? "#218bd0" : "#c6d0cc"
+            border.width: root.visualFocus || root.motion.highContrast ? 2 : 1
+            border.color: root.invalid ? "#a53f4b"
+                                       : (root.visualFocus ? "#218bd0" : "#c6d0cc")
             Behavior on color {
                 ColorAnimation { duration: root.motion.shortDuration }
             }
@@ -94,7 +97,12 @@ Control {
         onClicked: root.toggled(!root.checked)
     }
     Keys.onSpacePressed: event => {
+        if (!root.enabled) return
         root.toggled(!root.checked)
         event.accepted = true
+    }
+
+    Behavior on opacity {
+        NumberAnimation { duration: root.motion.shortDuration }
     }
 }

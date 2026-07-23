@@ -37,7 +37,9 @@ MainWindowCommand mapped_command(gui_ipc::GuiCommand command, bool& supported) {
     case gui_ipc::GuiCommand::SetLightweightMode:
         return MainWindowCommand::SetLightweightMode;
     case gui_ipc::GuiCommand::StorageStatus:
+        return MainWindowCommand::StorageStatus;
     case gui_ipc::GuiCommand::MigrateStorage:
+        return MainWindowCommand::MigrateStorage;
     case gui_ipc::GuiCommand::AddRule:
     case gui_ipc::GuiCommand::RemoveRule:
     case gui_ipc::GuiCommand::SetRuleEnabled:
@@ -80,6 +82,7 @@ bool translate_gui_command(
     bool supported = false;
     request = {};
     request.command = mapped_command(command.command, supported);
+    request.source = MainWindowCommandSource::GuiIpc;
     if (!supported) {
         error_code = gui_ipc::ErrorCode::InvalidArgument;
         error = "the GUI command is reserved for a later feature controller";
@@ -94,6 +97,8 @@ bool translate_gui_command(
     request.expected_draft_revision = command.expected_draft_revision;
     request.expected_base_revision = command.expected_base_revision;
     request.unsaved_changes_decision = mapped_decision(command.unsaved_decision);
+    request.replace_existing_storage = command.replace_existing_storage;
+    request.replacement_confirmation = command.replacement_confirmation;
     request.field_edits.reserve(command.field_edits.size());
     for (const auto& edit : command.field_edits) {
         ConfigurationFieldEdit converted;

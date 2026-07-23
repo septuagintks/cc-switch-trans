@@ -87,6 +87,19 @@ bool GuiSessionController::launch_or_activate(std::string& error) {
         (void)launcher_.terminate(terminate_error);
         return false;
     }
+    bool exited = false;
+    DWORD exit_code = STILL_ACTIVE;
+    if (!launcher_.wait_for_exit(
+            std::chrono::milliseconds{150}, exited, exit_code, error)) {
+        return false;
+    }
+    if (exited) {
+        const auto diagnostic = std::move(error);
+        error = "ccs-trans GUI process exited during startup with code "
+            + std::to_string(exit_code);
+        if (!diagnostic.empty()) error += ": " + diagnostic;
+        return false;
+    }
     return true;
 }
 
@@ -126,8 +139,10 @@ bool GuiSessionController::shutdown(
             if (!terminate_error.empty()) error += ": " + terminate_error;
             succeeded = false;
         } else if (exit_code != 0) {
+            const auto diagnostic = std::move(error);
             error = "ccs-trans GUI process exited with code "
                 + std::to_string(exit_code);
+            if (!diagnostic.empty()) error += ": " + diagnostic;
             succeeded = false;
         }
     }

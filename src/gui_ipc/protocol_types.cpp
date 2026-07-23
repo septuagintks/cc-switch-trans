@@ -136,7 +136,8 @@ constexpr std::array kMaintenanceCommands = {
 bool StateDelta::empty() const noexcept {
     return !application && !profiles && !application_fields && !selection
         && !profile_editor_changed && !rules_editor_changed && !draft
-        && !last_command_changed && !lightweight_mode && !command_pending;
+        && !last_command_changed && !storage && !lightweight_mode
+        && !command_pending;
 }
 
 const char* message_kind_name(MessageKind value) noexcept {

@@ -147,10 +147,10 @@ try {
         if (-not $python) {
             throw "Python is required for the extracted tray smoke test"
         }
-        & $python.Source (Join-Path $repositoryRoot "tests/integration/run_tray_integration.py") `
-            --tray $tray --cli $cli
+        & $python.Source (Join-Path $repositoryRoot "tests/integration/run_qt_tray_lifecycle.py") `
+            --stage $packageRoot
         if ($LASTEXITCODE -ne 0) {
-            throw "Extracted tray integration failed"
+            throw "Extracted Qt tray integration failed"
         }
     }
 

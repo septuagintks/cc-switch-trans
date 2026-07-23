@@ -36,6 +36,8 @@ enum class MainWindowCommand {
     ApplyDraft,
     DiscardDraft,
     SetLightweightMode,
+    StorageStatus,
+    MigrateStorage,
 };
 
 enum class MainWindowError {
@@ -52,6 +54,8 @@ enum class MainWindowError {
     RuntimeApplyFailed,
     ServiceUnavailable,
     UnsavedChangesDecisionRequired,
+    MigrationRequired,
+    ReplacementConfirmationRequired,
     Cancelled,
     Internal,
 };
@@ -64,6 +68,11 @@ enum class CommandOutcome {
     SavedPendingRuntimeApply,
 };
 
+enum class MainWindowCommandSource {
+    NativeHost,
+    GuiIpc,
+};
+
 struct CommandResult {
     std::uint64_t sequence = 0;
     MainWindowCommand command = MainWindowCommand::Refresh;
@@ -73,6 +82,7 @@ struct CommandResult {
     std::string field;
     std::string detail;
     std::optional<MainWindowCommand> recovery_command;
+    MainWindowCommandSource source = MainWindowCommandSource::NativeHost;
 
     [[nodiscard]] bool succeeded() const noexcept;
     [[nodiscard]] bool configuration_saved() const noexcept;
@@ -165,6 +175,25 @@ struct ServiceActionState {
     bool operator==(const ServiceActionState&) const = default;
 };
 
+enum class MainWindowStorageState {
+    Unknown,
+    Uninitialized,
+    MigrationRequired,
+    Ready,
+    RecoveryRequired,
+    Invalid,
+};
+
+struct MainWindowStorageStatus {
+    MainWindowStorageState state = MainWindowStorageState::Unknown;
+    bool database_exists = false;
+    std::string detail;
+    std::string database_path;
+    std::string backup_directory;
+
+    bool operator==(const MainWindowStorageStatus&) const = default;
+};
+
 struct MainWindowState {
     std::uint64_t revision = 0;
     ApplicationStatus application;
@@ -176,6 +205,7 @@ struct MainWindowState {
     std::optional<RulesEditorState> rules_editor;
     DraftState draft;
     std::optional<CommandResult> last_command;
+    MainWindowStorageStatus storage;
     bool lightweight_mode = true;
     bool command_pending = false;
 };
@@ -208,6 +238,7 @@ const char* main_window_error_name(MainWindowError error) noexcept;
 const char* command_outcome_name(CommandOutcome outcome) noexcept;
 const char* profile_readiness_name(ProfileReadiness readiness) noexcept;
 const char* draft_phase_name(DraftPhase phase) noexcept;
+const char* main_window_storage_state_name(MainWindowStorageState state) noexcept;
 const char* main_window_close_action_name(MainWindowCloseAction action) noexcept;
 const char* cached_window_action_name(CachedWindowAction action) noexcept;
 

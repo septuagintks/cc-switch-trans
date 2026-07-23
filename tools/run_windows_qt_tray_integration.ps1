@@ -21,8 +21,36 @@ function Resolve-RepositoryPath([string]$Path) {
     return $fullPath
 }
 
+function Get-BuildIdentity([string]$BuildDirectory) {
+    $header = Join-Path $BuildDirectory "generated/include/core/version.hpp"
+    if (-not (Test-Path -LiteralPath $header -PathType Leaf)) {
+        throw "Build identity is missing; configure the build tree first: $header"
+    }
+    $content = Get-Content -Raw -LiteralPath $header
+    $version = [regex]::Match($content, 'kVersion\[\]\s*=\s*"([^"]+)"').Groups[1].Value
+    $commit = [regex]::Match($content, 'kSourceCommit\[\]\s*=\s*"([^"]+)"').Groups[1].Value
+    if (-not $version -or -not $commit) {
+        throw "Build identity is malformed: $header"
+    }
+    return [pscustomobject]@{ Version = $version; Commit = $commit; Header = $header }
+}
+
 $runtimeBuild = Resolve-RepositoryPath $RuntimeBuildDirectory
+$qtBuild = Resolve-RepositoryPath $QtBuildDirectory
 $stage = Resolve-RepositoryPath $StagingDirectory
+$runtimeIdentity = Get-BuildIdentity $runtimeBuild
+$qtIdentity = Get-BuildIdentity $qtBuild
+$sourceCommit = (& git -C $repositoryRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $sourceCommit) {
+    throw "Failed to resolve the current source commit"
+}
+if ($runtimeIdentity.Version -ne $qtIdentity.Version -or
+    $runtimeIdentity.Commit -ne $qtIdentity.Commit -or
+    $runtimeIdentity.Commit -ne $sourceCommit) {
+    throw "Runtime/Qt build identity mismatch. Reconfigure and rebuild both trees. " +
+        "runtime=$($runtimeIdentity.Version)@$($runtimeIdentity.Commit), " +
+        "qt=$($qtIdentity.Version)@$($qtIdentity.Commit), source=$sourceCommit"
+}
 & (Join-Path $PSScriptRoot "deploy_windows_qt_gui.ps1") `
     -BuildDirectory $QtBuildDirectory `
     -StagingDirectory $StagingDirectory `

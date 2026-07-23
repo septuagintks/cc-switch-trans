@@ -91,6 +91,41 @@ bool parse_application(
             std::string(path) + ".last_exit_code", error);
 }
 
+Json storage_json(const StorageStatus& value) {
+    return {
+        {"state", value.state},
+        {"database_exists", value.database_exists},
+        {"detail", value.detail},
+        {"database_path", value.database_path},
+        {"backup_directory", value.backup_directory},
+    };
+}
+
+bool parse_storage(
+    const Json& root,
+    StorageStatus& value,
+    std::string_view path,
+    std::string& error) {
+    if (!check_keys(root,
+            {"state", "database_exists", "detail", "database_path",
+                "backup_directory"},
+            {"state", "database_exists", "detail", "database_path",
+                "backup_directory"},
+            path, error)) {
+        return false;
+    }
+    return read_string(root.at("state"), value.state,
+               std::string(path) + ".state", error)
+        && read_bool(root.at("database_exists"), value.database_exists,
+            std::string(path) + ".database_exists", error)
+        && read_string(root.at("detail"), value.detail,
+            std::string(path) + ".detail", error)
+        && read_string(root.at("database_path"), value.database_path,
+            std::string(path) + ".database_path", error)
+        && read_string(root.at("backup_directory"), value.backup_directory,
+            std::string(path) + ".backup_directory", error);
+}
+
 Json field_state_json(const FieldState& value) {
     return {
         {"key", value.key},
@@ -464,6 +499,7 @@ Json snapshot_json(const Snapshot& value) {
         {"draft", draft_json(value.draft)},
         {"last_command", value.last_command
                 ? command_status_json(*value.last_command) : Json(nullptr)},
+        {"storage", storage_json(value.storage)},
         {"lightweight_mode", value.lightweight_mode},
         {"command_pending", value.command_pending},
     };
@@ -477,10 +513,10 @@ bool parse_snapshot_json(
     if (!check_keys(root,
             {"revision", "application", "profiles", "application_fields",
                 "selection", "profile_editor", "rules_editor", "draft",
-                "last_command", "lightweight_mode", "command_pending"},
+                "last_command", "storage", "lightweight_mode", "command_pending"},
             {"revision", "application", "profiles", "application_fields",
                 "selection", "profile_editor", "rules_editor", "draft",
-                "last_command", "lightweight_mode", "command_pending"},
+                "last_command", "storage", "lightweight_mode", "command_pending"},
             path, error)
         || !read_integer(root.at("revision"), value.revision,
             std::string(path) + ".revision", error)
@@ -492,6 +528,8 @@ bool parse_snapshot_json(
             std::string(path) + ".selection", error)
         || !parse_draft(root.at("draft"), value.draft,
             std::string(path) + ".draft", error)
+        || !parse_storage(root.at("storage"), value.storage,
+            std::string(path) + ".storage", error)
         || !read_bool(root.at("lightweight_mode"), value.lightweight_mode,
             std::string(path) + ".lightweight_mode", error)
         || !read_bool(root.at("command_pending"), value.command_pending,

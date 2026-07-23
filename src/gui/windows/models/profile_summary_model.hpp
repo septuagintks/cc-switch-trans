@@ -36,8 +36,8 @@ public:
     [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
     [[nodiscard]] int count() const noexcept;
 
-    [[nodiscard]] int indexOfKey(std::int64_t key) const noexcept;
-    [[nodiscard]] std::int64_t keyAt(int row) const noexcept;
+    Q_INVOKABLE [[nodiscard]] int indexOfKey(std::int64_t key) const noexcept;
+    Q_INVOKABLE [[nodiscard]] std::int64_t keyAt(int row) const noexcept;
     void apply(const std::vector<ccs::gui_ipc::ProfileSummary>& profiles);
     void clear();
 

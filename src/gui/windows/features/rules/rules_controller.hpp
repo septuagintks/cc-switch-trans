@@ -2,6 +2,8 @@
 
 #include <QObject>
 
+#include <cstdint>
+
 namespace ccs_trans::gui {
 
 class CommandDispatcher;
@@ -13,6 +15,7 @@ class RulesController final : public QObject {
     Q_PROPERTY(QString text READ text WRITE setText NOTIFY draftChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY draftChanged)
     Q_PROPERTY(QString diagnostic READ diagnostic NOTIFY diagnosticChanged)
+    Q_PROPERTY(QString error READ error NOTIFY errorChanged)
 
 public:
     RulesController(
@@ -24,6 +27,7 @@ public:
     [[nodiscard]] QString text() const;
     [[nodiscard]] bool dirty() const noexcept;
     [[nodiscard]] QString diagnostic() const;
+    [[nodiscard]] QString error() const;
     void setText(const QString& text);
 
     Q_INVOKABLE void save();
@@ -33,6 +37,8 @@ public:
 signals:
     void draftChanged();
     void diagnosticChanged();
+    void errorChanged();
+    void textReplaced(const QString& text);
 
 private slots:
     void syncFromState();
@@ -50,8 +56,14 @@ private:
     CommandDispatcher& commands_;
     QString profile_key_;
     QString profile_id_;
+    QString server_text_;
     QString text_;
+    QString error_;
+    qulonglong submitted_draft_revision_ = 0;
+    std::uint64_t edit_revision_ = 0;
+    std::uint64_t submitted_edit_revision_ = 0;
     bool dirty_ = false;
+    bool awaiting_server_snapshot_ = false;
 };
 
 } // namespace ccs_trans::gui

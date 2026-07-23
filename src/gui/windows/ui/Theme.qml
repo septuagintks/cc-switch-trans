@@ -6,6 +6,7 @@ QtObject {
     readonly property color canvas: "#f3f5f4"
     readonly property color surface: "#ffffff"
     readonly property color surfaceMuted: "#e9eeec"
+    readonly property color selection: "#dcece6"
     readonly property color text: "#18211f"
     readonly property color textMuted: "#60706b"
     readonly property color border: "#c6d0cc"

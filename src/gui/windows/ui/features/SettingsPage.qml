@@ -5,67 +5,69 @@ import CcsTrans.Gui
 import "../components" as Components
 
 Item {
-    ScrollView {
+    id: root
+
+    signal reloadRequested()
+
+    ColumnLayout {
         anchors.fill: parent
-        clip: true
-        contentWidth: availableWidth
-        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        spacing: 12
 
-        ColumnLayout {
-            width: parent.width
-            spacing: 14
-
+        RowLayout {
+            Layout.fillWidth: true
             Text {
+                Layout.fillWidth: true
                 text: "Settings"
                 color: Theme.text
                 font.pixelSize: 18
                 font.bold: true
                 renderType: Text.NativeRendering
             }
+            Text {
+                text: settingsController.dirty ? "Unsaved" : "Saved"
+                color: settingsController.dirty ? Theme.warning : Theme.textMuted
+                font.pixelSize: 12
+                renderType: Text.NativeRendering
+            }
+        }
 
-            Repeater {
-                model: guiState.applicationFieldsModel
-                delegate: Rectangle {
-                    required property string displayName
-                    required property string valueText
-                    required property string applyImpact
+        ScrollView {
+            id: settingsScroll
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ScrollBar.vertical: Components.MotionScrollBar { motion: motionPolicy }
+
+            ColumnLayout {
+                width: settingsScroll.availableWidth
+                spacing: 10
+
+                Text {
                     Layout.fillWidth: true
-                    implicitHeight: 50
-                    radius: Theme.radius
-                    color: Theme.surfaceMuted
+                    text: "Configuration"
+                    color: Theme.text
+                    font.pixelSize: 14
+                    font.bold: true
+                    renderType: Text.NativeRendering
+                }
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 14
-                        anchors.rightMargin: 14
-                        Text {
-                            Layout.fillWidth: true
-                            text: displayName
-                            color: Theme.text
-                            font.pixelSize: 13
-                            elide: Text.ElideRight
-                            renderType: Text.NativeRendering
-                        }
-                        Text {
-                            Layout.maximumWidth: parent.width * 0.55
-                            text: valueText
-                            color: Theme.textMuted
-                            font.pixelSize: 12
-                            elide: Text.ElideMiddle
-                            renderType: Text.NativeRendering
-                        }
+                Repeater {
+                    model: settingsController.fieldsModel
+                    delegate: Components.FieldEditorRow {
+                        Layout.fillWidth: true
+                        editor: settingsController
+                        motion: motionPolicy
                     }
                 }
-            }
 
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: 1
-                color: Theme.border
-            }
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 1
+                    color: Theme.border
+                }
 
-            RowLayout {
-                Layout.fillWidth: true
                 Text {
                     Layout.fillWidth: true
                     text: "Window"
@@ -74,63 +76,166 @@ Item {
                     font.bold: true
                     renderType: Text.NativeRendering
                 }
-                Components.MotionSwitch {
-                    motion: motionPolicy
-                    text: "Lightweight mode"
-                    checked: settingsController.lightweightMode
-                    onToggled: value => settingsController.setLightweightMode(value)
-                }
-                Components.MotionSwitch {
-                    motion: motionPolicy
-                    text: "Reduce motion"
-                    checked: motionPolicy.reduceMotion
-                    onToggled: value => motionPolicy.reduceMotion = value
-                }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: 54
-                radius: Theme.radius
-                color: Theme.surfaceMuted
 
                 RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    Text {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Components.MotionSwitch {
                         Layout.fillWidth: true
-                        text: "Storage migration"
-                        color: Theme.text
-                        font.pixelSize: 13
-                        renderType: Text.NativeRendering
+                        motion: motionPolicy
+                        text: "Lightweight mode"
+                        checked: settingsController.lightweightMode
+                        onToggled: value => settingsController.setLightweightMode(value)
                     }
-                    Text {
-                        text: migrationController.state
-                        color: Theme.textMuted
-                        font.pixelSize: 12
-                        renderType: Text.NativeRendering
+                    Components.MotionSwitch {
+                        Layout.fillWidth: true
+                        motion: motionPolicy
+                        text: "Reduce motion"
+                        checked: motionPolicy.reduceMotion
+                        onToggled: value => motionPolicy.reduceMotion = value
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 1
+                    color: Theme.border
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: "Storage"
+                    color: Theme.text
+                    font.pixelSize: 14
+                    font.bold: true
+                    renderType: Text.NativeRendering
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: storageColumn.implicitHeight + 24
+                    radius: Theme.radius
+                    color: migrationController.state === "ready"
+                           ? Theme.surfaceMuted : "#f7eee1"
+                    border.width: motionPolicy.highContrast ? 2 : 1
+                    border.color: migrationController.state === "ready"
+                                  ? Theme.border : Theme.warning
+
+                    ColumnLayout {
+                        id: storageColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 12
+                        spacing: 5
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Profile database"
+                                color: Theme.text
+                                font.pixelSize: 13
+                                font.bold: true
+                                renderType: Text.NativeRendering
+                            }
+                            Text {
+                                text: migrationController.state
+                                color: migrationController.state === "ready"
+                                       ? Theme.accent : Theme.warning
+                                font.pixelSize: 12
+                                renderType: Text.NativeRendering
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: migrationController.detail.length > 0
+                                  ? migrationController.detail
+                                  : "Storage status is not available yet."
+                            color: Theme.textMuted
+                            font.pixelSize: 11
+                            wrapMode: Text.WrapAnywhere
+                            renderType: Text.NativeRendering
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: migrationController.databasePath
+                            color: Theme.textMuted
+                            font.pixelSize: 10
+                            elide: Text.ElideMiddle
+                            renderType: Text.NativeRendering
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: migrationController.backupDirectory.length > 0
+                                  ? "Backups: " + migrationController.backupDirectory : ""
+                            color: Theme.textMuted
+                            font.pixelSize: 10
+                            elide: Text.ElideMiddle
+                            visible: text.length > 0
+                            renderType: Text.NativeRendering
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Item { Layout.fillWidth: true }
+                            Components.MotionButton {
+                                motion: motionPolicy
+                                secondary: true
+                                text: "Inspect"
+                                enabled: !commandDispatcher.busy
+                                onClicked: migrationController.inspect()
+                            }
+                            Components.MotionButton {
+                                motion: motionPolicy
+                                text: "Migrate"
+                                enabled: migrationController.actionAvailable
+                                onClicked: migrationController.requestMigration()
+                            }
+                        }
                     }
                 }
             }
+        }
 
-            RowLayout {
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Text {
                 Layout.fillWidth: true
-                Item { Layout.fillWidth: true }
-                Components.MotionButton {
-                    motion: motionPolicy
-                    secondary: true
-                    text: "Reload draft"
-                    enabled: !commandDispatcher.busy
-                    onClicked: commandDispatcher.reloadDraft()
-                }
-                Components.MotionButton {
-                    motion: motionPolicy
-                    danger: true
-                    text: "Quit"
-                    enabled: !commandDispatcher.busy
-                    onClicked: commandDispatcher.quitApplication()
-                }
+                text: settingsController.valid ? "" : "Fix the highlighted fields before saving."
+                color: Theme.danger
+                font.pixelSize: 11
+                elide: Text.ElideRight
+                renderType: Text.NativeRendering
+            }
+            Components.MotionButton {
+                motion: motionPolicy
+                secondary: true
+                text: "Reset"
+                enabled: settingsController.dirty && !commandDispatcher.busy
+                onClicked: settingsController.resetLocalDraft()
+            }
+            Components.MotionButton {
+                motion: motionPolicy
+                secondary: true
+                text: "Reload draft"
+                enabled: !commandDispatcher.busy
+                onClicked: root.reloadRequested()
+            }
+            Components.MotionButton {
+                motion: motionPolicy
+                text: "Save"
+                enabled: settingsController.dirty
+                         && settingsController.valid
+                         && !commandDispatcher.busy
+                onClicked: settingsController.save()
+            }
+            Components.MotionButton {
+                motion: motionPolicy
+                danger: true
+                text: "Quit"
+                enabled: !commandDispatcher.busy
+                onClicked: commandDispatcher.quitApplication()
             }
         }
     }

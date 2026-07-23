@@ -1,10 +1,12 @@
 #include "presentation/main_window_view_model.hpp"
 
+#include "config/composite_config_repository.hpp"
 #include "config/configuration_conversion.hpp"
 #include "protocols/protocol_registry.hpp"
 #include "rules/rule_registry.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <future>
 #include <utility>
 
@@ -131,6 +133,29 @@ bool build_profile_editor(
     return true;
 }
 
+std::string path_to_utf8(const std::filesystem::path& path) {
+    const auto value = path.u8string();
+    return std::string(
+        reinterpret_cast<const char*>(value.data()),
+        reinterpret_cast<const char*>(value.data() + value.size()));
+}
+
+MainWindowStorageState storage_state_from(StorageState state) noexcept {
+    switch (state) {
+    case StorageState::Uninitialized:
+        return MainWindowStorageState::Uninitialized;
+    case StorageState::MigrationRequired:
+        return MainWindowStorageState::MigrationRequired;
+    case StorageState::Ready:
+        return MainWindowStorageState::Ready;
+    case StorageState::RecoveryRequired:
+        return MainWindowStorageState::RecoveryRequired;
+    case StorageState::Invalid:
+        return MainWindowStorageState::Invalid;
+    }
+    return MainWindowStorageState::Unknown;
+}
+
 } // namespace
 
 MainWindowViewModel::MainWindowViewModel(
@@ -207,6 +232,7 @@ bool MainWindowViewModel::submit(MainWindowCommandRequest request) {
             result.error = MainWindowError::Busy;
             result.profile_id = request.profile_id;
             result.detail = "another control command is already in progress";
+            result.source = request.source;
             state_.last_command = std::move(result);
             ++state_.revision;
             pending_snapshot = snapshot_locked();
@@ -238,6 +264,7 @@ bool MainWindowViewModel::submit(MainWindowCommandRequest request) {
         result.error = MainWindowError::Internal;
         result.profile_id = profile_id;
         result.detail = "control executor rejected the command";
+        result.source = request.source;
         state.last_command = std::move(result);
     });
     return false;
@@ -298,6 +325,7 @@ void MainWindowViewModel::execute(
         result.field = std::move(executed.field);
         result.detail = std::move(executed.detail);
         result.recovery_command = executed.recovery_command;
+        result.source = request.source;
         state.last_command = std::move(result);
     });
 }
@@ -332,6 +360,10 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_command(
         return discard_draft();
     case MainWindowCommand::SetLightweightMode:
         return set_lightweight_mode(request.enabled);
+    case MainWindowCommand::StorageStatus:
+        return inspect_storage();
+    case MainWindowCommand::MigrateStorage:
+        return migrate_storage(request);
     case MainWindowCommand::StartService:
     case MainWindowCommand::StopService:
     case MainWindowCommand::ReloadService:
@@ -496,6 +528,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
             state.application_fields.clear();
             clear_profile_selection(state);
         });
+        std::string storage_error;
+        (void)refresh_storage_status(storage_error);
         return ExecutionResult{
             CommandOutcome::Failed,
             classify_repository_error(repository_.last_failure()),
@@ -514,6 +548,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
             state.application_fields.clear();
             clear_profile_selection(state);
         });
+        std::string storage_error;
+        (void)refresh_storage_status(storage_error);
         return ExecutionResult{
             CommandOutcome::Failed,
             MainWindowError::Internal,
@@ -534,6 +570,8 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::load_draft(
         state.draft.base_revision = base_revision;
     });
     rebuild_editor_state();
+    std::string storage_error;
+    (void)refresh_storage_status(storage_error);
     if (!preferences_loaded) {
         return ExecutionResult{
             CommandOutcome::Failed,
@@ -1037,6 +1075,173 @@ MainWindowViewModel::ExecutionResult MainWindowViewModel::set_lightweight_mode(b
     return {};
 }
 
+bool MainWindowViewModel::refresh_storage_status(std::string& error) {
+    error.clear();
+    MainWindowStorageStatus visible;
+    visible.database_path = path_to_utf8(repository_.paths().profiles_database);
+    visible.backup_directory = path_to_utf8(repository_.paths().migrations_directory);
+    std::error_code exists_error;
+    visible.database_exists = std::filesystem::exists(
+        repository_.paths().profiles_database, exists_error);
+    if (exists_error) {
+        error = "failed to inspect profiles.db: " + exists_error.message();
+        visible.state = MainWindowStorageState::Unknown;
+        visible.detail = error;
+        publish_state_change([&](MainWindowState& state) {
+            state.storage = std::move(visible);
+        });
+        return false;
+    }
+
+    auto* repository = dynamic_cast<CompositeConfigRepository*>(&repository_);
+    if (repository == nullptr) {
+        error = "storage inspection is unavailable for this repository";
+        visible.detail = error;
+        publish_state_change([&](MainWindowState& state) {
+            state.storage = std::move(visible);
+        });
+        return false;
+    }
+
+    StorageStatus inspected;
+    const bool succeeded = repository->inspect_storage(inspected, error);
+    visible.state = storage_state_from(inspected.state);
+    visible.detail = inspected.detail.empty() ? error : inspected.detail;
+    publish_state_change([&](MainWindowState& state) {
+        state.storage = std::move(visible);
+    });
+    return succeeded;
+}
+
+MainWindowViewModel::ExecutionResult MainWindowViewModel::inspect_storage() {
+    std::string error;
+    if (!refresh_storage_status(error)) {
+        return ExecutionResult{
+            CommandOutcome::Failed,
+            MainWindowError::PersistenceFailed,
+            {},
+            "storage",
+            std::move(error),
+            std::nullopt,
+        };
+    }
+    return {};
+}
+
+MainWindowViewModel::ExecutionResult MainWindowViewModel::migrate_storage(
+    const MainWindowCommandRequest& request) {
+    auto* repository = dynamic_cast<CompositeConfigRepository*>(&repository_);
+    if (repository == nullptr) {
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::ServiceUnavailable,
+            {},
+            "storage",
+            "storage migration is unavailable for this repository",
+            std::nullopt,
+        };
+    }
+    const auto current = snapshot();
+    if (current->draft.dirty()) {
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::UnsavedChangesDecisionRequired,
+            {},
+            "storage",
+            "apply or discard the current draft before migrating storage",
+            std::nullopt,
+        };
+    }
+
+    StorageStatus status;
+    std::string error;
+    if (!repository->inspect_storage(status, error)) {
+        const auto inspection_error = error;
+        std::string visible_error;
+        (void)refresh_storage_status(visible_error);
+        return ExecutionResult{
+            CommandOutcome::Failed,
+            MainWindowError::PersistenceFailed,
+            {},
+            "storage",
+            inspection_error,
+            std::nullopt,
+        };
+    }
+    if (status.state == StorageState::Ready) {
+        (void)refresh_storage_status(error);
+        return {};
+    }
+    if (status.state != StorageState::MigrationRequired) {
+        (void)refresh_storage_status(error);
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::PersistenceFailed,
+            {},
+            "storage",
+            status.detail.empty() ? "storage is not ready for migration" : status.detail,
+            std::nullopt,
+        };
+    }
+
+    std::error_code exists_error;
+    const bool database_exists = std::filesystem::exists(
+        repository_.paths().profiles_database, exists_error);
+    if (exists_error) {
+        return ExecutionResult{
+            CommandOutcome::Failed,
+            MainWindowError::PersistenceFailed,
+            {},
+            "storage",
+            "failed to inspect profiles.db: " + exists_error.message(),
+            std::nullopt,
+        };
+    }
+    if (database_exists
+        && (!request.replace_existing_storage
+            || request.replacement_confirmation != "REPLACE")) {
+        (void)refresh_storage_status(error);
+        return ExecutionResult{
+            CommandOutcome::Rejected,
+            MainWindowError::ReplacementConfirmationRequired,
+            {},
+            "storage",
+            "profiles.db already exists and requires explicit replacement confirmation",
+            std::nullopt,
+        };
+    }
+
+    MigrationResult result;
+    if (!repository->migrate_v2(
+            MigrationOptions{request.replace_existing_storage}, result, error)) {
+        const auto failure = repository->last_failure();
+        const auto migration_error = error;
+        std::string visible_error;
+        (void)refresh_storage_status(visible_error);
+        return ExecutionResult{
+            CommandOutcome::Failed,
+            failure == ConfigRepositoryFailure::Constraint && database_exists
+                ? MainWindowError::ReplacementConfirmationRequired
+                : classify_repository_error(failure),
+            {},
+            "storage",
+            migration_error,
+            std::nullopt,
+        };
+    }
+
+    const auto loaded = load_draft(true, UnsavedChangesDecision::Discard);
+    if (loaded.error != MainWindowError::None) return loaded;
+    std::string visible_error;
+    (void)refresh_storage_status(visible_error);
+    ExecutionResult completed;
+    if (result.replaced_database_backup) {
+        completed.detail = "Replaced profiles.db backup: "
+            + path_to_utf8(*result.replaced_database_backup);
+    }
+    return completed;
+}
+
 MainWindowViewModel::ExecutionResult MainWindowViewModel::execute_service_command(
     MainWindowCommand command) {
     std::string error;
@@ -1121,8 +1326,6 @@ void MainWindowViewModel::rebuild_editor_state(
             profiles.push_back(std::move(item));
         }
     }
-    sort_profile_list_items(profiles);
-
     const auto find_key = [&](ProfileKey key) {
         return std::find_if(profiles.begin(), profiles.end(), [&](const auto& profile) {
             return profile.key == key;
@@ -1288,6 +1491,7 @@ MainWindowError MainWindowViewModel::classify_repository_error(
     case ConfigRepositoryFailure::InvalidDocument:
         return MainWindowError::ValidationFailed;
     case ConfigRepositoryFailure::MigrationRequired:
+        return MainWindowError::MigrationRequired;
     case ConfigRepositoryFailure::RecoveryRequired:
     case ConfigRepositoryFailure::Constraint:
     case ConfigRepositoryFailure::Corrupt:

@@ -19,7 +19,9 @@ ApplicationWindow {
     color: Theme.canvas
     onClosing: close => {
         close.accepted = false
-        windowController.requestClose()
+        windowController.requestClose(
+            profilesController.dirty || rulesController.dirty
+            || settingsController.dirty)
     }
 
     background: Rectangle { color: Theme.canvas }
@@ -43,8 +45,9 @@ ApplicationWindow {
             }
 
             Rectangle {
-                width: 8
-                height: 8
+                Layout.preferredWidth: 8
+                Layout.preferredHeight: 8
+                Layout.alignment: Qt.AlignVCenter
                 radius: 4
                 color: guiState.applicationState === "running"
                        ? Theme.accent
@@ -61,6 +64,14 @@ ApplicationWindow {
                          ? "  ·  " + guiState.listenerAddress : "")
                 color: Theme.textMuted
                 font.pixelSize: 12
+                renderType: Text.NativeRendering
+            }
+
+            Text {
+                text: guiState.runtimeApplyPending ? "Runtime apply pending" : ""
+                color: Theme.warning
+                font.pixelSize: 11
+                visible: text.length > 0
                 renderType: Text.NativeRendering
             }
 
@@ -134,19 +145,21 @@ ApplicationWindow {
 
             Features.ProfilesPage {}
             Features.RulesPage {}
-            Features.SettingsPage {}
+            Features.SettingsPage {
+                onReloadRequested: dialogs.requestReload()
+            }
         }
 
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 44
             radius: Theme.radius
-            color: guiState.lastCommandError !== ""
-                   && guiState.lastCommandError !== "none"
+            color: commandDispatcher.errorVisible
+                   && commandDispatcher.lastErrorCode !== "none"
                    ? "#f7e5e7" : Theme.surfaceMuted
             border.width: 1
-            border.color: guiState.lastCommandError !== ""
-                          && guiState.lastCommandError !== "none"
+            border.color: commandDispatcher.errorVisible
+                          && commandDispatcher.lastErrorCode !== "none"
                           ? "#dfadb3" : Theme.border
 
             RowLayout {
@@ -159,12 +172,14 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     text: commandDispatcher.localError.length > 0
                           ? commandDispatcher.localError
-                          : (guiState.lastCommandDetail.length > 0
+                          : (guiState.runtimeApplyPending
+                             ? "Saved; runtime apply is pending"
+                             : (guiState.lastCommandDetail.length > 0
                              ? guiState.lastCommandDetail
                              : (commandDispatcher.busy
-                                ? "Applying command" : "Ready"))
-                    color: guiState.lastCommandError !== ""
-                           && guiState.lastCommandError !== "none"
+                                ? "Applying command" : "Ready")))
+                    color: commandDispatcher.errorVisible
+                           && commandDispatcher.lastErrorCode !== "none"
                            ? Theme.danger : Theme.textMuted
                     font.pixelSize: 12
                     elide: Text.ElideRight
@@ -175,16 +190,26 @@ ApplicationWindow {
                     motion: motionPolicy
                     secondary: true
                     text: "Discard"
-                    enabled: guiState.draftDirty && !commandDispatcher.busy
-                    onClicked: commandDispatcher.discardDraft()
+                    enabled: (guiState.draftDirty
+                              || dialogs.hasLocalEdits())
+                             && !commandDispatcher.busy
+                    onClicked: dialogs.requestDiscardDraft()
                 }
                 Components.MotionButton {
                     motion: motionPolicy
                     text: "Apply"
-                    enabled: guiState.draftDirty && !commandDispatcher.busy
+                    enabled: guiState.draftDirty
+                             && !dialogs.hasLocalEdits()
+                             && !commandDispatcher.busy
                     onClicked: commandDispatcher.applyDraft()
                 }
             }
         }
+    }
+
+    Components.ApplicationDialogs {
+        id: dialogs
+        anchors.fill: parent
+        motion: motionPolicy
     }
 }

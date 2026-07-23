@@ -11,6 +11,13 @@ bool parse_application(
     std::string_view path,
     std::string& error);
 
+Json storage_json(const StorageStatus& value);
+bool parse_storage(
+    const Json& root,
+    StorageStatus& value,
+    std::string_view path,
+    std::string& error);
+
 Json field_state_json(const FieldState& value);
 bool parse_field_state(
     const Json& root,

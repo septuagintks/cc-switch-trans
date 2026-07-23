@@ -7,6 +7,27 @@ import "../components" as Components
 Item {
     id: root
 
+    property string pendingProfileKey
+    property bool removePromptVisible: false
+
+    function requestProfileSelection(key) {
+        if (key === profilesController.profileKey) return
+        if (profilesController.dirty || rulesController.dirty) {
+            pendingProfileKey = key
+            return
+        }
+        profilesController.selectProfile(key)
+    }
+
+    function syncCurrentIndex() {
+        if (profilesController.profileKey.length === 0) {
+            profileList.currentIndex = -1
+            return
+        }
+        profileList.currentIndex = guiState.profilesModel.indexOfKey(
+            Number(profilesController.profileKey))
+    }
+
     RowLayout {
         anchors.fill: parent
         spacing: 0
@@ -49,23 +70,11 @@ Item {
                     width: ListView.view.width
                     motion: motionPolicy
                     selected: stableKey === profilesController.profileKey
-                    onChosen: key => profilesController.selectProfile(key)
+                    onChosen: key => root.requestProfileSelection(key)
                 }
 
-                ScrollBar.vertical: ScrollBar {
-                    id: profileScroll
-                    policy: ScrollBar.AsNeeded
-                    opacity: active || hovered ? 1 : 0
-                    contentItem: Rectangle {
-                        implicitWidth: 6
-                        radius: 3
-                        color: profileScroll.hovered
-                               ? Theme.borderStrong : Theme.border
-                    }
-                    background: Item {}
-                    Behavior on opacity {
-                        NumberAnimation { duration: motionPolicy.mediumDuration }
-                    }
+                ScrollBar.vertical: Components.MotionScrollBar {
+                    motion: motionPolicy
                 }
             }
 
@@ -79,8 +88,11 @@ Item {
                     placeholderText: "Profile ID"
                     Accessible.name: "New Profile ID"
                     onAccepted: {
-                        profilesController.createProfile(text)
-                        text = ""
+                        if (!profilesController.dirty && !rulesController.dirty
+                                && !commandDispatcher.busy) {
+                            profilesController.createProfile(text)
+                            text = ""
+                        }
                     }
                 }
                 Components.MotionButton {
@@ -90,6 +102,8 @@ Item {
                     text: "+"
                     Accessible.name: "Add Profile"
                     enabled: newProfile.text.trim().length > 0
+                             && !profilesController.dirty
+                             && !rulesController.dirty
                              && !commandDispatcher.busy
                     onClicked: {
                         profilesController.createProfile(newProfile.text)
@@ -109,99 +123,60 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.leftMargin: 22
-            spacing: 14
+            spacing: 12
 
-            Text {
-                text: profilesController.profileKey.length > 0
-                      ? "Profile configuration" : "No Profile selected"
-                color: Theme.text
-                font.pixelSize: 18
-                font.bold: true
-                renderType: Text.NativeRendering
-            }
-
-            GridLayout {
+            RowLayout {
                 Layout.fillWidth: true
-                columns: 2
-                columnSpacing: 16
-                rowSpacing: 12
-                enabled: profilesController.profileKey.length > 0
-
                 Text {
-                    text: "Profile ID"
-                    color: Theme.textMuted
-                    font.pixelSize: 12
-                    renderType: Text.NativeRendering
-                }
-                Components.MotionTextField {
                     Layout.fillWidth: true
-                    motion: motionPolicy
-                    text: profilesController.profileId
-                    invalid: profilesController.profileId.trim().length === 0
-                    Accessible.name: "Profile ID"
-                    onTextEdited: profilesController.profileId = text
-                }
-
-                Text {
-                    text: "Enabled"
-                    color: Theme.textMuted
-                    font.pixelSize: 12
+                    text: profilesController.profileKey.length > 0
+                          ? "Profile configuration" : "No Profile selected"
+                    color: Theme.text
+                    font.pixelSize: 18
+                    font.bold: true
                     renderType: Text.NativeRendering
                 }
-                Components.MotionSwitch {
+                Components.MotionButton {
                     motion: motionPolicy
-                    text: profilesController.enabled ? "Enabled" : "Disabled"
-                    checked: profilesController.enabled
-                    onToggled: value => profilesController.enabled = value
+                    compact: true
+                    secondary: true
+                    text: "^"
+                    Accessible.name: "Move Profile Up"
+                    enabled: profilesController.profileKey.length > 0
+                             && profileList.currentIndex > 0
+                             && !commandDispatcher.busy
+                    onClicked: profilesController.moveSelected(profileList.currentIndex - 1)
                 }
-            }
-
-            Text {
-                text: "Fields"
-                color: Theme.text
-                font.pixelSize: 14
-                font.bold: true
-                renderType: Text.NativeRendering
+                Components.MotionButton {
+                    motion: motionPolicy
+                    compact: true
+                    secondary: true
+                    text: "v"
+                    Accessible.name: "Move Profile Down"
+                    enabled: profilesController.profileKey.length > 0
+                             && profileList.currentIndex >= 0
+                             && profileList.currentIndex < profileList.count - 1
+                             && !commandDispatcher.busy
+                    onClicked: profilesController.moveSelected(profileList.currentIndex + 1)
+                }
             }
 
             ListView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
-                spacing: 1
-                model: guiState.profileFieldsModel
+                spacing: 8
+                model: profilesController.fieldsModel
                 boundsBehavior: Flickable.StopAtBounds
 
-                delegate: Rectangle {
-                    required property string displayName
-                    required property string valueText
-                    required property string applyImpact
+                delegate: Components.FieldEditorRow {
                     width: ListView.view.width
-                    height: 46
-                    radius: Theme.radius
-                    color: index % 2 === 0 ? Theme.surfaceMuted : Theme.surface
+                    editor: profilesController
+                    motion: motionPolicy
+                }
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: 12
-                        Text {
-                            Layout.fillWidth: true
-                            text: displayName
-                            color: Theme.textMuted
-                            font.pixelSize: 12
-                            elide: Text.ElideRight
-                            renderType: Text.NativeRendering
-                        }
-                        Text {
-                            Layout.maximumWidth: parent.width * 0.58
-                            text: valueText
-                            color: Theme.text
-                            font.pixelSize: 12
-                            elide: Text.ElideMiddle
-                            renderType: Text.NativeRendering
-                        }
-                    }
+                ScrollBar.vertical: Components.MotionScrollBar {
+                    motion: motionPolicy
                 }
             }
 
@@ -222,17 +197,55 @@ Item {
                     text: "Remove"
                     enabled: profilesController.profileKey.length > 0
                              && !commandDispatcher.busy
-                    onClicked: profilesController.removeSelected()
+                    onClicked: root.removePromptVisible = true
                 }
                 Components.MotionButton {
                     motion: motionPolicy
                     text: "Save"
                     enabled: profilesController.dirty
-                             && profilesController.profileId.trim().length > 0
+                             && profilesController.valid
                              && !commandDispatcher.busy
                     onClicked: profilesController.save()
                 }
             }
         }
     }
+
+    Components.DecisionDialog {
+        motion: motionPolicy
+        visible: root.removePromptVisible
+        titleText: "Remove Profile"
+        messageText: profilesController.dirty || rulesController.dirty
+                     ? "Remove this Profile and discard its unsaved editor input?"
+                     : "Remove this Profile from the current draft?"
+        primaryText: "Remove"
+        primaryDanger: true
+        onPrimaryTriggered: {
+            root.removePromptVisible = false
+            profilesController.removeSelected()
+        }
+        onCancelled: root.removePromptVisible = false
+    }
+
+    Components.DecisionDialog {
+        motion: motionPolicy
+        visible: root.pendingProfileKey.length > 0
+        titleText: "Switch Profile"
+        messageText: "Discard unsaved Profile and Rules editor input before switching?"
+        primaryText: "Discard and switch"
+        primaryDanger: true
+        onPrimaryTriggered: {
+            var key = root.pendingProfileKey
+            root.pendingProfileKey = ""
+            profilesController.selectProfile(key)
+        }
+        onCancelled: root.pendingProfileKey = ""
+    }
+
+    Connections {
+        target: profilesController
+        function onDraftChanged() { root.syncCurrentIndex() }
+    }
+
+    Component.onCompleted: syncCurrentIndex()
 }

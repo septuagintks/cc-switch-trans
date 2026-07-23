@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace ccs {
 
@@ -39,12 +41,19 @@ public:
     [[nodiscard]] const std::filesystem::path& executable() const noexcept;
 
 private:
+    bool start_diagnostic_reader(std::string& error);
+    std::string finish_diagnostic_reader(bool cancel) noexcept;
     void close_handles() noexcept;
     bool refresh_process_state() noexcept;
 
     std::filesystem::path executable_;
     HANDLE process_ = nullptr;
     HANDLE thread_ = nullptr;
+    HANDLE diagnostic_read_ = nullptr;
+    std::thread diagnostic_thread_;
+    std::mutex diagnostic_mutex_;
+    std::string diagnostic_output_;
+    bool diagnostic_truncated_ = false;
     DWORD process_id_ = 0;
     bool suspended_ = false;
 };

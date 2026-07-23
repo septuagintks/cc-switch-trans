@@ -46,7 +46,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The completed `0.8-D` Windows Qt Quick foundation uses a separate build tree.
+The completed `0.8-E` Windows Qt Quick GUI uses a separate build tree.
 The production tray now starts the Qt GUI sidecar on demand through the shared
 wire codec and authenticated named-pipe session; it no longer compiles or falls
 back to the old Win32 window. Qt 6.10.3 and its
@@ -79,11 +79,13 @@ tray host starts all enabled Profiles without opening a console window.
 
 Open the main window from the tray/menu-bar menu, by double-clicking the Windows
 tray icon, or by launching a second desktop-host instance. The released macOS
-AppKit view provides the complete `0.7.0` editing surface. Current `0.8-D`
-Windows source provides the IPC-backed Profiles, Rules, and Settings skeleton,
-typed incremental models, local edit buffers, service/draft controls, and
-process lifecycle; full `0.7.0` feature parity, dialogs, and field editors are
-the next `0.8-E` work package and this development state is not a release.
+AppKit view provides the complete `0.7.0` editing surface. Current `0.8-E`
+Windows source provides IPC-backed Profiles, Rules, and Settings, typed field
+editors, atomic Save, local dirty buffers, migration/recovery, application-owned
+dialogs, service/draft controls, and normal/lightweight process lifecycle. The
+old Win32/GDI+ window and its HWND automation have been removed. The visual Rule
+Builder remains the next `0.8-F` work package, so this development state is not
+a release.
 Reload Draft remains distinct from service Reload.
 AppKit follows the accepted Windows information architecture and layout ratios
 while retaining native macOS appearance and controls. Each Profile shows
@@ -110,11 +112,11 @@ later Open starts a fresh authenticated GUI session after an exit or crash.
 Version `0.7.0` uses v3 application settings plus
 SQLite Profile/Rule storage; v2 input requires explicit migration.
 
-The existing Windows package scripts remain the released `0.7.0` packaging
-oracle. They do not yet merge the new runtime and Qt GUI staging trees, so a
-package built from current `0.8-D` source is not a valid release candidate;
-`0.8-G` replaces this path with the final portable ZIP and setup transaction.
-From the `0.7.0` tag, create its fixed-whitelist package with:
+The `0.7.0` tag retains its released Windows packaging scripts as a historical
+oracle. The current package builder does not yet merge the runtime and Qt GUI
+staging trees, so a package built from current `0.8-E` source is not a valid
+release candidate; `0.8-G` replaces this path with the final portable ZIP and
+setup transaction. From the `0.7.0` tag, create its fixed-whitelist package with:
 
 ```text
 powershell -ExecutionPolicy Bypass -File tools/package_windows.ps1
@@ -549,16 +551,17 @@ python tests/integration/run_integration.py build/ccs-trans.exe
 powershell -ExecutionPolicy Bypass -File tools/run_windows_qt_tray_integration.ps1
 ```
 
-The `0.8-D` Windows tray integration deploys the fixed Qt closure, combines the
+The `0.8-E` Windows tray integration deploys the fixed Qt closure, combines the
 GCC 16 runtime and MinGW 13.1 GUI build trees, and uses an isolated user root and
 instance identity. It covers handshake, first snapshot, normal hide/reuse,
 second-instance activation, lightweight process destruction, crash recovery to
-a fresh token/session, and graceful tray/GUI shutdown. The runtime and Qt CTest
+a fresh token/session, graceful tray/GUI shutdown, and exact 8/16-stream SSE
+content while the GUI repeatedly hides and activates. The runtime and Qt CTest
 suites additionally cover wire framing, PID/token/session validation, bounded
-state delivery, command correlation, incremental models, dirty local-buffer
-preservation, malformed/partial frames, and maintenance-endpoint isolation.
-`run_tray_integration.py` remains the `0.7.0` Win32 behavior oracle until its
-feature assertions are migrated to Qt automation in `0.8-E`.
+state delivery, command correlation, incremental models, post-Save rebase,
+dirty local-buffer preservation, migration dialogs, malformed/partial frames,
+and maintenance-endpoint isolation. Any Qt runtime diagnostic now fails the
+integration; the old Win32 HWND automation has been removed.
 
 The opt-in Windows proxy matrix temporarily changes and then restores the
 current-user proxy:

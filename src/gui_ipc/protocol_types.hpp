@@ -197,6 +197,16 @@ struct ApplicationStatus {
     bool operator==(const ApplicationStatus&) const = default;
 };
 
+struct StorageStatus {
+    std::string state;
+    bool database_exists = false;
+    std::string detail;
+    std::string database_path;
+    std::string backup_directory;
+
+    bool operator==(const StorageStatus&) const = default;
+};
+
 struct FieldState {
     std::string key;
     std::string scope;
@@ -292,6 +302,7 @@ struct Snapshot {
     std::optional<RulesEditor> rules_editor;
     DraftStatus draft;
     std::optional<CommandStatus> last_command;
+    StorageStatus storage;
     bool lightweight_mode = true;
     bool command_pending = false;
 
@@ -312,6 +323,7 @@ struct StateDelta {
     std::optional<DraftStatus> draft;
     bool last_command_changed = false;
     std::optional<CommandStatus> last_command;
+    std::optional<StorageStatus> storage;
     std::optional<bool> lightweight_mode;
     std::optional<bool> command_pending;
 

@@ -5,6 +5,8 @@ import CcsTrans.Gui
 import "../components" as Components
 
 Item {
+    id: root
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 12
@@ -22,8 +24,15 @@ Item {
                 renderType: Text.NativeRendering
             }
             Text {
-                text: guiState.draftPhase
-                color: guiState.draftDirty ? Theme.warning : Theme.textMuted
+                text: guiState.selectedEnabledRuleCount + "/"
+                      + guiState.selectedRuleCount + " enabled"
+                color: Theme.textMuted
+                font.pixelSize: 12
+                renderType: Text.NativeRendering
+            }
+            Text {
+                text: rulesController.dirty ? "Unsaved" : guiState.draftPhase
+                color: rulesController.dirty ? Theme.warning : Theme.textMuted
                 font.pixelSize: 12
                 renderType: Text.NativeRendering
             }
@@ -34,8 +43,11 @@ Item {
             Layout.fillHeight: true
             radius: Theme.radius
             color: Theme.surface
-            border.width: editor.activeFocus ? 2 : 1
-            border.color: rulesController.diagnostic.length > 0
+            border.width: rulesController.error.length > 0
+                          || rulesController.diagnostic.length > 0
+                          ? 2 : (editor.activeFocus ? 2 : 1)
+            border.color: rulesController.error.length > 0
+                          || rulesController.diagnostic.length > 0
                           ? Theme.danger
                           : (editor.activeFocus ? Theme.focus : Theme.border)
 
@@ -44,14 +56,22 @@ Item {
             }
 
             ScrollView {
+                id: editorScroll
                 anchors.fill: parent
                 anchors.margins: 2
                 clip: true
-                ScrollBar.horizontal.policy: ScrollBar.AsNeeded
-                ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                contentWidth: Math.max(availableWidth, editor.implicitWidth)
+                contentHeight: Math.max(availableHeight, editor.implicitHeight)
+                ScrollBar.vertical: Components.MotionScrollBar { motion: motionPolicy }
+                ScrollBar.horizontal: Components.MotionScrollBar {
+                    motion: motionPolicy
+                    policy: ScrollBar.AsNeeded
+                }
 
                 TextArea {
                     id: editor
+                    width: Math.max(editorScroll.availableWidth, implicitWidth)
+                    height: Math.max(editorScroll.availableHeight, implicitHeight)
                     enabled: rulesController.profileId.length > 0
                     leftPadding: 12
                     rightPadding: 12
@@ -63,18 +83,13 @@ Item {
                     font.family: "Cascadia Mono"
                     font.pixelSize: 13
                     wrapMode: TextEdit.NoWrap
+                    selectByMouse: true
+                    persistentSelection: true
                     background: Item {}
                     Accessible.name: "Rules editor"
                     onTextChanged: {
                         if (activeFocus && text !== rulesController.text)
                             rulesController.text = text
-                    }
-
-                    Binding {
-                        target: editor
-                        property: "text"
-                        value: rulesController.text
-                        when: !editor.activeFocus
                     }
                 }
             }
@@ -85,9 +100,10 @@ Item {
             spacing: 8
             Text {
                 Layout.fillWidth: true
-                text: rulesController.diagnostic
+                text: rulesController.error.length > 0
+                      ? rulesController.error : rulesController.diagnostic
                 color: Theme.danger
-                font.pixelSize: 12
+                font.pixelSize: 11
                 elide: Text.ElideRight
                 renderType: Text.NativeRendering
             }
@@ -112,6 +128,16 @@ Item {
                 enabled: rulesController.dirty && !commandDispatcher.busy
                 onClicked: rulesController.save()
             }
+        }
+    }
+
+    Connections {
+        target: rulesController
+        function onTextReplaced(value) {
+            if (editor.text === value) return
+            var cursor = editor.cursorPosition
+            editor.text = value
+            editor.cursorPosition = Math.min(cursor, value.length)
         }
     }
 }

@@ -261,6 +261,7 @@ bool ClientStateTracker::apply_delta(
     if (delta.rules_editor_changed) updated.rules_editor = delta.rules_editor;
     if (delta.draft) updated.draft = *delta.draft;
     if (delta.last_command_changed) updated.last_command = delta.last_command;
+    if (delta.storage) updated.storage = *delta.storage;
     if (delta.lightweight_mode) updated.lightweight_mode = *delta.lightweight_mode;
     if (delta.command_pending) updated.command_pending = *delta.command_pending;
     snapshot_ = std::move(updated);

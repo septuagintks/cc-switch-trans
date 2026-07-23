@@ -98,6 +98,17 @@ gui_ipc::DraftStatus convert_draft(const DraftState& draft) {
     };
 }
 
+gui_ipc::StorageStatus convert_storage(
+    const MainWindowStorageStatus& storage) {
+    return {
+        main_window_storage_state_name(storage.state),
+        storage.database_exists,
+        storage.detail,
+        storage.database_path,
+        storage.backup_directory,
+    };
+}
+
 } // namespace
 
 gui_ipc::ErrorCode gui_error_code(MainWindowError error) noexcept {
@@ -117,6 +128,10 @@ gui_ipc::ErrorCode gui_error_code(MainWindowError error) noexcept {
     case MainWindowError::ServiceUnavailable: return gui_ipc::ErrorCode::ServiceUnavailable;
     case MainWindowError::UnsavedChangesDecisionRequired:
         return gui_ipc::ErrorCode::UnsavedChangesDecisionRequired;
+    case MainWindowError::MigrationRequired:
+        return gui_ipc::ErrorCode::MigrationRequired;
+    case MainWindowError::ReplacementConfirmationRequired:
+        return gui_ipc::ErrorCode::ReplacementConfirmationRequired;
     case MainWindowError::Cancelled: return gui_ipc::ErrorCode::None;
     case MainWindowError::Internal: return gui_ipc::ErrorCode::Internal;
     }
@@ -173,6 +188,7 @@ gui_ipc::Snapshot build_gui_snapshot(const MainWindowState& state) {
         snapshot.last_command = build_gui_command_status(
             *state.last_command, state.last_command->sequence);
     }
+    snapshot.storage = convert_storage(state.storage);
     snapshot.lightweight_mode = state.lightweight_mode;
     snapshot.command_pending = state.command_pending;
     return snapshot;
@@ -203,6 +219,7 @@ gui_ipc::StateDelta build_gui_state_delta(
         delta.last_command_changed = true;
         delta.last_command = current.last_command;
     }
+    if (previous.storage != current.storage) delta.storage = current.storage;
     if (previous.lightweight_mode != current.lightweight_mode) {
         delta.lightweight_mode = current.lightweight_mode;
     }

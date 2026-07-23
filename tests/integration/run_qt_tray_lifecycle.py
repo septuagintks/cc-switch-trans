@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 
 import argparse
+import concurrent.futures
 import ctypes
+import http.client
 import json
 import os
 from pathlib import Path
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+from urllib.parse import urlencode
 
 
 WM_CLOSE = 0x0010
@@ -194,7 +198,7 @@ def event_count(path: Path, event: str, **fields) -> int:
     )
 
 
-def wait_for_port(port: int) -> None:
+def wait_for_port(port: int, description: str = "listener") -> None:
     def ready() -> bool:
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.25):
@@ -202,10 +206,151 @@ def wait_for_port(port: int) -> None:
         except OSError:
             return False
 
-    wait_until(ready, "tray listener did not start", 12)
+    wait_until(ready, f"{description} did not start", 12)
 
 
-def configure(cli: Path, env: dict[str, str], listener_port: int) -> None:
+def request_json(port: int, method: str, path: str) -> dict:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request(method, path, body=b"" if method == "POST" else None)
+        response = connection.getresponse()
+        payload = response.read()
+        require(response.status == 200, f"{method} {path} returned {response.status}")
+        return json.loads(payload)
+    finally:
+        connection.close()
+
+
+def make_sse_chunk(index: int, requested_size: int) -> bytes:
+    prefix = f"data: {index} ".encode("ascii")
+    suffix = b"\n\n"
+    size = max(requested_size, len(prefix) + len(suffix))
+    return prefix + (b"x" * (size - len(prefix) - len(suffix))) + suffix
+
+
+def concurrent_sse_request(
+    listener_port: int,
+    barrier: threading.Barrier,
+    request_index: int,
+    expected: bytes,
+    chunk_count: int,
+    chunk_size: int,
+) -> dict:
+    query = urlencode(
+        {
+            "mode": "sse",
+            "first_byte_delay_ms": 100,
+            "chunk_count": chunk_count,
+            "chunk_size": chunk_size,
+            "chunk_interval_ms": 20,
+            "end_marker": 1,
+            "request_index": request_index,
+        }
+    )
+    connection = None
+    try:
+        barrier.wait(timeout=10)
+        connection = http.client.HTTPConnection("127.0.0.1", listener_port, timeout=30)
+        connection.request(
+            "POST",
+            f"/v1/responses?{query}",
+            body=json.dumps({"input": f"qt-sse-{request_index}"}).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer qt-integration",
+                "Content-Type": "application/json",
+                "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
+        body = response.read()
+        return {
+            "index": request_index,
+            "status": response.status,
+            "content_type": response.getheader("Content-Type", ""),
+            "body": body,
+            "expected": expected,
+        }
+    except Exception as exception:
+        return {"index": request_index, "error": str(exception)}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def verify_concurrent_sse_during_gui_cycles(
+    listener_port: int,
+    upstream_port: int,
+    tray_window: int,
+    gui_window: int,
+    concurrency: int,
+) -> None:
+    chunk_count = 64
+    chunk_size = 1024
+    marker = b"data: [DONE]\n\n"
+    expected = b"".join(
+        make_sse_chunk(index, chunk_size) for index in range(chunk_count)
+    ) + marker
+    request_json(upstream_port, "POST", "/benchmark/reset")
+    barrier = threading.Barrier(concurrency)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [
+            executor.submit(
+                concurrent_sse_request,
+                listener_port,
+                barrier,
+                index,
+                expected,
+                chunk_count,
+                chunk_size,
+            )
+            for index in range(concurrency)
+        ]
+        cycles = 0
+        while any(not future.done() for future in futures):
+            post_message(gui_window, WM_CLOSE)
+            wait_until(
+                lambda: not user32.IsWindowVisible(gui_window),
+                f"GUI did not hide during {concurrency}-stream SSE",
+            )
+            post_message(tray_window, WM_COMMAND, MENU_OPEN_MAIN)
+            wait_until(
+                lambda: user32.IsWindowVisible(gui_window),
+                f"GUI did not reactivate during {concurrency}-stream SSE",
+            )
+            cycles += 1
+        results = [future.result(timeout=30) for future in futures]
+
+    failures = [
+        result
+        for result in results
+        if result.get("error")
+        or result.get("status") != 200
+        or not result.get("content_type", "").startswith("text/event-stream")
+        or result.get("body") != result.get("expected")
+    ]
+    require(not failures, f"{concurrency}-stream SSE mismatch: {failures[:2]}")
+    require(cycles >= 2, f"{concurrency}-stream SSE ended before GUI lifecycle overlap")
+    metrics = request_json(upstream_port, "GET", "/benchmark/metrics")
+    require(metrics.get("requests_started") == concurrency, f"SSE starts mismatch: {metrics}")
+    require(metrics.get("requests_completed") == concurrency, f"SSE completion mismatch: {metrics}")
+    require(metrics.get("client_disconnects") == 0, f"SSE disconnected: {metrics}")
+    require(metrics.get("max_active_requests") == concurrency, f"SSE overlap mismatch: {metrics}")
+    require(
+        metrics.get("chunks_sent") == concurrency * (chunk_count + 1),
+        f"SSE chunk count mismatch: {metrics}",
+    )
+    require(
+        metrics.get("bytes_sent") == concurrency * len(expected),
+        f"SSE byte count mismatch: {metrics}",
+    )
+
+
+def configure(
+    cli: Path,
+    env: dict[str, str],
+    listener_port: int,
+    upstream_port: int,
+) -> None:
     run_cli(cli, env, "config", "set", "listener.port", str(listener_port))
     run_cli(cli, env, "profile", "create", "qt-lifecycle")
     run_cli(cli, env, "profile", "set", "qt-lifecycle", "protocol", "responses")
@@ -217,7 +362,7 @@ def configure(cli: Path, env: dict[str, str], listener_port: int) -> None:
         "set",
         "qt-lifecycle",
         "upstream.base-url",
-        "http://127.0.0.1:9",
+        f"http://127.0.0.1:{upstream_port}",
     )
     run_cli(cli, env, "profile", "set", "qt-lifecycle", "upstream.request-path", "/v1/responses")
     run_cli(cli, env, "profile", "enable", "qt-lifecycle")
@@ -244,13 +389,28 @@ def main() -> int:
         window_class = f"ccs-trans.TrayWindow.{suffix}"
         window_title = f"ccs-trans test {suffix}"
         listener_port = free_port()
-        configure(cli, env, listener_port)
+        upstream_port = free_port()
+        configure(cli, env, listener_port, upstream_port)
 
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        process = subprocess.Popen([str(tray)], env=env, creationflags=creation_flags)
+        upstream_process = None
+        process = None
         host_log = home / ".ccs-trans" / "logs" / "ccs-trans-host.log"
         tray_window = 0
         try:
+            upstream_process = subprocess.Popen(
+                [
+                    os.sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "benchmark" / "mock_upstream.py"),
+                    "--port",
+                    str(upstream_port),
+                ],
+                creationflags=creation_flags,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            wait_for_port(upstream_port, "benchmark upstream")
+            process = subprocess.Popen([str(tray)], env=env, creationflags=creation_flags)
             tray_window = wait_until(
                 lambda: find_window(window_class, window_title),
                 "tray window was not created",
@@ -300,6 +460,13 @@ def main() -> int:
                 "tray activation did not show the hidden Qt GUI",
             )
             require(gui_children(process.pid) == [first_pid], "normal mode did not reuse the GUI")
+
+            verify_concurrent_sse_during_gui_cycles(
+                listener_port, upstream_port, tray_window, first_window, 8
+            )
+            verify_concurrent_sse_during_gui_cycles(
+                listener_port, upstream_port, tray_window, first_window, 16
+            )
 
             post_message(first_window, WM_CLOSE)
             wait_until(lambda: not user32.IsWindowVisible(first_window), "GUI did not hide")
@@ -363,6 +530,16 @@ def main() -> int:
             post_message(tray_window, WM_CLOSE)
             require(process.wait(timeout=12) == 0, "tray did not shut down cleanly")
             wait_until(lambda: not process_running(final_pid), "GUI survived tray shutdown")
+            stop_events = [
+                item
+                for item in read_events(host_log)
+                if item.get("event") == "gui_ipc_stop"
+            ]
+            require(stop_events, "tray did not log GUI shutdown diagnostics")
+            require(
+                all(not item.get("error") for item in stop_events),
+                f"Qt GUI emitted runtime diagnostics: {stop_events[-1].get('error')}",
+            )
             print("Qt tray lifecycle integration passed")
             return 0
         except Exception:
@@ -371,7 +548,7 @@ def main() -> int:
                 print(host_log.read_text(encoding="utf-8", errors="replace")[-12000:], file=os.sys.stderr)
             raise
         finally:
-            if process.poll() is None:
+            if process is not None and process.poll() is None:
                 if tray_window:
                     user32.PostMessageW(tray_window, WM_CLOSE, 0, 0)
                 try:
@@ -379,6 +556,9 @@ def main() -> int:
                 except subprocess.TimeoutExpired:
                     process.terminate()
                     process.wait(timeout=5)
+            if upstream_process is not None and upstream_process.poll() is None:
+                upstream_process.terminate()
+                upstream_process.wait(timeout=5)
 
 
 if __name__ == "__main__":

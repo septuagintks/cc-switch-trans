@@ -7,8 +7,11 @@
 #include "hosts/windows/windows_error.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -83,6 +86,7 @@ GuiProcessLauncher::GuiProcessLauncher(std::filesystem::path executable)
 GuiProcessLauncher::~GuiProcessLauncher() {
     std::string error;
     (void)terminate(error);
+    close_handles();
 }
 
 bool GuiProcessLauncher::launch_suspended(
@@ -112,11 +116,32 @@ bool GuiProcessLauncher::launch_suspended(
             "failed to create GUI bootstrap pipe", GetLastError());
         return false;
     }
+    HANDLE diagnostic_read = nullptr;
+    HANDLE diagnostic_write = nullptr;
+    if (!CreatePipe(
+            &diagnostic_read, &diagnostic_write, &pipe_security, 64U * 1024U)) {
+        error = windows_error_message(
+            "failed to create GUI diagnostic pipe", GetLastError());
+        CloseHandle(bootstrap_read);
+        CloseHandle(bootstrap_write);
+        return false;
+    }
+    if (!SetHandleInformation(diagnostic_read, HANDLE_FLAG_INHERIT, 0)) {
+        error = windows_error_message(
+            "failed to restrict GUI diagnostic handle inheritance", GetLastError());
+        CloseHandle(bootstrap_read);
+        CloseHandle(bootstrap_write);
+        CloseHandle(diagnostic_read);
+        CloseHandle(diagnostic_write);
+        return false;
+    }
     if (!SetHandleInformation(bootstrap_write, HANDLE_FLAG_INHERIT, 0)) {
         error = windows_error_message(
             "failed to restrict GUI bootstrap handle inheritance", GetLastError());
         CloseHandle(bootstrap_read);
         CloseHandle(bootstrap_write);
+        CloseHandle(diagnostic_read);
+        CloseHandle(diagnostic_write);
         return false;
     }
 
@@ -129,6 +154,8 @@ bool GuiProcessLauncher::launch_suspended(
             "failed to size GUI process attribute list", GetLastError());
         CloseHandle(bootstrap_read);
         CloseHandle(bootstrap_write);
+        CloseHandle(diagnostic_read);
+        CloseHandle(diagnostic_write);
         return false;
     }
     auto attribute_storage = std::make_unique<std::uint8_t[]>(attribute_bytes);
@@ -140,14 +167,17 @@ bool GuiProcessLauncher::launch_suspended(
             "failed to initialize GUI process attribute list", GetLastError());
         CloseHandle(bootstrap_read);
         CloseHandle(bootstrap_write);
+        CloseHandle(diagnostic_read);
+        CloseHandle(diagnostic_write);
         return false;
     }
+    std::array inherited_handles = {bootstrap_read, diagnostic_write};
     if (!UpdateProcThreadAttribute(
             attributes,
             0,
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            &bootstrap_read,
-            sizeof(bootstrap_read),
+            inherited_handles.data(),
+            sizeof(inherited_handles),
             nullptr,
             nullptr)) {
         error = windows_error_message(
@@ -155,11 +185,17 @@ bool GuiProcessLauncher::launch_suspended(
         DeleteProcThreadAttributeList(attributes);
         CloseHandle(bootstrap_read);
         CloseHandle(bootstrap_write);
+        CloseHandle(diagnostic_read);
+        CloseHandle(diagnostic_write);
         return false;
     }
 
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = bootstrap_read;
+    startup.StartupInfo.hStdOutput = diagnostic_write;
+    startup.StartupInfo.hStdError = diagnostic_write;
     startup.lpAttributeList = attributes;
     std::wstring command_line = quoted(executable_)
         + L" --ipc-bootstrap-handle "
@@ -181,16 +217,26 @@ bool GuiProcessLauncher::launch_suspended(
     const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
     DeleteProcThreadAttributeList(attributes);
     CloseHandle(bootstrap_read);
+    CloseHandle(diagnostic_write);
     if (!created) {
         CloseHandle(bootstrap_write);
+        CloseHandle(diagnostic_read);
         error = windows_error_message(
             "failed to create ccs-trans GUI process", create_error);
         return false;
     }
     process_ = process.hProcess;
     thread_ = process.hThread;
+    diagnostic_read_ = diagnostic_read;
     process_id_ = process.dwProcessId;
     suspended_ = true;
+    if (!start_diagnostic_reader(error)) {
+        (void)TerminateProcess(process_, 1);
+        (void)WaitForSingleObject(process_, 5000);
+        close_handles();
+        CloseHandle(bootstrap_write);
+        return false;
+    }
 
     const bool bootstrap_written = write_bootstrap(
         bootstrap_write, bootstrap, error);
@@ -248,6 +294,7 @@ bool GuiProcessLauncher::wait_for_exit(
             "failed to read ccs-trans GUI process exit code", GetLastError());
         return false;
     }
+    error = finish_diagnostic_reader(false);
     exited = true;
     close_handles();
     return true;
@@ -278,7 +325,73 @@ const std::filesystem::path& GuiProcessLauncher::executable() const noexcept {
     return executable_;
 }
 
+bool GuiProcessLauncher::start_diagnostic_reader(std::string& error) {
+    error.clear();
+    diagnostic_output_.clear();
+    diagnostic_truncated_ = false;
+    const HANDLE handle = diagnostic_read_;
+    try {
+        diagnostic_thread_ = std::thread([this, handle] {
+            constexpr std::size_t maximum_diagnostic_bytes = 64U * 1024U;
+            std::array<char, 4096> buffer{};
+            for (;;) {
+                DWORD received = 0;
+                if (!ReadFile(
+                        handle,
+                        buffer.data(),
+                        static_cast<DWORD>(buffer.size()),
+                        &received,
+                        nullptr)
+                    || received == 0) {
+                    break;
+                }
+                std::lock_guard<std::mutex> lock(diagnostic_mutex_);
+                const auto remaining = maximum_diagnostic_bytes
+                    - std::min(maximum_diagnostic_bytes, diagnostic_output_.size());
+                const auto accepted = std::min<std::size_t>(remaining, received);
+                diagnostic_output_.append(buffer.data(), accepted);
+                diagnostic_truncated_ = diagnostic_truncated_
+                    || accepted < received;
+            }
+        });
+    } catch (const std::exception& exception) {
+        error = "failed to start GUI diagnostic reader: "
+            + std::string(exception.what());
+        return false;
+    }
+    return true;
+}
+
+std::string GuiProcessLauncher::finish_diagnostic_reader(bool cancel) noexcept {
+    const HANDLE handle = diagnostic_read_;
+    diagnostic_read_ = nullptr;
+    if (cancel && handle != nullptr) {
+        (void)CancelIoEx(handle, nullptr);
+        CloseHandle(handle);
+    }
+    if (diagnostic_thread_.joinable()) diagnostic_thread_.join();
+    if (!cancel && handle != nullptr) CloseHandle(handle);
+
+    std::string output;
+    {
+        std::lock_guard<std::mutex> lock(diagnostic_mutex_);
+        output = std::move(diagnostic_output_);
+        diagnostic_output_.clear();
+        if (diagnostic_truncated_) {
+            output += "\n[GUI diagnostic output truncated]";
+        }
+        diagnostic_truncated_ = false;
+    }
+    while (!output.empty()
+           && (output.back() == '\r' || output.back() == '\n'
+               || output.back() == ' ' || output.back() == '\t')) {
+        output.pop_back();
+    }
+    return output;
+}
+
 void GuiProcessLauncher::close_handles() noexcept {
+    (void)finish_diagnostic_reader(true);
     if (thread_ != nullptr) CloseHandle(thread_);
     if (process_ != nullptr) CloseHandle(process_);
     thread_ = nullptr;

@@ -377,7 +377,8 @@ void TrayApplication::handle_view_state(MainWindowStateSnapshot state) {
             });
         if (!result.succeeded()
             && !result.configuration_saved()
-            && result.error != MainWindowError::Cancelled) {
+            && result.error != MainWindowError::Cancelled
+            && result.source != MainWindowCommandSource::GuiIpc) {
             show_notification(
                 L"ccs-trans command failed",
                 result.detail.empty() ? L"Open logs for details." : utf8_to_wide(result.detail),

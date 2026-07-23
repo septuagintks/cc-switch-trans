@@ -41,6 +41,22 @@ else()
     set(CCS_TRANS_SOURCE_DIRTY true)
 endif()
 
+# The source commit is embedded in both the runtime and Qt sidecar binaries.
+# Git HEAD changes do not otherwise invalidate a CMake build tree.
+execute_process(
+    COMMAND git rev-parse --git-path logs/HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RESULT_VARIABLE CCS_TRANS_GIT_LOG_RESULT
+    OUTPUT_VARIABLE CCS_TRANS_GIT_LOG_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(CCS_TRANS_GIT_LOG_RESULT EQUAL 0)
+    file(TO_CMAKE_PATH "${CCS_TRANS_GIT_LOG_PATH}" CCS_TRANS_GIT_LOG_PATH)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CCS_TRANS_GIT_LOG_PATH}")
+endif()
+
 if(APPLE)
     enable_language(OBJCXX)
 endif()
@@ -135,6 +151,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(ccs-trans-gui-ipc-tests PRIVATE ccs-trans-gui-ipc)
     add_test(NAME ccs-trans-gui-ipc-tests COMMAND ccs-trans-gui-ipc-tests)
+    if(CCS_TRANS_BUILD_QT_GUI)
+        set_tests_properties(ccs-trans-gui-ipc-tests PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:${CCS_TRANS_QT_ROOT}/bin;PATH=path_list_prepend:${CCS_TRANS_QT_MINGW_ROOT}/bin"
+        )
+    endif()
 endif()
 
 if(CCS_TRANS_BUILD_RUNTIME)

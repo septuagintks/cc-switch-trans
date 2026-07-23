@@ -27,18 +27,26 @@ class GuiStateStore final : public QObject {
     Q_PROPERTY(QString selectedProfileKey READ selectedProfileKey NOTIFY selectionChanged)
     Q_PROPERTY(QString selectedProfileId READ selectedProfileId NOTIFY selectionChanged)
     Q_PROPERTY(bool selectedProfileEnabled READ selectedProfileEnabled NOTIFY selectionChanged)
+    Q_PROPERTY(qulonglong selectedRuleCount READ selectedRuleCount NOTIFY selectionChanged)
+    Q_PROPERTY(qulonglong selectedEnabledRuleCount READ selectedEnabledRuleCount NOTIFY selectionChanged)
     Q_PROPERTY(QString rulesText READ rulesText NOTIFY editorChanged)
     Q_PROPERTY(QString rulesDiagnostic READ rulesDiagnostic NOTIFY editorChanged)
     Q_PROPERTY(QString draftPhase READ draftPhase NOTIFY draftChanged)
     Q_PROPERTY(qulonglong draftRevision READ draftRevision NOTIFY draftChanged)
     Q_PROPERTY(QString baseRevision READ baseRevision NOTIFY draftChanged)
     Q_PROPERTY(bool draftDirty READ draftDirty NOTIFY draftChanged)
+    Q_PROPERTY(bool runtimeApplyPending READ runtimeApplyPending NOTIFY draftChanged)
     Q_PROPERTY(bool commandPending READ commandPending NOTIFY commandStateChanged)
     Q_PROPERTY(QString lastCommand READ lastCommand NOTIFY commandStateChanged)
     Q_PROPERTY(QString lastCommandOutcome READ lastCommandOutcome NOTIFY commandStateChanged)
     Q_PROPERTY(QString lastCommandError READ lastCommandError NOTIFY commandStateChanged)
     Q_PROPERTY(QString lastCommandField READ lastCommandField NOTIFY commandStateChanged)
     Q_PROPERTY(QString lastCommandDetail READ lastCommandDetail NOTIFY commandStateChanged)
+    Q_PROPERTY(QString storageState READ storageState NOTIFY storageChanged)
+    Q_PROPERTY(bool storageDatabaseExists READ storageDatabaseExists NOTIFY storageChanged)
+    Q_PROPERTY(QString storageDetail READ storageDetail NOTIFY storageChanged)
+    Q_PROPERTY(QString storageDatabasePath READ storageDatabasePath NOTIFY storageChanged)
+    Q_PROPERTY(QString storageBackupDirectory READ storageBackupDirectory NOTIFY storageChanged)
     Q_PROPERTY(bool lightweightMode READ lightweightMode NOTIFY preferenceChanged)
 
 public:
@@ -57,18 +65,26 @@ public:
     [[nodiscard]] QString selectedProfileKey() const;
     [[nodiscard]] QString selectedProfileId() const;
     [[nodiscard]] bool selectedProfileEnabled() const;
+    [[nodiscard]] qulonglong selectedRuleCount() const noexcept;
+    [[nodiscard]] qulonglong selectedEnabledRuleCount() const noexcept;
     [[nodiscard]] QString rulesText() const;
     [[nodiscard]] QString rulesDiagnostic() const;
     [[nodiscard]] QString draftPhase() const;
     [[nodiscard]] qulonglong draftRevision() const noexcept;
     [[nodiscard]] QString baseRevision() const;
     [[nodiscard]] bool draftDirty() const;
+    [[nodiscard]] bool runtimeApplyPending() const noexcept;
     [[nodiscard]] bool commandPending() const noexcept;
     [[nodiscard]] QString lastCommand() const;
     [[nodiscard]] QString lastCommandOutcome() const;
     [[nodiscard]] QString lastCommandError() const;
     [[nodiscard]] QString lastCommandField() const;
     [[nodiscard]] QString lastCommandDetail() const;
+    [[nodiscard]] QString storageState() const;
+    [[nodiscard]] bool storageDatabaseExists() const noexcept;
+    [[nodiscard]] QString storageDetail() const;
+    [[nodiscard]] QString storageDatabasePath() const;
+    [[nodiscard]] QString storageBackupDirectory() const;
     [[nodiscard]] bool lightweightMode() const noexcept;
     [[nodiscard]] const std::optional<ccs::gui_ipc::Snapshot>& snapshot() const noexcept;
 
@@ -79,6 +95,7 @@ signals:
     void editorChanged();
     void draftChanged();
     void commandStateChanged();
+    void storageChanged();
     void preferenceChanged();
     void snapshotApplied();
 

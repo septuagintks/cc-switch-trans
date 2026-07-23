@@ -66,6 +66,16 @@ bool GuiStateStore::selectedProfileEnabled() const {
     return profile != nullptr && profile->enabled;
 }
 
+qulonglong GuiStateStore::selectedRuleCount() const noexcept {
+    const auto* profile = selectedProfile();
+    return profile == nullptr ? 0 : profile->rule_count;
+}
+
+qulonglong GuiStateStore::selectedEnabledRuleCount() const noexcept {
+    const auto* profile = selectedProfile();
+    return profile == nullptr ? 0 : profile->enabled_rule_count;
+}
+
 QString GuiStateStore::rulesText() const {
     return snapshot_ && snapshot_->rules_editor
         ? text(snapshot_->rules_editor->text) : QString{};
@@ -96,8 +106,14 @@ QString GuiStateStore::baseRevision() const {
 }
 
 bool GuiStateStore::draftDirty() const {
-    return draftPhase() == QStringLiteral("dirty")
-        || draftPhase() == QStringLiteral("saved_pending_runtime_apply");
+    const auto phase = draftPhase();
+    return phase == QStringLiteral("dirty")
+        || phase == QStringLiteral("validating")
+        || phase == QStringLiteral("applying");
+}
+
+bool GuiStateStore::runtimeApplyPending() const noexcept {
+    return snapshot_ && snapshot_->draft.runtime_apply_pending;
 }
 
 bool GuiStateStore::commandPending() const noexcept {
@@ -126,6 +142,26 @@ QString GuiStateStore::lastCommandField() const {
 
 QString GuiStateStore::lastCommandDetail() const {
     return last_command_ ? text(last_command_->detail) : QString{};
+}
+
+QString GuiStateStore::storageState() const {
+    return snapshot_ ? text(snapshot_->storage.state) : QStringLiteral("unknown");
+}
+
+bool GuiStateStore::storageDatabaseExists() const noexcept {
+    return snapshot_ && snapshot_->storage.database_exists;
+}
+
+QString GuiStateStore::storageDetail() const {
+    return snapshot_ ? text(snapshot_->storage.detail) : QString{};
+}
+
+QString GuiStateStore::storageDatabasePath() const {
+    return snapshot_ ? text(snapshot_->storage.database_path) : QString{};
+}
+
+QString GuiStateStore::storageBackupDirectory() const {
+    return snapshot_ ? text(snapshot_->storage.backup_directory) : QString{};
 }
 
 bool GuiStateStore::lightweightMode() const noexcept {
@@ -192,6 +228,9 @@ void GuiStateStore::emitSnapshotDifferences(
     if (!previous || previous->command_pending != snapshot_->command_pending
         || previous->last_command != snapshot_->last_command) {
         emit commandStateChanged();
+    }
+    if (!previous || previous->storage != snapshot_->storage) {
+        emit storageChanged();
     }
     if (!previous || previous->lightweight_mode != snapshot_->lightweight_mode) {
         emit preferenceChanged();

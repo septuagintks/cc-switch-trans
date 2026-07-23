@@ -161,7 +161,8 @@ int runPrototypeProbe(
 
 int runProduction(
     QGuiApplication& application,
-    ccs::gui_ipc::LaunchBootstrap bootstrap) {
+    ccs::gui_ipc::LaunchBootstrap bootstrap,
+    bool qml_probe = false) {
     ccs_trans::gui::AnimationPolicy motion_policy;
     ccs_trans::gui::GuiIpcClient client(std::move(bootstrap));
     ccs_trans::gui::GuiStateStore state(client);
@@ -169,9 +170,9 @@ int runProduction(
     ccs_trans::gui::ProfilesController profiles(state, commands);
     ccs_trans::gui::RulesController rules(state, commands);
     ccs_trans::gui::SettingsController settings(state, commands);
-    ccs_trans::gui::MigrationController migration;
+    ccs_trans::gui::MigrationController migration(state, commands);
     ccs_trans::gui::GuiWindowController window_controller(
-        application, client, state);
+        application, client, state, commands);
 
     QQmlApplicationEngine engine;
     installWarningSink(engine);
@@ -193,7 +194,13 @@ int runProduction(
     window_controller.attachWindow(window);
     ccs_trans::gui::FrameMonitor frame_monitor;
     frame_monitor.attach(window);
-    client.start();
+    if (qml_probe) {
+        QTimer::singleShot(100, &application, [&application] {
+            application.exit(EXIT_SUCCESS);
+        });
+    } else {
+        client.start();
+    }
     return application.exec();
 }
 
@@ -218,6 +225,19 @@ int main(int argc, char* argv[]) {
     if (self_test || lifecycle_probe) {
         return runPrototypeProbe(
             application, startup_timer, self_test, lifecycle_probe);
+    }
+    if (hasArgument(application, QStringLiteral("--production-qml-probe"))) {
+        return runProduction(
+            application,
+            {
+                "probe-pipe",
+                CCS_TRANS_GUI_VERSION,
+                CCS_TRANS_GUI_SOURCE_COMMIT,
+                "probe-instance",
+                "probe-token",
+                "probe-session",
+            },
+            true);
     }
 
     std::uintptr_t inherited_handle = 0;

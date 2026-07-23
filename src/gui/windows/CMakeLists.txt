@@ -40,6 +40,8 @@ add_library(ccs-trans-gui-foundation STATIC
     lifecycle/gui_window_controller.hpp
     models/configuration_field_model.cpp
     models/configuration_field_model.hpp
+    models/editable_field_model.cpp
+    models/editable_field_model.hpp
     models/profile_summary_model.cpp
     models/profile_summary_model.hpp
     prototype/profile_list_model.cpp
@@ -91,6 +93,11 @@ qt_add_qml_module(ccs-trans-gui
         ui/PrototypeProbe.qml
         ui/Theme.qml
         ui/components/MotionButton.qml
+        ui/components/MotionComboBox.qml
+        ui/components/DecisionDialog.qml
+        ui/components/FieldEditorRow.qml
+        ui/components/ApplicationDialogs.qml
+        ui/components/MotionScrollBar.qml
         ui/components/MotionSwitch.qml
         ui/components/MotionTextField.qml
         ui/components/NavigationTab.qml
@@ -110,6 +117,14 @@ add_custom_target(ccs-trans-gui-structure-check ALL
 add_dependencies(ccs-trans-gui ccs-trans-gui-structure-check)
 
 if(BUILD_TESTING)
+    function(ccs_trans_configure_qt_test test_name)
+        set(test_environment_modification
+            "PATH=path_list_prepend:${CCS_TRANS_QT_ROOT}/bin;PATH=path_list_prepend:${CCS_TRANS_QT_MINGW_ROOT}/bin")
+        set_tests_properties(${test_name} PROPERTIES
+            ENVIRONMENT_MODIFICATION "${test_environment_modification}"
+        )
+    endfunction()
+
     qt_add_executable(ccs-trans-gui-ipc-client-tests
         tests/gui_ipc_client_tests.cpp
     )
@@ -125,6 +140,7 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
         ccs-trans-gui-ipc-client-tests PROPERTIES TIMEOUT 15)
+    ccs_trans_configure_qt_test(ccs-trans-gui-ipc-client-tests)
 
     qt_add_executable(ccs-trans-gui-model-tests
         tests/profile_list_model_tests.cpp
@@ -134,11 +150,32 @@ if(BUILD_TESTING)
         Qt6::Test
     )
     add_test(NAME ccs-trans-gui-model-tests COMMAND ccs-trans-gui-model-tests)
+    ccs_trans_configure_qt_test(ccs-trans-gui-model-tests)
+
+    qt_add_executable(ccs-trans-gui-feature-controller-tests
+        tests/gui_feature_controller_tests.cpp
+    )
+    set_target_properties(
+        ccs-trans-gui-feature-controller-tests PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_link_libraries(ccs-trans-gui-feature-controller-tests PRIVATE
+        ccs-trans-gui-foundation
+        Qt6::Test
+    )
+    add_test(
+        NAME ccs-trans-gui-feature-controller-tests
+        COMMAND ccs-trans-gui-feature-controller-tests
+    )
+    set_tests_properties(
+        ccs-trans-gui-feature-controller-tests PROPERTIES TIMEOUT 15)
+    ccs_trans_configure_qt_test(ccs-trans-gui-feature-controller-tests)
 
     qt_add_executable(ccs-trans-gui-qml-tests
         tests/qml_test_main.cpp
     )
     set_target_properties(ccs-trans-gui-qml-tests PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_compile_definitions(ccs-trans-gui-qml-tests PRIVATE
+        CCS_TRANS_GUI_THEME_PATH="${CMAKE_CURRENT_SOURCE_DIR}/ui/Theme.qml"
+    )
     target_link_libraries(ccs-trans-gui-qml-tests PRIVATE
         Qt6::Gui
         Qt6::Quick
@@ -150,10 +187,20 @@ if(BUILD_TESTING)
         COMMAND ccs-trans-gui-qml-tests
             -input "${CMAKE_CURRENT_SOURCE_DIR}/tests/qml"
     )
+    ccs_trans_configure_qt_test(ccs-trans-gui-qml-tests)
 
     add_test(
         NAME ccs-trans-gui-self-test
         COMMAND ccs-trans-gui --self-test --software-renderer
     )
     set_tests_properties(ccs-trans-gui-self-test PROPERTIES TIMEOUT 15)
+    ccs_trans_configure_qt_test(ccs-trans-gui-self-test)
+
+    add_test(
+        NAME ccs-trans-gui-production-qml-probe
+        COMMAND ccs-trans-gui --production-qml-probe --software-renderer
+    )
+    set_tests_properties(
+        ccs-trans-gui-production-qml-probe PROPERTIES TIMEOUT 15)
+    ccs_trans_configure_qt_test(ccs-trans-gui-production-qml-probe)
 endif()

@@ -67,6 +67,7 @@ bool serialize_state_delta(
             root["last_command"] = value.last_command
                 ? command_status_json(*value.last_command) : Json(nullptr);
         }
+        if (value.storage) root["storage"] = storage_json(*value.storage);
         if (value.lightweight_mode) {
             root["lightweight_mode"] = *value.lightweight_mode;
         }
@@ -88,7 +89,7 @@ bool parse_state_delta(
                     {"from_revision", "revision", "application", "profiles",
                         "application_fields", "selection", "profile_editor",
                         "rules_editor", "draft", "last_command",
-                        "lightweight_mode", "command_pending"},
+                        "storage", "lightweight_mode", "command_pending"},
                     {"from_revision", "revision"}, path, failure)
                 || !read_integer(root.at("from_revision"), parsed.from_revision,
                     "$.from_revision", failure)
@@ -194,6 +195,14 @@ bool parse_state_delta(
                     }
                     parsed.last_command = std::move(status);
                 }
+            }
+            if (root.contains("storage")) {
+                StorageStatus storage;
+                if (!parse_storage(
+                        root.at("storage"), storage, "$.storage", failure)) {
+                    return false;
+                }
+                parsed.storage = std::move(storage);
             }
             if (root.contains("lightweight_mode")) {
                 bool setting = false;

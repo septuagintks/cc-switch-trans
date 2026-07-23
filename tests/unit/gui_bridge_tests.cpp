@@ -127,6 +127,7 @@ void test_command_mapping() {
     std::string error;
     require(ccs::translate_gui_command(source, mapped, error_code, error), error);
     require(mapped.command == ccs::MainWindowCommand::SaveProfile
+            && mapped.source == ccs::MainWindowCommandSource::GuiIpc
             && mapped.profile_key == 5
             && mapped.field_edits.size() == 3
             && !mapped.field_edits[2].value

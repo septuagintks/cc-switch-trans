@@ -78,6 +78,10 @@ const char* main_window_command_name(MainWindowCommand command) noexcept {
         return "discard_draft";
     case MainWindowCommand::SetLightweightMode:
         return "set_lightweight_mode";
+    case MainWindowCommand::StorageStatus:
+        return "storage_status";
+    case MainWindowCommand::MigrateStorage:
+        return "migrate_storage";
     }
     return "unknown";
 }
@@ -110,6 +114,10 @@ const char* main_window_error_name(MainWindowError error) noexcept {
         return "service_unavailable";
     case MainWindowError::UnsavedChangesDecisionRequired:
         return "unsaved_changes_decision_required";
+    case MainWindowError::MigrationRequired:
+        return "migration_required";
+    case MainWindowError::ReplacementConfirmationRequired:
+        return "replacement_confirmation_required";
     case MainWindowError::Cancelled:
         return "cancelled";
     case MainWindowError::Internal:
@@ -162,6 +170,25 @@ const char* draft_phase_name(DraftPhase phase) noexcept {
         return "applying";
     case DraftPhase::SavedPendingRuntimeApply:
         return "saved_pending_runtime_apply";
+    }
+    return "unknown";
+}
+
+const char* main_window_storage_state_name(
+    MainWindowStorageState state) noexcept {
+    switch (state) {
+    case MainWindowStorageState::Unknown:
+        return "unknown";
+    case MainWindowStorageState::Uninitialized:
+        return "uninitialized";
+    case MainWindowStorageState::MigrationRequired:
+        return "migration_required";
+    case MainWindowStorageState::Ready:
+        return "ready";
+    case MainWindowStorageState::RecoveryRequired:
+        return "recovery_required";
+    case MainWindowStorageState::Invalid:
+        return "invalid";
     }
     return "unknown";
 }

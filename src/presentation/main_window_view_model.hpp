@@ -41,6 +41,9 @@ struct MainWindowCommandRequest {
     std::string text;
     std::optional<std::uint64_t> expected_draft_revision;
     std::optional<std::string> expected_base_revision;
+    bool replace_existing_storage = false;
+    std::string replacement_confirmation;
+    MainWindowCommandSource source = MainWindowCommandSource::NativeHost;
 };
 
 using MainWindowStateSnapshot = std::shared_ptr<const MainWindowState>;
@@ -97,7 +100,10 @@ private:
     ExecutionResult apply_draft();
     ExecutionResult discard_draft();
     ExecutionResult set_lightweight_mode(bool enabled);
+    ExecutionResult inspect_storage();
+    ExecutionResult migrate_storage(const MainWindowCommandRequest& request);
     ExecutionResult execute_service_command(MainWindowCommand command);
+    bool refresh_storage_status(std::string& error);
 
     void rebuild_editor_state(
         std::optional<ProfileKey> preferred_key = std::nullopt,

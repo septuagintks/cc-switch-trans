@@ -6,10 +6,12 @@
 #include <windows.h>
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -69,7 +71,35 @@ int run_bootstrap_probe(HANDLE input) {
         Sleep(150);
         return 0;
     }
-    return bootstrap.session_id == "exit-37" ? 37 : 16;
+    if (bootstrap.session_id == "exit-37") {
+        constexpr std::string_view diagnostic = "launcher diagnostic\n";
+        DWORD written = 0;
+        (void)WriteFile(
+            GetStdHandle(STD_ERROR_HANDLE),
+            diagnostic.data(),
+            static_cast<DWORD>(diagnostic.size()),
+            &written,
+            nullptr);
+        return 37;
+    }
+    if (bootstrap.session_id == "large-output") {
+        std::array<char, 4096> chunk{};
+        chunk.fill('x');
+        for (int index = 0; index < 64; ++index) {
+            DWORD written = 0;
+            if (!WriteFile(
+                    GetStdHandle(STD_ERROR_HANDLE),
+                    chunk.data(),
+                    static_cast<DWORD>(chunk.size()),
+                    &written,
+                    nullptr)
+                || written != static_cast<DWORD>(chunk.size())) {
+                return 18;
+            }
+        }
+        return 38;
+    }
+    return 16;
 }
 
 ccs::gui_ipc::LaunchBootstrap bootstrap(std::string session_id) {
@@ -108,8 +138,17 @@ void test_suspended_launch_and_exit_tracking() {
     require(launcher.launch_suspended(bootstrap("exit-37"), error), error);
     require(launcher.resume(error), error);
     require(launcher.wait_for_exit(5s, exited, exit_code, error), error);
-    require(exited && exit_code == 37,
-        "launcher discarded the real child process exit code");
+    require(exited && exit_code == 37
+            && error.find("launcher diagnostic") != std::string::npos,
+        "launcher discarded the child exit code or bounded diagnostics");
+
+    require(launcher.launch_suspended(bootstrap("large-output"), error), error);
+    require(launcher.resume(error), error);
+    require(launcher.wait_for_exit(5s, exited, exit_code, error), error);
+    require(exited && exit_code == 38
+            && error.find("[GUI diagnostic output truncated]") != std::string::npos
+            && error.size() <= 64U * 1024U + 64U,
+        "launcher blocked on or retained unbounded GUI diagnostics");
 }
 
 void test_sibling_path() {

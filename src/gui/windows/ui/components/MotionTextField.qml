@@ -21,11 +21,13 @@ TextField {
     font.pixelSize: 13
     renderType: Text.NativeRendering
     focusPolicy: Qt.StrongFocus
+    hoverEnabled: true
 
     background: Rectangle {
+        scale: root.activeFocus ? 1.002 : (root.hovered ? 1.004 : 1)
         radius: Theme.radius
         color: root.enabled ? Theme.surface : Theme.surfaceMuted
-        border.width: root.activeFocus ? 2 : 1
+        border.width: root.activeFocus || root.motion.highContrast ? 2 : 1
         border.color: root.invalid ? Theme.danger
                                   : (root.activeFocus
                                      ? Theme.focus : Theme.border)
@@ -34,6 +36,12 @@ TextField {
         }
         Behavior on color {
             ColorAnimation { duration: root.motion.shortDuration }
+        }
+        Behavior on scale {
+            NumberAnimation {
+                duration: root.motion.shortDuration
+                easing.type: Easing.OutCubic
+            }
         }
     }
 
